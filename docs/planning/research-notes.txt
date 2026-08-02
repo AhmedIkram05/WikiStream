@@ -1,0 +1,56 @@
+What's Needed
+A third serious data engineering project. Current coverage:
+* LAAD = event-driven ingestion, Kafka, streaming, AWS
+* W3C ETL = batch lakehouse, Databricks DLT, Azure
+Missing: near-real-time analytics, OLAP-native database, analytical depth — KPIs and business questions surfaced from data, not just pipeline delivery. Haggis does not fill this gap. It needs to be displaced, not upgraded.
+
+Recommendation: Streaming Analytics Dashboard
+A pipeline pulling a real public data stream → ClickHouse → live KPI dashboard. Why ClickHouse specifically: it's the most recognisable OLAP-native database in DE job specs right now and is absent from your entire portfolio. Adding it is immediately legible to DE recruiters.
+
+Domain Recommendation
+Wikimedia EventStreams (recentchange) → ClickHouse → Grafana. Reasons:
+* Genuinely continuous Server-Sent Events push stream — dozens of edits per second across all Wikimedia projects, zero authentication required, Kafka-backed internally and stable since 2017
+* True streaming ingestion (persistent connection, reconnect-with-resume via Last-Event-ID) rather than scheduled polling — demonstrates continuous-ingestion engineering (backpressure, connection resilience, windowed aggregation over a live stream) rather than batch-scheduling discipline
+* No more "near-real-time" caveat needed — this is genuinely real-time, so CV bullets can say "real-time streaming pipeline" without qualification
+* Near-zero portfolio competition — one of the most robust, best-documented real-time public streams that exists, and virtually unused in graduate portfolios
+* Grafana dashboards are already on your CV (W3C ETL), so the tooling adds no learning overhead
+* Kafka already appears on your CV (W3C ETL) — native ClickHouse async_insert is the idiomatic pattern here too, and arguably more meaningful now given a genuinely high-throughput source has to prove it can keep up without a broker in between
+Trade-off: loses ESO's UK-specific and sustainability-sector relevance. If that angle matters for specific applications, it can be mentioned as a domain that was considered and deliberately traded for stronger streaming-engineering signal.
+
+Full Project Spec
+* Scope filter: restrict ingestion to Wikipedia domains only, excluding Wikidata/Commons — those are dramatically more bot-heavy and would dominate volume and skew analytics
+* Wikimedia EventStreams SSE (stream.wikimedia.org/v2/stream/recentchange) → Python consumer via an EventSource client, reconnection handled through the Last-Event-ID header → ClickHouse ingestion (native async_insert; no Kafka)
+* No bulk historical backfill needed — a stream this high-frequency accumulates a meaningful dataset in hours, not days; run the consumer continuously for 24–48 hours minimum before any live demo so materialised views and Grafana trend panels have real accumulated history
+* Data quality: Great Expectations validation on every event before insert — required fields present (title, user, timestamp, wiki/domain, edit type), bot flag is boolean, timestamp not stale or future-dated; failed expectations route to a dead-letter log
+* Data contracts: Pydantic models enforcing the recentchange event schema before insert; schema drift caught, logged, and routed separately
+* ClickHouse materialised views for real-time aggregations — rolling edit velocity (per minute/hour) by project and language, bot vs. human edit ratio, top-edited pages (rolling window), edit size (bytes changed) distribution — updated on insert
+* KPIs: edits per minute (rolling), bot vs. human ratio, top edited pages, project/language distribution, edit size distribution; new-page creation rate as an optional secondary metric via the page-create stream if time allows
+* Grafana dashboard with live panels reading from materialised views: edit velocity, bot/human ratio, top-pages leaderboard, language/project breakdown, edit size histogram
+* Test suite: schema tests, consumer integration tests (including reconnection/resume logic), pipeline smoke tests, Great Expectations suite tests; target ~60–80 tests
+* Pre-build metric targets: set at build time based on observed throughput once connected
+
+Cloud Deployment (GCP)
+AWS has 3 projects already (LAAD, DevSync, StockLens). Azure has 1 (W3C ETL). Deploying streaming to GCP completes a genuine multi-cloud story across all three DE projects without it looking manufactured.
+Project	Cloud
+W3C ETL	Azure (Databricks, Azure SQL, ADLS)
+LAAD	AWS (ECS Fargate, RDS, S3, SageMaker, EC2)
+Streaming Analytics	GCP (Compute Engine, Cloud Storage)
+GCP equivalents
+AWS	GCP
+EC2 t3.medium	Compute Engine e2-medium (2 vCPU, 4GB)
+EBS gp3 20GB	Persistent Disk Standard 20GB
+S3 (backfill staging)	Cloud Storage bucket
+IAM OIDC for GitHub Actions	Workload Identity Federation
+Security groups	VPC firewall rules
+Elastic IP	Static external IP
+Terraform via google provider — same 4-module structure, same IaC discipline, different provider block. Workload Identity Federation is GCP's equivalent of AWS OIDC AssumeRole; having implemented both is a legitimate multi-cloud IAM bullet.
+GCP gives $300 free credit on a new account — streaming project runs essentially free.
+
+Final DE CV Project Lineup
+Project	Status
+W3C ETL	✅ Stays
+LAAD	✅ Stays
+Streaming Analytics project	✅ New
+Haggis	❌ Remove
+DevSync	❌ Remove
+Final 3 projects: W3C ETL → LAAD → Streaming Analytics project
