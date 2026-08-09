@@ -4,7 +4,7 @@
 **Position in the document hierarchy:** Research Notes (why the project exists) → Vision & ADR (what it is, why each architectural decision was made) → **this document** (how it gets built, in what order) → Implementation Phase Plans (exact tasks, commands, file structure, tests — one per phase below).
 **What this document does not do:** re-decide anything locked in the ADR, introduce new technology, or specify implementation detail. Every phase below traces back to specific ADR numbers rather than restating their content — see the traceability matrix in §6.
 
-**Revision note:** Merges two parallel threads — the GCP breadth additions agreed alongside the ADR's v2→v3 revision (Artifact Registry, Cloud Monitoring), and a structural review pass (explicit Phase Dependency Table, Phase 3 split internally into 3A/3B so it doesn't become a dumping ground, and two Go/No-Go gates — after Phase 2 and after Phase 4 — since passing a phase's own exit criteria doesn't guarantee the foundation under it is sound enough to keep building on). Section numbers shifted once to fit the new Go/No-Go section in; internal cross-references below are corrected accordingly.
+**Revision note:** Merges two parallel threads — the GCP breadth additions agreed alongside the ADR's v2→v3 revision (Artifact Registry, Cloud Monitoring), and a structural review pass (explicit Phase Dependency Table, Phase 3 split internally into 3A/3B so it doesn't become a dumping ground, and two Go/No-Go gates — after Phase 2 and after Phase 4 — since passing a phase's own exit criteria doesn't guarantee the foundation under it is sound enough to keep building on). Section numbers shifted once to fit the new Go/No-Go section in; internal cross-references below are corrected accordingly. Also revised §8: per-phase evidence capture is dropped — all evidence is collected once in Phase 8, before teardown, with the per-phase "Evidence to capture" lines retained as Phase 8's checklist rather than per-phase tasks.
 
 ## 1. Methodology (as confirmed, not re-litigated)
 
@@ -82,7 +82,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** Repo directory skeleton (structure only); Terraform state-bucket bootstrap applied once, locally (ADR-007); a documented yes/fallback answer on GitHub Environments required-reviewers availability (ADR-008); a throwaway spike proving GX's `[clickhouse]` extra connects and runs one expectation against a local ClickHouse container (ADR-005); the "business-critical modules" boundary for the coverage gate written down as a concrete list (ADR-009), even though most of the code it names doesn't exist yet.
 **Implementation approach:** Each item is a narrow, disposable spike or one-time setup step, not integrated feature work.
 **Verification gate:** Every burn-down-able risk from Vision §8 has a written yes/no/fallback answer, not left open.
-**Evidence to capture:** GX spike output; the GitHub Environments finding, in writing, so Phase 2 doesn't re-litigate it.
 **Risks/rollback:** If GX-via-SQLAlchemy is broken, ADR-005's native-SQL fallback is adopted now, cheaply. If GitHub Environments isn't available, ADR-008's `workflow_dispatch` fallback is adopted now, so Phase 2's CI/CD isn't built twice.
 **Exit criteria:** Repo skeleton exists; state bucket bootstrapped; both spikes resolved; module boundary documented.
 
@@ -93,7 +92,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** Minimal async consumer against the real `recentchange` stream (no batching sophistication yet); one raw ClickHouse table (no MVs); one Grafana panel reading directly off it; all via local docker-compose.
 **Implementation approach:** Deliberately skip Pydantic depth, GX, dead-letter routing, alerting, IaC, and CI/CD — all addressed in later phases against their own ADRs. The only question this phase answers is "does the core premise hold."
 **Verification gate:** Stays connected to the live stream, unattended, for a sustained multi-hour period, with the panel visibly updating.
-**Evidence to capture:** Short recording/screenshots of live data arriving — first proof, reusable later in the README narrative.
 **Risks/rollback:** If Wikimedia's actual event shape, rate, or SSE behavior meaningfully differs from ADR-003/004's assumptions, this is the cheap place to find out — it affects implementation detail, not the architecture itself.
 **Exit criteria:** Live data flows from Wikimedia to a visible panel, unattended, in a sustained local run. The walking skeleton can be destroyed and recreated locally (`docker compose down && up`) without manual intervention.
 
@@ -104,7 +102,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** Main Terraform config (network/compute/iam/storage per ADR-007) provisioning the `e2-medium` VM and the Artifact Registry repository; CI builds the consumer's image and pushes it to that repository, with the VM's service account granted scoped `artifactregistry.reader` (ADR-008); the docker-compose stack running on the VM, pulling the consumer image from Artifact Registry; the `plan`/gated-`apply` CI workflow (or its fallback) exercised at least once end-to-end; Secret Manager wired for whatever credentials exist so far.
 **Implementation approach:** Deploy the *same* skeleton from Phase 1 — this phase proves the deployment path, not new functionality. From here on, GCP is the live environment; later phases build directly against it.
 **Verification gate:** A PR triggers automatic plan; merge triggers the gated apply; CI's image push to Artifact Registry succeeds and the VM pulls it; the VM reproduces Phase 1's live-data-to-dashboard result on real infrastructure; a full destroy-and-reapply cycle completes without leftover resources or manual cleanup.
-**Evidence to capture:** Screenshotted plan output and approval step — the actual evidence behind the CI/CD discipline bullet.
 **Risks/rollback:** First point real cost accrues. Nothing valuable has accumulated in ClickHouse yet, so `terraform destroy` and retry is cheap if something's misconfigured — better to find that here than after Phase 4's work is layered on top.
 **Exit criteria:** Skeleton runs unattended on GCP, reachable per ADR-010's firewall rule, CI/CD gate proven functional. → **Go/No-Go Gate 1 applies here (§4) before Phase 3 begins.**
 
@@ -127,7 +124,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 
 **Implementation approach:** Build the exact KPI list already fixed in the research notes/Vision doc — this phase implements a known list, it doesn't discover new panels mid-build (see cross-phase risk, §7).
 **Verification gate:** 3A's migrations are idempotent and re-runnable from clean before 3B starts. Each MV's output is then spot-checked against an equivalent raw-table query for the same window, confirming correct aggregation, not just execution.
-**Evidence to capture:** Screenshots of the full dashboard populated with real accumulating data.
 **Risks/rollback:** A silently-wrong MV is ADR-006's named risk — the spot-check exists specifically to catch this before the accumulation window trusts it.
 **Exit criteria:** All KPI panels render correctly against real data; migrations are versioned and re-runnable from clean.
 
@@ -138,7 +134,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** Pydantic inline validation on the real event shape; `dead_letter` table live; GX batch suite running on its systemd timer; Docker healthchecks and `restart: unless-stopped` + systemd supervision exercised, not just configured; in-window ClickHouse backup cadence running; at least one backup restored and spot-checked.
 **Implementation approach:** This phase proves resilience claims, not just implements them — an untested healthcheck or an unrestored backup hasn't demonstrated anything.
 **Verification gate:** Deliberately kill the consumer and confirm unattended recovery; deliberately feed a malformed event and confirm it lands in `dead_letter` instead of crashing the pipeline; restore a backup and confirm the data matches.
-**Evidence to capture:** Timestamps/logs of the induced-crash recovery and dead-letter catch — the actual evidence behind the "reconnects handled" and "dead-letter rate" hero metrics.
 **Risks/rollback:** If the GX SQLAlchemy path is broken (flagged possible in Phase 0), ADR-005's fallback is adopted for real here.
 **Exit criteria:** Crash recovery, malformed-event handling, and backup restore have each been deliberately tested and passed. → **Go/No-Go Gate 2 applies here (§4) before Phase 6 begins.**
 
@@ -149,7 +144,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** The three named Grafana alert rules (consumer-down, dead-letter-rate threshold, ClickHouse insert failure) firing under test conditions; the Ops Agent installed and the two Cloud Monitoring alert policies (disk-almost-full, VM-unreachable) firing under test conditions; a documented least-privilege IAM review of the VM's service account against actual usage (including the Phase 2 Artifact Registry reader grant); firewall confirmed to reject non-whitelisted IPs.
 **Implementation approach:** Same "prove it" standard as Phase 4.
 **Verification gate:** Deliberately trigger each Grafana alert condition and confirm it fires; deliberately push disk usage over the alert threshold (e.g., a temporary large dummy file, removed after) and confirm the Cloud Monitoring alert fires, then clears; attempt access from a non-whitelisted IP and confirm rejection.
-**Evidence to capture:** Screenshots of each fired alert (Grafana and Cloud Monitoring); IAM review notes.
 **Risks/rollback:** None that block other phases — safe to defer without holding up the rest of the plan. See the IP-lockout cross-phase risk (§7) before finalizing the firewall rule's timing.
 **Exit criteria:** All five alerts (three Grafana, two Cloud Monitoring) demonstrated firing; least-privilege confirmed; firewall restriction confirmed; Grafana dashboards continue updating during sustained operation.
 
@@ -160,7 +154,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** pytest-cov wired into CI with both gates enforced; identified gaps closed; PR-blocking behavior confirmed.
 **Implementation approach:** Gap-closing and enforcement, not first-draft test writing.
 **Verification gate:** CI actually blocks a deliberately under-covered PR, then passes once fixed.
-**Evidence to capture:** The CI run showing block, then pass.
 **Risks/rollback:** If the 100% bar proves genuinely impractical for some path (e.g., only reachable under a real network partition), that's a documented, defensible exception — not a silent scope-down.
 **Exit criteria:** Both gates enforced and passing; the gate proven to actually block, not just report.
 
@@ -171,7 +164,6 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Deliverables:** Burst/backpressure harness and its zero-drop results; latency benchmark (raw scan vs. MV, p50/p99) against real accumulated data; the cost note.
 **Implementation approach:** Don't hold 7a hostage to the rest of the chain just because it's grouped here narratively.
 **Verification gate:** Burst test demonstrates zero drops at the tested multiple of baseline rate; benchmark numbers come from the real dataset, not synthetic data.
-**Evidence to capture:** Burst test output; benchmark numbers and query plans; the cost note.
 **Risks/rollback:** If the burst test finds a real ceiling lower than hoped, that's a finding to document, not a reason to quietly loosen the test.
 **Exit criteria:** All three artifacts produced; results are real measurements.
 
@@ -186,7 +178,6 @@ Starts once Phases 2–5 are stable on GCP. Runs a minimum of 24–48h. Phase 7b
 **Deliverables:** All hero metrics recorded with real numbers; dashboard screenshots and a short recorded walkthrough; final backup taken and restore-verified once more; README complete (architecture diagram, cost note, CV-ready bullet drafts); `terraform destroy` against the main config (bootstrap bucket excluded); rebuild re-tested at least once from the destroyed state.
 **Implementation approach:** This phase's output is entirely evidence — everything before it is disposable once this is done.
 **Verification gate:** The Vision doc's Definition of Done, item by item.
-**Evidence to capture:** All of the above.
 **Risks/rollback:** If rebuild-from-destroyed fails, better to find that here than during an actual interview request to "show it live again."
 **Exit criteria:** Every Definition of Done item satisfied; infra destroyed; rebuild proven at least once.
 
@@ -216,7 +207,7 @@ Starts once Phases 2–5 are stable on GCP. Runs a minimum of 24–48h. Phase 7b
 
 ## 8. Evidence Collection Strategy
 
-Evidence accumulates throughout, not just in Phase 8. Each phase's "Evidence to capture" should land in a running `/evidence` folder in the repo as it's produced — screenshots, CI run links, spike results, benchmark output — rather than being reconstructed retroactively. Phase 8 assembles this running collection into the final README and CV-bullet drafts; it doesn't start evidence-gathering from zero.
+Evidence is collected once, in Phase 8, just before `terraform destroy` — not continuously. Almost everything the plan lists as evidence is re-capturable at that point: the deliberate demonstrations (crash recovery, dead-letter feed, triggered alerts, burst test) are re-runnable tests, CI runs persist in the Actions UI, and dashboards show strictly more accumulated data later than they did earlier. The per-phase "Evidence to capture" lines therefore act as Phase 8's checklist — the list of what exists and must be captured — not as per-phase tasks. The one thing that doesn't survive to Phase 8 is Phase 1's local-skeleton "first proof": either re-run the local stack at capture time, or drop it — the README narrative does not depend on it.
 
 ## 9. Definition of Done
 
