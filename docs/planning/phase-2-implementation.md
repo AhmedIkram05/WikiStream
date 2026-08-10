@@ -107,6 +107,21 @@ projects); don't flatten or expand it.
 
 ## 6. Tasks
 
+Task tracker — pre-populated 2026-08-10 for implementation. Flip each row's
+status as the task is worked; task detail below; evidence and numbers land in
+`docs/implementation-log.md` Phase 2 (task headings pre-populated there too).
+
+| # | Task | Status |
+| --- | --- | --- |
+| 2.1 | Bootstrap extension: identity (Q1) | ☐ to do |
+| 2.2 | Main config + modules + startup script (Q2/Q4/Q5/Q6/Q9/Q10) | ☐ to do |
+| 2.3 | Secrets (Q3) | ☐ to do |
+| 2.4 | CI workflows (Q7, ADR-008) | ☐ to do |
+| 2.5 | First deploy through the gate | ☐ to do |
+| 2.6 | Deploy-path proof (Q2): reset → recover | ☐ to do |
+| 2.7 | Destroy-and-reapply cycle (Q8) | ☐ to do |
+| 2.8 | Wrap-up | ☐ to do |
+
 ### 2.1 — Bootstrap extension: identity (Q1)
 
 **`infra/bootstrap/main.tf` additions:**

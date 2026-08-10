@@ -163,6 +163,41 @@ README) is assembled once, at the end of the project (Phase 8).
 
 ## Phase 2 — GCP Deployment of the Skeleton
 
+Tasks defined in `docs/planning/phase-2-implementation.md` (LOCKED 2026-08-10).
+Status lines are filled as each task is worked, per the logging rules.
+
+### 2.1 — Bootstrap extension: identity (Q1)
+
+**Status:** pending
+
+### 2.2 — Main config + modules + startup script (Q2/Q4/Q5/Q6/Q9/Q10)
+
+**Status:** pending
+
+### 2.3 — Secrets (Q3)
+
+**Status:** pending
+
+### 2.4 — CI workflows (Q7, ADR-008)
+
+**Status:** pending
+
+### 2.5 — First deploy through the gate
+
+**Status:** pending
+
+### 2.6 — Deploy-path proof (Q2): reset → recover
+
+**Status:** pending
+
+### 2.7 — Destroy-and-reapply cycle (Q8)
+
+**Status:** pending
+
+### 2.8 — Wrap-up
+
+**Status:** pending
+
 ## Phase 3 — Data Model Depth (3A Schema / 3B Analytics)
 
 ## Phase 4 — Data Quality & Resilience
