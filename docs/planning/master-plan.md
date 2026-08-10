@@ -4,7 +4,7 @@
 **Position in the document hierarchy:** Research Notes (why the project exists) → Vision & ADR (what it is, why each architectural decision was made) → **this document** (how it gets built, in what order) → Implementation Phase Plans (exact tasks, commands, file structure, tests — one per phase below).
 **What this document does not do:** re-decide anything locked in the ADR, introduce new technology, or specify implementation detail. Every phase below traces back to specific ADR numbers rather than restating their content — see the traceability matrix in §6.
 
-**Revision note:** Merges two parallel threads — the GCP breadth additions agreed alongside the ADR's v2→v3 revision (Artifact Registry, Cloud Monitoring), and a structural review pass (explicit Phase Dependency Table, Phase 3 split internally into 3A/3B so it doesn't become a dumping ground, and two Go/No-Go gates — after Phase 2 and after Phase 4 — since passing a phase's own exit criteria doesn't guarantee the foundation under it is sound enough to keep building on). Section numbers shifted once to fit the new Go/No-Go section in; internal cross-references below are corrected accordingly. Also revised §8: evidence is collected once, in Phase 8, before teardown — nothing is captured during the phases themselves.
+**Revision note:** Merges two parallel threads — the GCP breadth additions agreed alongside the ADR's v2→v3 revision (Artifact Registry, Cloud Monitoring), and a structural review pass (explicit Phase Dependency Table, Phase 3 split internally into 3A/3B so it doesn't become a dumping ground, and two Go/No-Go gates — after Phase 2 and after Phase 4 — since passing a phase's own exit criteria doesn't guarantee the foundation under it is sound enough to keep building on). Section numbers shifted once to fit the new Go/No-Go section in; internal cross-references below are corrected accordingly. Also revised §8: evidence is collected once, in Phase 8, before teardown — nothing is captured during the phases themselves. On 2026-08-10, Phase 3 gained a third internal block — **3C Warehouse Export (BigQuery)** — as a deliberate in-scope decision (ADR-003 amendment): the same event stream feeds a warehouse tier for CV-market coverage of BigQuery. On the same date the 3C block gained two live downstream consumers (ADR-010 amendment): a Grafana BigQuery-datasource freshness panel and a scheduled hourly parity check verifying the warehouse tracks the engine.
 
 ## 1. Methodology (as confirmed, not re-litigated)
 
@@ -19,7 +19,7 @@ flowchart TD
     P0["Phase 0<br/>Foundations & Risk Burn-down"] --> P1["Phase 1<br/>Walking Skeleton, Local"]
     P1 --> P2["Phase 2<br/>GCP Deployment"]
     P2 --> G1{"Go/No-Go Gate 1<br/>Is deployment stable?"}
-    G1 -->|Go| P3["Phase 3<br/>Data Model Depth<br/>(3A Schema → 3B Analytics)"]
+    G1 -->|Go| P3["Phase 3<br/>Data Model Depth<br/>(3A Schema → 3B Analytics → 3C Warehouse Export)"]
     G1 -.->|No-Go| FIX1[["Fix Phase 2<br/>before proceeding"]]
     FIX1 -.-> P2
     P3 --> P4["Phase 4<br/>Data Quality & Resilience"]
@@ -107,7 +107,7 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 
 ### Phase 3 — Data Model Depth
 
-**Objective:** Replace the skeleton's single table and single panel with the full data model (ADR-006) and complete KPI dashboard. Four real deliverables live in this one phase (schema, MVs, dashboards, TTL) — internally sequenced as two blocks so it doesn't become a dumping ground. This is an internal split for the eventual Phase 3 Implementation Plan to expand on, not a new numbered phase; nothing else in the critical path or dependency table changes.
+**Objective:** Replace the skeleton's single table and single panel with the full data model (ADR-006), complete KPI dashboard, and a warehouse tier. Five real deliverables live in this one phase (schema, MVs, dashboards, TTL, warehouse export) — internally sequenced as three blocks so it doesn't become a dumping ground. This is an internal split for the eventual Phase 3 Implementation Plan to expand on, not a new numbered phase; nothing else in the critical path or dependency table changes.
 **Prerequisites:** Phase 2 exit criteria met and Go/No-Go Gate 1 passed.
 
 **3A — Schema:**
@@ -126,6 +126,19 @@ Two checkpoints that ask "should this continue as designed," not just "did the p
 **Verification gate:** 3A's migrations are idempotent and re-runnable from clean before 3B starts. Each MV's output is then spot-checked against an equivalent raw-table query for the same window, confirming correct aggregation, not just execution.
 **Risks/rollback:** A silently-wrong MV is ADR-006's named risk — the spot-check exists specifically to catch this before the accumulation window trusts it.
 **Exit criteria:** All KPI panels render correctly against real data; migrations are versioned and re-runnable from clean.
+
+**3C — Warehouse Export (BigQuery)** *(depends on 3B within this phase — export analytics-shaped data, never the in-flux raw schema):*
+
+- A dedicated hourly export (systemd timer): SELECTs the MV/KPI aggregate tables plus a sampled slice of raw events via the existing `clickhouse-connect` client, writes JSONL to a GCS staging bucket, and loads it into a BigQuery dataset via `bq load`. Native ClickHouse BACKUP archives (ADR-006) stay for disaster recovery — they aren't the export source.
+- Terraform: a new `bigquery` module (fifth module beside network/compute/iam/storage — ADR-007 extended) provisioning the BigQuery dataset + tables and the GCS staging bucket, with the VM's service account scoped to dataset `dataEditor` only (ADR-010 least-privilege posture — no broad BQ roles).
+- BigQuery is a batch-query tier, not the hot path: Grafana keeps reading ClickHouse; BigQuery is queried via `bq` CLI/console for warehouse evidence.
+- The warehouse tier is a live, visible system, not a dead-end dump: Grafana gains a `google-bigquery` datasource (GCE default-service-account auth — the VM SA's dataset-scoped `dataEditor` covers its queries; plugin preinstalled via `GF_PLUGINS_PREINSTALL`, `GF_INSTALL_PLUGINS` is broken in Grafana 13.1.1) with a **warehouse-freshness panel** (hours since last export) alongside the ClickHouse panels.
+- A **scheduled parity check** (systemd timer, hourly at `:05` — 5 minutes after the `:00` export so it validates the latest window) queries BigQuery vs ClickHouse for the latest completed hour — freshness lag + row counts — and exits non-zero on drift; the alert is wired in Phase 5.
+
+**Implementation approach:** Added 2026-08-10 as a deliberate in-scope decision (ADR-003 amendment) — BigQuery is a near-universal DE job-description keyword, and a warehouse tier fed by the project's own real stream is defensible interview evidence. The engine decision is untouched: ClickHouse remains the primary real-time store.
+**Verification gate:** BigQuery dataset rows grow in lockstep with the source; a sample window queried in BigQuery matches the equivalent ClickHouse MV query for the same window (same spot-check discipline as 3B); the parity timer runs green at `:05` each hour and the freshness panel renders in Grafana.
+**Risks/rollback:** Export drift (BigQuery falling behind ClickHouse) — the hourly cadence + freshness/parity spot-check catches it; cost is negligible at this volume (fractions of a cent/day).
+**Exit criteria:** BigQuery holds real data by the end of the Accumulation Window; the export path is re-runnable from clean.
 
 ### Phase 4 — Data Quality & Resilience
 
@@ -175,7 +188,7 @@ Starts once Phases 2–5 are stable on GCP. Runs a minimum of 24–48h. Phase 7b
 
 **Objective:** Close out the Vision doc's Definition of Done in full.
 **Prerequisites:** Accumulation Window complete; Phase 7 complete.
-**Deliverables:** All hero metrics recorded with real numbers; dashboard screenshots and a short recorded walkthrough; final backup taken and restore-verified once more; README complete (architecture diagram, cost note, CV-ready bullet drafts); `terraform destroy` against the main config (bootstrap bucket excluded); rebuild re-tested at least once from the destroyed state.
+**Deliverables:** All hero metrics recorded with real numbers; dashboard screenshots and a short recorded walkthrough; BigQuery warehouse evidence (sample queries + row counts over the exported dataset); final backup taken and restore-verified once more; README complete (architecture diagram, cost note, CV-ready bullet drafts); `terraform destroy` against the main config (bootstrap bucket excluded); rebuild re-tested at least once from the destroyed state.
 **Implementation approach:** This phase's output is entirely evidence — everything before it is disposable once this is done.
 **Verification gate:** The Vision doc's Definition of Done, item by item.
 **Risks/rollback:** If rebuild-from-destroyed fails, better to find that here than during an actual interview request to "show it live again."
@@ -187,21 +200,21 @@ Starts once Phases 2–5 are stable on GCP. Runs a minimum of 24–48h. Phase 7b
 | --- | --- |
 | ADR-001 — Deployment lifetime & teardown | Phase 8; referenced throughout |
 | ADR-002 — Compute topology | Phase 2 |
-| ADR-003 — ClickHouse, self-hosted | Phase 2, Phase 3A |
+| ADR-003 — ClickHouse, self-hosted (amended 2026-08-10: BigQuery warehouse layer) | Phase 2, Phase 3A, Phase 3C |
 | ADR-004 — Ingestion consumer design | Phase 1 (bare), Phase 4 (resilience proven) |
 | ADR-005 — Data quality architecture | Phase 0 (spike), Phase 4 (live) |
 | ADR-006 — Schema, aggregation, retention, backup | Phase 3A (schema/TTL), Phase 3B (MVs), Phase 4 (backup cadence) |
 | ADR-007 — IaC & state management | Phase 0 (bootstrap), Phase 2 (main config + Artifact Registry) |
 | ADR-008 — CI/CD & approval gate | Phase 0 (feasibility), Phase 2 (exercised + image push) |
 | ADR-009 — Testing & coverage | Phase 0 (boundary defined), Phase 6 (enforced) |
-| ADR-010 — Observability, alerting, security | Phase 3B (dashboards-as-code), Phase 5 (Grafana + Cloud Monitoring alerting, security) |
+| ADR-010 — Observability, alerting, security (amended 2026-08-10: BigQuery freshness panel + parity check) | Phase 3B (dashboards-as-code), Phase 3C (BQ datasource, freshness panel, parity timer), Phase 5 (Grafana + Cloud Monitoring alerting, security) |
 | ADR-011 — Scope boundary, no ML | N/A — a boundary respected by omission throughout |
 
 ## 7. Cross-Phase Risks
 
 - **GCP's 90-day trial clock is external and doesn't pause** for this project's internally-relaxed timeline — walking-skeleton front-loads risk into cheap local phases specifically to avoid burning it on rework, but Phase 2 onward should move at a reasonable clip once started.
 - **IP-lockout risk from Phase 5's firewall rule.** If Ahmed's IP changes (dynamic IP, different network) after the firewall is locked down, Phases 6–8 could lose access to Grafana/ClickHouse. Worth either using a stable IP/small allowlist buffer, or sequencing the firewall lockdown after most hands-on work is done.
-- **Scope creep in Phase 3.** The KPI panel list is already fixed in the Vision doc — Phase 3 builds exactly that list; "just one more panel" belongs in a future-evolution note, not a live phase. The 3A/3B split makes this easier to police, not an excuse to relitigate it panel-by-panel.
+- **Scope creep in Phase 3.** The KPI panel list is already fixed in the Vision doc — Phase 3 builds exactly that list; "just one more panel" belongs in a future-evolution note, not a live phase. The 3A/3B split makes this easier to police, not an excuse to relitigate it panel-by-panel. (Note 2026-08-10: the BigQuery warehouse layer — 3C — is a deliberate, recorded in-scope decision made via the ADR-003 amendment, not creep; it is now fixed scope, subject to the same "no more additions" discipline.)
 - **Deferred test-writing risk.** Phase 6 assumes tests were written incrementally through Phases 1–5. If that discipline slips, Phase 6 stops being a gap-closing pass and becomes a large retrofit.
 - **Gate fatigue.** Two Go/No-Go gates is deliberately restrained — enough to catch a genuinely unstable foundation without turning every phase boundary into a formal review. Resist the urge to add a gate after every phase; that defeats the point of naming these two as the ones that actually matter.
 
@@ -215,4 +228,4 @@ Unchanged from the Vision doc §1.6 — not duplicated here. Phase 8's verificat
 
 ## 10. Handoff to Implementation Phase Plans
 
-Each phase above becomes its own Implementation Phase Plan: exact file structure, commands, Terraform resources, Docker configuration, test cases, acceptance criteria, and troubleshooting notes. Phase 3's plan should carry the 3A/3B split through explicitly — two clearly delimited work-blocks with 3A's micro-gate as a hard checkpoint before 3B starts. Since these will be handed directly to an agentic coding tool, each Phase Plan's acceptance criteria should be self-checkable (a pass/fail an agent can verify itself — e.g., "CI run X is green," "panel Y renders non-null values" — not "looks right"). The two Go/No-Go gates should appear in their respective Phase Plans as an explicit final step, not just live in this document.
+Each phase above becomes its own Implementation Phase Plan: exact file structure, commands, Terraform resources, Docker configuration, test cases, acceptance criteria, and troubleshooting notes. Phase 3's plan should carry the 3A/3B/3C split through explicitly — three clearly delimited work-blocks with 3A's micro-gate as a hard checkpoint before 3B starts, and 3B's MV spot-checks as the checkpoint before 3C starts. Since these will be handed directly to an agentic coding tool, each Phase Plan's acceptance criteria should be self-checkable (a pass/fail an agent can verify itself — e.g., "CI run X is green," "panel Y renders non-null values" — not "looks right"). The two Go/No-Go gates should appear in their respective Phase Plans as an explicit final step, not just live in this document.
