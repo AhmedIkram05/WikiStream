@@ -313,7 +313,10 @@ WHERE inserted_at >= now() - INTERVAL 6 HOUR
 GROUP BY t ORDER BY t
 ```
 
-- `format: "time_series"`, refresh `10s`, time range `now-6h → now` (so the
+- `format: 0` (numeric TimeSeries enum — the string `"time_series"` form fails
+  the plugin backend's JSON unmarshal; verified build-time against
+  grafana-clickhouse-datasource `src/types/sql.ts` + sqlds, see 1.9
+  deviation), refresh `10s`, time range `now-6h → now` (so the
   sustained-run history is visible on return).
 - Executor: confirm the exact target JSON fields (`rawSql`, `format`,
   refId shape) against the grafana-clickhouse-datasource 4.18.0 official
@@ -500,7 +503,7 @@ it keeps the volume and proves nothing.
 | AC3 | Data landing | `SELECT count()` ≥ 1 within 60s of ClickHouse being reachable |
 | AC4 | Data still flowing | `count()` strictly increases between two samples ≥ 5 min apart |
 | AC5 | Grafana up + dashboard provisioned | `curl -s -o /dev/null -w "%{http_code}" http://localhost:3000` → 200; `GET /api/search` (admin:admin) returns the dashboard |
-| AC6 | Panel query returns rows **through Grafana** | `GET /api/ds/query` against Grafana (admin:admin) with `{"queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t","format":"time_series"}]}` → 200 and ≥ 1 row in `response.results` — verifies the datasource + plugin path, not just raw 8123 (review fix) |
+| AC6 | Panel query returns rows **through Grafana** | `GET /api/ds/query` against Grafana (admin:admin) with `{"queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t","format":0}]}` → 200 and ≥ 1 row in `response.results` — verifies the datasource + plugin path, not just raw 8123 (review fix; `"format":0` numeric per plugin schema — string form rejected by grafana-plugin-sdk-go FormatQueryOption) |
 | AC7 | Sustained run holds (≥ 2h) | Task 1.7 passes: exact consumer start spans the run (or reconnects mapped to blips), 0 Tracebacks, opening+final count() and derived events/sec recorded in the implementation log |
 | AC8 | Reproducibility | Task 1.8 passes: `down -v` → `up --build` → count() ≥ 1 and increasing, fresh `connected` line, zero manual steps |
 | AC9 | Parser tested to the bar | `PYTHONPATH=consumer pytest tests/ -v` green; `PYTHONPATH=consumer pytest --cov=src.sse --cov-report=term-missing` shows 100% line coverage on consumer/src/sse.py |
