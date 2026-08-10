@@ -5,6 +5,12 @@ paths below are predicted and will be corrected when Phase 1 lands the real
 structure. The *set* of modules is the deliverable — Phase 6 wires pytest-cov
 to enforce **100% line coverage** on exactly these, **~90% overall** elsewhere.
 
+**2026-08-10 (Phase 1 correction):** `consumer/src/sse.py` landed at the
+predicted path and is verified at **100% line coverage** (19/19 tests pass,
+79/79 statements — Phase 1 AC9). The remaining consumer paths
+(`models.py`, `batcher.py`, `dead_letter.py`) do not exist yet; they stay
+predicted and are corrected when their phases land them.
+
 ## The modules
 
 | Module (predicted path) | Responsibility | Why business-critical |

@@ -1,0 +1,17 @@
+apiVersion: 1
+datasources:
+  - name: ClickHouse
+    uid: wikistream-clickhouse
+    type: grafana-clickhouse-datasource
+    isDefault: true
+    # Plugin 4.x schema: connection details live in jsonData (host/port/protocol); url/access are IGNORED by this plugin.
+    jsonData:
+      defaultDatabase: default
+      host: clickhouse
+      port: 8123
+      protocol: http
+      username: wikistream
+    secureJsonData:
+      # Plain ${VAR} only: Grafana's provisioning interpolator does NOT support :-default.
+      # The compose file sets CLICKHOUSE_PASSWORD (with its own :-default) on this service.
+      password: ${CLICKHOUSE_PASSWORD}
