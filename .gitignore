@@ -227,3 +227,6 @@ __marimo__/
 crash.log
 override.tf
 override.tf.json
+
+# Graphify
+/graphify-out
