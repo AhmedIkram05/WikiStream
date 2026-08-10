@@ -1,0 +1,20 @@
+[project]
+name = "wikistream-consumer"
+version = "0.1.0"
+description = "Wikimedia recentchange SSE -> ClickHouse consumer"
+requires-python = ">=3.13"
+dependencies = [
+    "clickhouse-connect[async]==1.6.0",
+    "httpx2==2.10.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[tool.pytest.ini_options]
+# consumer/ is the project root (pytest rootdir); "." puts src.sse on sys.path.
+pythonpath = ["."]
+testpaths = ["../tests/src/consumer"]
