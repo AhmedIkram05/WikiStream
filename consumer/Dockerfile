@@ -1,6 +1,13 @@
 FROM python:3.13-slim
+
+# uv is the package manager for this project (pyproject.toml + uv.lock).
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
+
 COPY src ./src
-CMD ["python", "-m", "src.consumer"]
+
+CMD ["uv", "run", "python", "-m", "src.consumer"]
