@@ -1,0 +1,2 @@
+httpx2==2.10.0
+clickhouse-connect[async]==1.6.0
