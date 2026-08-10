@@ -56,7 +56,7 @@ phase starts; empty phases stay as a heading only.
 
 **Status:** DONE
 **2026-08-09:** Repo is public; `production` environment exists with `required_reviewers` (AhmedIkram05, self-review allowed). **Answer: YES — ADR-008's gate is available; `workflow_dispatch` fallback NOT needed.** Phase 2 must use `environment: production` on the apply job. Optional hardening (non-blocking): deployment branch policy pinned to `main`.
-**Evidence:** `evidence/phase-0/gh-environments-finding.md`
+**Evidence:** Finding recorded inline above — no `evidence/` file created (per revised policy, 2026-08-09: verification results live in the log; evidence is collected once, in Phase 8).
 
 ### 0.4 GX `[clickhouse]` extra spike (ADR-005)
 
@@ -76,7 +76,31 @@ phase starts; empty phases stay as a heading only.
 
 ## Phase 1 — Walking Skeleton, Local
 
-<!-- tasks filled in from the Phase 1 Implementation Plan when it exists -->
+Tasks defined in `docs/planning/phase-1-implementation.md` (LOCKED 2026-08-09).
+Status lines are filled as each task is worked, per the logging rules.
+
+**DEVIATION (2026-08-09):** Per Ahmed, no evidence is collected during phases —
+the Phase 1 plan carries no `/evidence` capture, screenshots, or README work;
+verification numbers land in this log only. All evidence (including the
+README) is assembled once, at the end of the project (Phase 8).
+
+### 1.1 — Consumer package (SSE parser + main loop + Dockerfile)
+
+### 1.2 — ClickHouse service + initdb.d DDL
+
+### 1.3 — Grafana provisioning + panel
+
+### 1.4 — Root docker-compose.yml
+
+### 1.5 — Parser unit tests (tests/test_sse.py)
+
+### 1.6 — Bring-up + smoke verification
+
+### 1.7 — Sustained run
+
+### 1.8 — Reproducibility gate (down -v && up)
+
+### 1.9 — Wrap-up (boundary correction, log population)
 
 ## Phase 2 — GCP Deployment of the Skeleton
 
