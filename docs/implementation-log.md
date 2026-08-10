@@ -150,6 +150,16 @@ README) is assembled once, at the end of the project (Phase 8).
 - **Carry-forward contracts:** SSE parser unit tests (19/19, 100% line coverage on `sse.py`), the consumer log contract (`connected url=`, `reconnect reason=`, `insert_failed`, `inserted events=`) and the verification protocol (count() samples, `docker compose ps`, 0 Traceback) are the Phase 2 acceptance tools; `clickhouse_unavailable` WARNING lines are expected during cold-start and are NOT failures.
 - **Known Phase 1 limitations carried forward (NOT bugs):** restart-resume (in-memory Last-Event-ID only), dedup, and event validation are Phase 4 work; peer-initiated Wikimedia SSE reconnects are expected and logged at WARNING.
 
+### Post-Phase-1 tooling change — pip → uv (2026-08-10)
+
+**Status:** DONE
+**2026-08-10:** **DEVIATION (per Ahmed, "move to uv now, fully and properly not half arse-ly"):** Phase 1 shipped with the plan-locked `requirements.txt` + pip (Dockerfile `pip install --no-cache-dir -r requirements.txt`). Replaced with full uv adoption, recorded as a deviation from the locked contract:
+- `consumer/pyproject.toml` + `consumer/uv.lock` replace `requirements.txt` (30 resolved packages; `clickhouse-connect[async]==1.6.0`, `httpx2==2.10.0`, dev group `pytest>=8`, `pytest-cov>=5`; `[tool.pytest.ini_options] pythonpath=["."]`, `testpaths=["../tests/src/consumer"]`).
+- Dockerfile is now uv-native: `COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv` (the binary must land on PATH — first build failed exit 127 with `/uv/bin/uv`, fixed), `uv sync --frozen --no-install-project --no-dev`, `CMD ["uv", "run", "python", "-m", "src.consumer"]`.
+- Local dev via `uv sync --project consumer` (consumer/.venv) and bare `uv run pytest` run **from consumer/ only** — pytest's rootdir is derived from argument paths, so passing `../tests/src/consumer` as an arg resolves rootdir to the repo root and misses the ini (`No module named 'src'`); the ini's `testpaths` drives collection when run without args.
+- Tests relocated by Ahmed to `tests/src/consumer/test_sse.py` (git mv, content unchanged).
+- **AC9 reverified under uv: 19/19 passed, `sse.py` 79/79 stmts 100% line coverage** (via `consumer/.venv/bin/python -m pytest --cov=src.sse --cov-report=term-missing ../tests/src/consumer`).
+- **Container verified:** `docker compose up -d --build consumer` with the uv image → RestartCount=0, 1 `connected url=`, 0 Traceback, 0 `insert_failed`, continuous `inserted` batches (total 2,430+ climbing), count() = 103,651.
 
 ## Phase 2 — GCP Deployment of the Skeleton
 
