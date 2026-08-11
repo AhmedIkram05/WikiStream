@@ -215,7 +215,7 @@ Status lines are filled as each task is worked, per the logging rules.
 
 ### 2.5 — First deploy through the gate
 
-**Status:** in progress (gated apply run #3 FAILED — us-central1 zone capacity exhausted; region move to us-east1 applied, re-run pending)
+**Status:** DONE (battery AC1–AC9 passed 2026-08-11; see run #4 record below)
 
 **2026-08-11:** PR #4 merged to main → `apply.yml` ran: job 1 build-push SUCCESS (consumer image pushed to AR as `sha-<commit>` + `:latest` — AC3). Job 2 (`apply`, environment `production`) showed **Waiting** in the Actions UI and was approved by AhmedIkram05 (AC4 evidenced in run #1: approval identity + timestamp in the run's timeline) — then `terraform apply` **FAILED**:
 `Error: Error creating service account: googleapi: Error 403: Identity and Access Management (IAM) API has not been used in project 984854414993 before or it is disabled...` on `module.iam.google_service_account.wikistream_vm` (modules/iam/iam.tf:1).
@@ -230,7 +230,19 @@ Also noted (informational): runner log shows Node 20 deprecation notice — Acti
 `Error: Error waiting for instance to create: The zone 'projects/wikistream-505003/zones/us-central1-a' does not have enough resources available to fulfill the request.  Try a different zone, or try again later.` (code `ZONE_RESOURCE_POOL_EXHAUSTED`, reason `resource_availability`, on `module.compute.google_compute_instance.wikistream_vm`, compute.tf:8). The reset step also errored (VM never created) — expected, informational.
 **DEVIATION (plan Q4 region/zone, GCP capacity):** empirically verified (throwaway `gcloud compute instances create` probes, deleted immediately) that **all four us-central1 zones (a/b/c/f) reject e2-medium AND e2-small AND e2-standard-2 AND n2-standard-2** with resource_availability — the whole region's capacity is starved (2026-08-11). e2-medium **verified available** in us-east1-b, us-west1-a, europe-west1-b. Chosen: **region `us-east1`, zone `us-east1-b`** (US, e2-medium — plan's machine type + ~$25.5/mo cost line preserved). Changes: `infra/main/terraform.tfvars` (region/zone, in-file comment), `.github/workflows/apply.yml` reset step `--zone us-east1-b`, and `modules/storage/storage.tf` — the AR reader binding used `location = var.region` which would have silently targeted a nonexistent us-east1 repo on this move; now hardcoded `us-central1` with comment (AR repo is bootstrap-owned and region-locked). Subnet + static IP (35.254.92.109) are regional → replaced by the apply; new static IP will be re-queried after apply. Firewalls/VPC/IAM/secrets untouched (region-agnostic).
 
+**Run #4 (region-move hotfix merged, apply re-triggered):** **APPLIED OK** — VM created in us-east1-b; new regional static IP **34.148.138.220**. Post-apply battery AC1–AC9 (all verified from Ahmed's machine + SSH on the VM, zone us-east1-b, IP 34.148.138.220):
+- AC1/AC2/AC3/AC4: carried from earlier runs (bootstrap applied; plan.yml green with plan comment; image in AR as `sha-9645eadb` + `:latest`; 4 gated runs each showed Waiting → approved by AhmedIkram05 — approval identity + timestamps in each run's timeline).
+- AC5: VM RUNNING, e2-medium, 50GB pd-standard PERSISTENT, enable-oslogin TRUE; OS Login SSH works (gcloud auto-keygen, user `ahmedikram`, sudo needed for docker). `startup done` NOT evidenced on this boot — first boot hit a transient Docker Hub 502 (below); evidence deferred to 2.6 reset boot.
+- AC6: 3 services Up; consumer image URI `us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/consumer:latest` and container image ID `sha256:0d19cf21991cfbdbe5e462f058eff2cb80cfa429e3e5de023a7be27fd15c36a7` **exact match to AR `:latest`**; connected url= lines: 1; Traceback: 0; count() **431 → 3308 over 65s** (strictly increasing).
+- AC7: Grafana `/login` 200 from Ahmed's machine; basic auth `admin:<SM value>` on `/api/search` → 200 (Grafana 13's JSON `/api/login` returns 401 by design — basic auth is the proof the SM value authenticates); dashboard provisioned (uid `wikistream-phase1`, "Phase 1 — Walking Skeleton", 1 panel "Events per minute (raw_events)"); ds/query (real ds uid `wikistream-clickhouse`, format table, `SELECT count()`) → 200, values [[13978]].
+- AC8: both secrets exactly 24 alphanumeric chars (read from Secret Manager); **0 occurrences** of either secret value in `gcloud compute instances describe` metadata.startup-script AND in `terraform show tfplan`; `curl -u wikistream:<SM CH value> 'http://34.148.138.220:8123/?query=SELECT%201'` → `1`. Fresh local `terraform plan` = 0 to add/change/destroy (state converged).
+- AC9: from Ahmed's IP (209.35.91.152/32): SSH 22, Grafana 3000, ClickHouse 8123 all reachable. One-sided rejection: from the VM, `curl http://34.148.138.220:3000` and `:8123` → both **000** (non-200, dropped) — VM IP correctly NOT in the allowlist.
 
+**DEVIATION (transient, first boot):** startup log ended with a Docker Hub 502 (`unexpected status from GET request to https://registry-1.docker.io/v2/grafana/grafana/manifests/... 502 Bad Gateway`) during `docker compose pull`; with `set -e` the script aborted before `up -d` (no containers started). Manually recovered via SSH (pull retry ×6 → success → `compose up -d --no-build` → 3 services Up). The script logic itself is dress-rehearsal-proven; the 502 was transient upstream flakiness. `startup done` evidenced on the 2.6 reset boot.
+
+**DEVIATION (production bug found on first boot):** Grafana provisioning failed on the VM — container log `can't read dashboard provisioning files from directory /etc/grafana/provisioning/dashboards: permission denied` (+ datasources, + `/var/lib/grafana/dashboards`). Root cause: startup.sh `umask 077` leaves the git clone 700/600 root, and grafana (uid 472) cannot traverse the bind-mounted `grafana/**` (dress rehearsal on Docker Desktop masked host perms). Live fix: `sudo chmod -R a+rX /opt/wikistream/grafana` + `sudo docker restart wikistream-grafana` → dashboard + datasource provisioned (AC7 evidence above). `.env` + `001-init.sql` remained 600 (chmod scoped to the grafana subtree; clickhouse initdb.d works at 600 because the entrypoint runs init scripts as root). **Script fix shipped in `infra/main/templates/startup.sh`**: `chmod -R a+rX /opt/wikistream` after clone/pull + cd, BEFORE secret rendering (so rendered files stay 600 under umask 077). Verified on the 2.6 reset boot.
+
+**Grafana login quirk (informational):** JSON `/api/login` returns 401 in Grafana 13 — the provisioned-datasource basic-auth path (`/api/search` with `admin:<SM value>`) is the working proof of the SM credential.
 
 ### 2.6 — Deploy-path proof (Q2): reset → recover
 
@@ -238,7 +250,9 @@ Also noted (informational): runner log shows Node 20 deprecation notice — Acti
 
 ### 2.7 — Destroy-and-reapply cycle (Q8)
 
-**Status:** pending
+**Status:** SKIPPED by explicit user direction (2026-08-11: "i dont want to run a local destory, just skip that task in phase 2")
+
+**Record:** AC11 (local destroy clean + bootstrap layer intact + workflow_dispatch reapply from cold state) and the cold-to-flowing metric are **NOT exercised** in Phase 2. Consequence for Gate 1: the destroy-and-reapply leg of "stable across apply/destroy cycles" is **unproven**; the apply-side cycle (4 gated applies incl. re-runs 1–4 with differing plans, converges to 0-drift state) and the reset-side cycle (2.6, below) ARE evidenced. Recommend re-visiting a cold-state reapply in Phase 3A planning (e.g. before 3A's first deploy) to close the leg.
 
 ### 2.8 — Wrap-up
 
