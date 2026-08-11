@@ -1,0 +1,74 @@
+name: Terraform Plan
+
+# PR-time plan only. The reviewer-facing artifact is the plan comment posted
+# by the github-script step; apply stays in apply.yml behind the production
+# environment gate (ADR-008).
+on:
+  pull_request:
+
+# Fork note: fork PRs get no OIDC token (public repo — expected), so auth
+# fails and the check goes red there. Plan runs for contributor PRs only;
+# accepted, documented in ADR-008.
+permissions:
+  id-token: write # WIF exchange for the deploy SA
+  contents: read # checkout
+  pull-requests: write # post the plan comment
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # WIF: no stored key on the runner; identity comes from the OIDC token
+      # issued for this run. Version pinned at build 2026-08-11.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github
+          service_account: wikistream-deploy@wikistream-505003.iam.gserviceaccount.com
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.6 # match local dev (1.15.6); do not float
+
+      - name: Format check
+        working-directory: infra/main
+        run: terraform fmt -check
+
+      # Backend bucket already exists from bootstrap, so plain init works.
+      # -input=false: never let CI hang on an interactive prompt.
+      - name: Init
+        working-directory: infra/main
+        run: terraform init -input=false
+
+      - name: Validate
+        working-directory: infra/main
+        run: terraform validate
+
+      # Plan output goes to a file in $RUNNER_TEMP, not a step-output heredoc:
+      # multi-KB plans are unreliable through $GITHUB_OUTPUT. tfplan is binary,
+      # so `show` renders it for the comment. temp path keeps the checkout
+      # pristine.
+      - name: Plan
+        working-directory: infra/main
+        run: |
+          terraform plan -input=false -out=tfplan
+          terraform show -no-color tfplan > "$RUNNER_TEMP/plan.txt"
+
+      # File path passed via env so the script never guesses where the file
+      # lives. The fenced block makes the plan readable in the PR thread.
+      - name: Comment plan on PR
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ runner.temp }}/plan.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'Terraform plan (infra/main):\n\n```hcl\n' + plan + '\n```',
+            });
