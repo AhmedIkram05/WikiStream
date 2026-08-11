@@ -163,6 +163,73 @@ README) is assembled once, at the end of the project (Phase 8).
 
 ## Phase 2 — GCP Deployment of the Skeleton
 
+Tasks defined in `docs/planning/phase-2-implementation.md` (LOCKED 2026-08-10).
+Status lines are filled as each task is worked, per the logging rules.
+
+### 2.1 — Bootstrap extension: identity (Q1)
+
+**Status:** DONE
+
+**2026-08-11:** `infra/bootstrap/main.tf` extended and applied (ADC, project `wikistream-505003`): 7 `google_project_service` enables (compute, artifactregistry, secretmanager, iamcredentials, sts, oslogin, cloudresourcemanager) via for_each; WIF pool `wikistream-ci` + provider `github` (attribute_condition `assertion.repository == "AhmedIkram05/WikiStream"`, issuer `https://token.actions.githubusercontent.com`); deploy SA `wikistream-deploy` (5 project roles via for_each + `storage.objectAdmin` scoped to the tfstate bucket only); WIF binding (`principalSet` on project number 984854414993, `roles/iam.workloadIdentityUser`); AR repo `wikistream-consumer` (us-central1, DOCKER). `outputs.tf` added: `wif_provider_name`, `deploy_sa_email`. **AC1 verified:** pool ACTIVE; provider name `projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github`; SA exists with all 5 project roles; AR repo exists (DOCKER); both outputs resolve to exactly the values hardcoded in the workflows. **DEVIATIONS:** (1) AR repo creation initially failed in the same apply with "Artifact Registry API has not been used before" — API-activation propagation race (the 7 enables completed in the same apply); re-applied after ~90s, repo created, zero manual console steps. (2) `data "google_project"` initially used `project = var.project_id` — provider rejects `project` on this data source; fixed to `project_id`. (3) Plan-scope deviation carried forward from the README note: bootstrap owns identity + AR repo in addition to the bucket (plan Q1, ADR-007 "bucket only" superseded by plan decision). (4) Pre-commit CI-access audit: deploy SA initially lacked `resourcemanager.projects.setIamPolicy` — infra/main's `oslogin_human` binding (roles/compute.osLogin, project-level IAM, added at review) would have failed the first gated CI apply with "Permission resourcemanager.projects.setIamPolicy denied" (none of the 5 original roles include it). Added `roles/resourcemanager.projectIamAdmin` to the deploy SA (6 project roles now) and re-applied bootstrap. WIF provider name + SA email outputs unchanged.
+
+### 2.2 — Main config + modules + startup script (Q2/Q4/Q5/Q6/Q9/Q10)
+
+**Status:** DONE (implementation + local verification; deploy verification in 2.5–2.7)
+
+**2026-08-11:** `infra/main/` created: `main.tf` (backend gcs `wikistream-505003-terraform-state` prefix `main`, google >= 7.43 + random providers, labels local `{project=wikistream, managed-by=terraform, phase=2}`, 4 module calls, `vm_static_ip` output), `variables.tf`, committed `terraform.tfvars` (allowed_ips = Ahmed's current IP 209.35.91.152 per plan Q6), `templates/startup.sh`, and the 4 modules (network: VPC + subnet 10.0.0.0/24 + 4 firewall rules allow-internal/ssh/grafana/clickhouse — the last three from `allowed_ips`; compute: static IP + e2-medium/50GB pd-standard/ubuntu-2404-lts + OS Login `enable-oslogin=TRUE` + cloud-platform scope; iam: `wikistream-vm` SA + per-secret secretAccessor on the two secrets; storage: AR reader on `wikistream-consumer`). `terraform init` (real backend) + `validate` + `plan` clean: **18 to add, 0 change, 0 destroy**; startup script injected verbatim; firewall source ranges correct; labels applied on every label-capable resource. Lockfile `.terraform.lock.hcl` generated (pinned at build, committed). **DEVIATION (CRITICAL, plan recipe broken):** plan §Q2's apt recipe is invalid on ubuntu-2404-lts — `google-cloud-cli` and `docker-compose-plugin` do NOT exist in Ubuntu 24.04 default repos (apt EXIT=100 "Unable to locate package", verified in container). Verified working recipe (container-tested): gcloud via Google's apt repo (packages.cloud.google.com, keyring + `cloud-sdk main` source, `apt-get install -y google-cloud-cli`, got 579.0.0); compose plugin via **`docker-compose-v2`** package (got 2.40.3, registers `/usr/libexec/docker/cli-plugins/docker-compose`); docker.io + git from Ubuntu repos (29.1.3 / 2.43.0). Script otherwise verbatim plan (umask 077, tee to /var/log/wikistream-startup.log + serial console, metadata-server project id, secrets fetch, initdb.d heredoc, .env render, configure-docker, `compose pull` + `up -d --no-build`). **Labels finding (plan-compliant):** provider 7.43 exposes no `labels` field on network/subnet/firewall/SA/IAM resources — labels applied to instance, static address, and both secrets; verified against pinned provider source.
+
+**Dress rehearsal (local, pre-apply):** full startup.sh run inside ubuntu-24.04 container with shims (metadata curl → project id, gcloud secrets → 24-char values, configure-docker/compose pull/systemctl → no-op): clone OK; rendered `.env` and `docker/clickhouse/initdb.d/001-init.sql` byte-correct (wikistream user, plaintext_password, scoped grants, raw_events MergeTree ORDER BY inserted_at); both files 0600 (umask proven); log ends `startup done`. Stage 2 (host-side `docker compose up -d --no-build` on the rendered tree — exactly what the VM runs): 3 services Up, consumer connected + inserting, count() 2,682 → 3,613 over 20s, `SELECT 1` via :8123 as wikistream with the rendered password OK, Grafana serving (302 → /login). **RESTORED LOST FIX (findings later phases depend on):** the Phase 1.6 cold-start retry fix (client-init retry loop, `clickhouse_unavailable` WARNING) was absent from `consumer/src/consumer.py` on both main and this branch — verified absent in git history (single consumer commit c93228d; zero `clickhouse_unavailable` occurrences anywhere). Restored it verbatim per the 1.6 log entry; post-fix cold-start re-test on wiped volume: RestartCount=0, 0 Traceback, 2 expected `clickhouse_unavailable` WARNINGs during CH boot, clean inserts after. 19/19 unit tests still pass. (Restoration, not new code; coverage boundary unchanged.)
+
+**2026-08-11 Subagent code review (2 parallel reviewers, code-reviewer type) — REQUEST-CHANGES / APPROVE-WITH-FIXES, all findings fixed or recorded:**
+- **BLOCKER (fixed):** `terraform.tfvars` `allowed_ips` was a bare IP, not CIDR — GCP firewall API rejects at apply (Error 400 "Must be a CIDR address range"; plan passes, apply fails — terraform#30749). Fixed: `["209.35.91.152/32"]` + `validation` block in `variables.tf` (`can(cidrhost(c, 0))`), so a bad value now fails at plan time.
+- **SHOULD-FIX (fixed):** `git pull --ff-only || true` wedges silently forever the first time any commit touches the tracked `docker/clickhouse/initdb.d/001-init.sql` (rendered secret → permanently dirty tree → ff-only refuses, `|| true` swallows it — simulated & verified). This is exactly the Phase 3A PR that retires initdb.d. Fixed: `git -C /opt/wikistream checkout -- docker/clickhouse/initdb.d/001-init.sql 2>/dev/null || true` before the pull (re-rendered right after anyway).
+- **NIT (fixed):** metadata-server curl now `-fsS` (empty body would otherwise silently produce a malformed `CONSUMER_IMAGE`).
+- **NIT (fixed):** `.gitignore` now covers `*.tfplan` (13 KB binary artifact was about to ship with the PR).
+- **NIT (fixed):** module iam now binds `roles/compute.osLogin` for the human account (`oslogin_human_member = "user:jess154lacroix@gmail.com"` in tfvars) per plan §4:74 — previously only worked because owner covers it. Plan went 18 → 19 resources.
+- **Recorded (no code change):** plan Q3's "no plaintext in Terraform state" claim is false by construction — see 2.3 note below.
+
+### 2.3 — Secrets (Q3)
+
+**Status:** DONE (implementation; created on first apply in 2.5)
+
+**2026-08-11:** `infra/main/secrets.tf`: `random_password` ×2 (length 24, special=false) → `google_secret_manager_secret` (`clickhouse-password`, `grafana-admin-password`, replication auto, labels) → versions; sensitive outputs read `random_password.result` directly. Rotation = re-apply → new version → VM reset re-renders (per plan). Plan output shows both as `(sensitive value)` — values never appear in plan artifacts (verified 0 occurrences of secret names/values in `terraform show tfplan`).
+
+**CLAIM CORRECTION (subagent review):** plan Q3/AC8's wording "Zero plaintext in the repo or Terraform state" overreaches — secret values DO land in `infra/main`'s remote state in plaintext by construction (`random_password.result` + `secret_data` are stored there after apply), and the deploy SA holds `objectAdmin` on that state bucket. AC8's evidence line (0 occurrences in `terraform show tfplan` + startup metadata) is plan-scoped and TRUE; only the state claim was wrong. Mitigation today = GCS default at-rest encryption; CMEK is a Phase 5 hardening item.
+
+**ROTATION GAP (recorded for Phase 3A, not exercised in Phase 2):** the rotation story is incomplete by construction — `001-init.sql` only executes on an empty `ch-data` volume, and `CREATE USER IF NOT EXISTS` never updates an existing password, so a post-rotation reset re-renders `.env` with the new password while ClickHouse still holds the old one → consumer auth fails. Fix options for Phase 3A (which retires initdb.d anyway): `ALTER USER` via :8123 after boot, or rotate-by-recreate.
+
+### 2.4 — CI workflows (Q7, ADR-008)
+
+**Status:** DONE (files written + YAML-validated; end-to-end proof in 2.5–2.7)
+
+**2026-08-11:** `plan.yml` (PR-triggered: checkout → WIF auth → setup-terraform 1.15.6 → fmt -check → init → validate → plan -out=tfplan → `terraform show` → plan comment via actions/github-script, file passed through `$RUNNER_TEMP`; permissions id-token/contents/pull-requests) and `apply.yml` (push main + workflow_dispatch; concurrency group per ref, cancel-in-progress; permissions contents + id-token at workflow level; job 1 `build-push` ungated — auth + configure-docker us-central1 + docker/build-push-action with `sha-<8>` + `latest` tags; job 2 `apply` gated by environment `production` — init/plan/apply INSIDE the gated job, then `gcloud compute instances reset wikistream-vm --zone us-central1-a`; no destroy job). WIF provider name + deploy SA email hardcoded per plan, matching bootstrap outputs exactly (verified above). Fork PRs get no OIDC token → auth fails red — expected, documented in-file. Actions pinned at build 2026-08-11.
+
+**2026-08-11 Subagent code review (workflows reviewer):** APPROVE-WITH-FIXES. Verified: gate placement (plan+apply inside the gated job), build-push ungated by design, no destroy job, concurrency per-ref safe, `-input=false` everywhere, `$RUNNER_TEMP` plan-file handoff sound, instance name/zone match compute.tf, approval-wait not counted against `timeout-minutes`, `setup-gcloud` before `configure-docker` and the bare reset command, WIF-only auth (no stored keys). The startup.sh findings from that review are recorded in 2.2. ci.yml confirmed untouched (Phase 1 CI unaffected).
+
+**2026-08-11 PR #4 first CI run — two failures, root-caused and fixed (deviations):**
+
+1. **ruff FAILURE — version drift, not pin mismatch.** `ci.yml` is new vs `main` (main has no ci.yml; the walking-skeleton one had no ruff pin and no ds/query step), so this PR is the first time ruff 0.16.2 runs on this content. 0.16.x promoted BLE001/UP041/UP017/SIM102 into the default rule set; with no ruff config file anywhere, CI failed on `consumer/src/consumer.py:79,132,162` (BLE001 — the deliberate Phase 1 never-crash catches), `sse.py:92` (SIM102), and the UP fixes. Fixes: `[tool.ruff.lint] ignore=["BLE001"]` added to `consumer/pyproject.toml` (single source of truth for CI + pre-commit + local; the broad catches are the resilience contract, narrowing would change behavior); SIM102 combined in code; UP041/UP017 auto-applied (safe aliases on 3.13: `TimeoutError`, `datetime.UTC`). New repo-root `ruff.toml` with `extend-exclude = ["docs"]` — ruff-format rewrites python fenced blocks inside markdown and was about to mangle the LOCKED planning docs. All verified clean with ruff 0.16.2 from repo root (check + format), pytest 19/19.
+2. **compose-smoke FAILURE — latent AC6 bug (deviation: ci.yml modified).** Everything passed through AC5 (rows landed count()=120, count() increased, connected lines: 1, tracebacks: 0, Grafana healthy, dashboard provisioned), then AC6 ds/query failed: 500 `error unmarshaling query JSON to the Query Model: invalid format value: time_series`. The AC6 step was added in 097ff50 and never ran green anywhere. Reproduced live on the local stack with the pinned grafana-clickhouse-datasource@4.20.0: `format:"time_series"` → 500; format omitted → 200 with rows; `table` → 200. **Fix: dropped `,"format":"time_series"` from the AC6 ds/query payload** (one-line ci.yml change, deviation from the locked "ci.yml must NOT be modified" rule — the step as written is broken against plugin 4.20.0 and unproven; comment in-file).
+
+**2026-08-11 Pre-commit hooks — were never installed.** `.git/hooks/pre-commit` did not exist (only `.sample`), so no commit ever ran the hooks; and even if installed, the ruff hook failed on BLE001 (not auto-fixable) + the format drift above. Fixed by: the ruff config changes above (hook now green), and `pre-commit install` (registered 2026-08-11). `pre-commit run --all-files` — all 8 hooks green. The config comment in `.pre-commit-config.yaml` was updated (ruff config now lives in `consumer/pyproject.toml` + root `ruff.toml`; version pinned 0.16.2 in BOTH ci.yml and the hook rev — universal).
+
+### 2.5 — First deploy through the gate
+
+**Status:** pending
+
+
+### 2.6 — Deploy-path proof (Q2): reset → recover
+
+**Status:** pending
+
+### 2.7 — Destroy-and-reapply cycle (Q8)
+
+**Status:** pending
+
+### 2.8 — Wrap-up
+
+**Status:** pending
+
 ## Phase 3 — Data Model Depth (3A Schema / 3B Analytics)
 
 ## Phase 4 — Data Quality & Resilience

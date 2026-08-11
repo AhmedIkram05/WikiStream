@@ -1,6 +1,6 @@
 # WikiPulse — Streaming Analytics Platform: Vision & Architecture Decision Record
 
-**Status:** Locked — v2 (refactored after critical review)
+**Status:** Locked — v5 (v2 refactored after critical review; v3 added Cloud Monitoring + Artifact Registry; v4 added BigQuery warehouse layer; v5 added BQ freshness panel + scheduled parity check)
 **Working name:** WikiStream
 **Portfolio slot:** Data Engineering CV, project 3 of 3 (after W3C ETL, LAAD)
 **Related documents:** CV Bolstering Plans (research notes), current DE/AI-ML/SWE CVs
@@ -12,6 +12,14 @@ This version followed an external critical review (two independent critiques) pl
 ### Revision note (v2 → v3)
 
 Closed two gaps that were never actually decided either way (not a reopening of locked decisions): infrastructure-level VM health monitoring, and where the consumer's built container image lives. Added Cloud Monitoring (ADR-010) and Google Artifact Registry (ADR-007/ADR-008) on that basis. A third option — replacing the systemd timers with Cloud Scheduler + Cloud Run Jobs — was seriously considered and explicitly rejected; logged in the Trade-off table (§5) and Deferred gaps (§9) rather than silently dropped.
+
+### Revision note (v3 → v4)
+
+Added BigQuery as a warehouse layer (2026-08-10) — a deliberate, recorded in-scope decision driven by BigQuery's near-universal presence in DE job descriptions. This *amends* ADR-003, it does not reverse it: ClickHouse remains the primary real-time engine; BigQuery is a complementary batch-query tier fed by the same event stream (Phase 3C — Warehouse Export). The original rejection in the trade-off table addressed the engine slot; the warehouse layer is a second tier.
+
+### Revision note (v4 → v5)
+
+Closed the "is anything actually consuming BigQuery?" question (2026-08-10). Two downstream consumers added so the warehouse tier is a live system, not a dead-end dump (Phase 3C, ADR-010 amendment): (1) a **warehouse-freshness panel** in Grafana via a `google-bigquery` datasource alongside the ClickHouse datasource — renders hours-since-last-export live; and (2) a **scheduled parity check** (systemd timer, every hour at `:05`, a deliberate 5-minute offset after the `:00` export) that verifies BigQuery tracks ClickHouse — freshness lag and latest-window row-count parity — exiting non-zero on drift, with the alert wired in Phase 5.
 
 ---
 
@@ -52,7 +60,7 @@ The lens every ambiguous decision in the Master Plan should pass through:
 - Not an always-on production service — see ADR-001.
 - Not an ML/anomaly-detection project — see ADR-011.
 - Not a second Airflow/Prometheus showcase — both already proven on W3C ETL.
-- Not a data warehouse project — Snowflake was considered and cut; see §5.
+- Not a batch-first warehouse project — BigQuery exists only as a warehouse layer atop the real-time engine (ADR-003, amended 2026-08-10, Phase 3C); Snowflake was considered and cut; see §4/§5.
 
 ### 1.6 Definition of Done
 
@@ -84,10 +92,13 @@ flowchart LR
 
     subgraph JOBS["systemd timer"]
         GE["Great Expectations<br/>batch suite"]
+        EXP["Warehouse Export<br/>CH → GCS → BigQuery<br/>(hourly, Phase 3C)"]
     end
 
     WM -->|"Last-Event-ID resume"| C
     CH --> GE
+    CH --> EXP
+    EXP -->|"JSONL → bq load"| BQ[("BigQuery<br/>warehouse layer")]
 ```
 
 ### Component inventory (verified current versions, July 2026)
@@ -108,6 +119,7 @@ flowchart LR
 | Scheduling | systemd timer | — | GX suite job |
 | Compute | GCP Compute Engine `e2-medium` | — | Single VM, docker-compose |
 | Container registry | Google Artifact Registry | — | Hosts the consumer's built image — see ADR-007/ADR-008 |
+| Warehouse tier | Google BigQuery | — | Batch-query tier over the same event stream (Phase 3C); ADR-003 amended 2026-08-10 |
 | IaC | Terraform | ~1.15.x | BUSL-licensed since 2023 — already accepted across every other portfolio project |
 | IaC provider | `google` (Terraform) | 7.41.0 | — |
 | State backend | GCS bucket | — | Bootstrapped separately — see ADR-007 |
@@ -149,6 +161,8 @@ flowchart LR
 **Alternatives considered and rejected:** see the trade-off table (§5) for the full comparison against PostgreSQL/TimescaleDB, BigQuery, Elasticsearch, Druid/Pinot, and Snowflake. In short: none combine genuine real-time OLAP performance with a self-hostable, zero-license-cost deployment at this scale.
 **Rationale for self-hosting specifically:** ClickHouse Cloud has no permanent free tier (30-day trial only), so self-hosting is the only route to genuinely zero-marginal-cost hosting past a trial window. It's Apache 2.0, and single-server deployment is a documented, common pattern even at small scale. `clickhouse-connect`'s async-native client (shipped March 2026) avoids blocking the consumer's event loop, which the older thread-pool-wrapped approach didn't cleanly solve.
 **Consequences:** Ahmed owns ops (backups, upgrades) — mitigated by the in-window backup cadence and pre-teardown backup (ADR-006) and by the whole stack being disposable/rebuildable.
+
+**Amendment (2026-08-10):** BigQuery is added as a warehouse layer (Phase 3C — Warehouse Export), giving the project genuine warehouse-query experience — BigQuery is a near-universal DE job-description keyword. The engine decision is unchanged: ClickHouse remains the primary real-time store; BigQuery is a batch-query tier on the same data, not the hot path. Mechanism: a dedicated hourly export (systemd timer) SELECTs the MV/KPI aggregate tables plus a sampled slice of raw events via `clickhouse-connect`, writes JSONL to a GCS staging bucket, and loads it into a BigQuery dataset (`bq load`). The original rejection rationale (fully managed, no self-hosted-ops story, streaming-insert add-on) applies to the engine slot and still stands there.
 
 ### ADR-004: Ingestion Consumer Design
 
@@ -192,6 +206,8 @@ flowchart LR
 **Rationale:** Same "don't repeat a tool already on the CV" logic that dropped Kafka and Airflow applies to Prometheus. The infrastructure layer was never actually decided in v1/v2 — it's a genuine gap, not a duplicate of Grafana's job: Grafana can tell you the pipeline is unhealthy, but nothing previously told you *why* if the cause was the VM itself running out of disk from a multi-day continuous write workload (§8 risk). Cloud Monitoring closes that without touching the application-alerting decision at all. IP-restricted firewall is the simplest posture that's still a deliberate choice, appropriate for a personal demo VM. Secret Manager plus an explicitly least-privileged service account keeps "zero static credentials, minimal blast radius" consistent with every other project.
 **Consequences:** Dashboard/ClickHouse are inaccessible from anywhere but Ahmed's current IP — fine for a personal demo, but showing it live to someone else needs either screen-sharing or a temporary firewall widen. The Ops Agent is one more thing installed on the VM, though it's a standard, GCP-maintained agent, not custom infrastructure.
 
+**Amendment (2026-08-10, Phase 3C):** Grafana gains a `google-bigquery` datasource alongside the ClickHouse one — a **warehouse-freshness panel** (hours since last export) makes the 3C export visible as a live system. The plugin is preinstalled via `GF_PLUGINS_PREINSTALL` (`GF_INSTALL_PLUGINS` is broken in Grafana 13.1.1) and authenticates as the VM's own service account via GCE metadata ("GCE default service account" auth type) — the dataset-scoped `dataEditor` binding already covers its queries (`bigquery.jobs.create` included), no new IAM. A **scheduled parity check** (systemd timer, hourly at `:05` — 5 minutes after the `:00` export) queries both sides for the latest completed window (freshness lag + row counts) and exits non-zero on drift; its log/exit signal becomes a Grafana or Cloud Monitoring alert in Phase 5.
+
 ### ADR-011: Scope Boundary — Pure DE, No ML Layer
 
 **Decision:** No anomaly/vandalism-detection or other ML-flavoured feature on top of the pipeline, despite the edit-velocity data supporting it. Deferred, not built.
@@ -205,7 +221,7 @@ flowchart LR
 | Decision | Alternatives considered | Why rejected |
 | --- | --- | --- |
 | ClickHouse, self-hosted | PostgreSQL/TimescaleDB | Not built for OLAP at this insert/aggregation rate |
-| | BigQuery | Fully managed, no self-hosted-ops story; streaming inserts are an add-on to a batch-first design, weakening the "real-time" positioning |
+| | BigQuery | Fully managed, no self-hosted-ops story; streaming inserts are an add-on to a batch-first design, weakening the "real-time" positioning — rejected as the *engine*; added 2026-08-10 as a warehouse layer instead (ADR-003 amendment, Phase 3C) |
 | | Elasticsearch | Built for search/logs, not columnar aggregation |
 | | Druid / Pinot | Genuinely real-time OLAP, but operationally heavy (coordinator/ZooKeeper-style layers) for a single-VM demo |
 | | Snowflake | Batch/warehouse-native engine; per-second billing with 60s minimum and auto-resume-on-query is close to the worst-case cost/latency profile for a continuously-refreshing live dashboard |
@@ -241,6 +257,7 @@ WikiPulse is intentionally engineered for **vertical scaling on a single node**,
 - Peak burst rate sustained with zero drops (from the burst test)
 - Largest observed editing burst handled
 - Top edited pages detected correctly
+- Warehouse parity — a sample window queried in BigQuery matches the equivalent ClickHouse MV query for the same window; warehouse freshness lag ≤1h (Phase 3C), surfaced live in Grafana via the BigQuery-datasource freshness panel, with a scheduled parity check (hourly at `:05`) verifying the warehouse tracks the engine
 
 ## 7. Risks & Assumptions
 
@@ -271,9 +288,9 @@ WikiPulse is intentionally engineered for **vertical scaling on a single node**,
 - Always-on/persistent hosting — time-boxed and rebuildable instead
 - ML/anomaly-detection layer — deferred to keep DE and AI/ML CV lanes cleanly separated (ADR-011)
 - Kafka as a broker in front of ClickHouse — native ingestion used instead
-- Snowflake / warehouse-tier historical analytics — considered as a cold-path addition, cut to keep the project's story singular (§5)
+- Snowflake — considered as a cold-path addition, cut; the warehouse-layer role is now filled by BigQuery (2026-08-10, ADR-003 amendment, Phase 3C)
 - Cloud Scheduler + Cloud Run Jobs for the GX suite/backup — considered, cut in favour of the existing systemd timers; the operational case was weak given both jobs run against a ClickHouse instance that lives on the same VM the timer already runs on (§5)
 
 ## 9. Handoff to Master Plan
 
-This document is complete input for the Master Plan. Suggested phase shape: bootstrap (state bucket, IAM, network) → consumer + hot path → dashboard + alerting → data quality → differentiation layer/benchmarks → evidence capture → teardown (with the restore-and-verify step before final teardown). Each phase should have its own verification gate. Fix the "business-critical modules" boundary (ADR-009) and confirm GitHub Environment availability (ADR-008) in phase one — both are prerequisites the rest of the plan depends on. Re-verify the technology versions in §2 at the start of implementation, since this document reflects what was current while it was written, not a permanent pin.
+This document is complete input for the Master Plan. Suggested phase shape: bootstrap (state bucket, IAM, network) → consumer + hot path → dashboard + alerting → data quality → warehouse export (Phase 3C) → differentiation layer/benchmarks → evidence capture → teardown (with the restore-and-verify step before final teardown). Each phase should have its own verification gate. Fix the "business-critical modules" boundary (ADR-009) and confirm GitHub Environment availability (ADR-008) in phase one — both are prerequisites the rest of the plan depends on. Re-verify the technology versions in §2 at the start of implementation, since this document reflects what was current while it was written, not a permanent pin.

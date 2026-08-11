@@ -11,7 +11,7 @@ import logging
 import os
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx2
 from clickhouse_connect import get_async_client
@@ -60,7 +60,7 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
     """Wait up to `seconds`; True when a shutdown was requested during the wait."""
     try:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return stop.is_set()
     return True
 
@@ -72,7 +72,7 @@ async def _insert_event(
     try:
         await client.insert(
             "default.raw_events",
-            [[datetime.now(timezone.utc), ev.data]],
+            [[datetime.now(UTC), ev.data]],
             column_names=["inserted_at", "event"],
             settings={"async_insert": 1, "wait_for_async_insert": 0},
         )
@@ -147,12 +147,23 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    async with await get_async_client(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_PORT,
-        username=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD,
-    ) as client:
+    # get_async_client eagerly probes CH (SELECT version()) — during cold
+    # start that raises OperationalError; retry so cold-start surfaces as a
+    # WARNING line, never a crash-loop (restore of the 1.6 fix).
+    while True:
+        try:
+            client = await get_async_client(
+                host=CLICKHOUSE_HOST,
+                port=CLICKHOUSE_PORT,
+                username=CLICKHOUSE_USER,
+                password=CLICKHOUSE_PASSWORD,
+            )
+            break
+        except Exception as exc:
+            logger.warning("clickhouse_unavailable reason=%s", exc)
+            if await _sleep_or_stop(stop, 2.0):
+                return
+    async with client:
         task = asyncio.create_task(consume_forever(client, stop))
         await stop.wait()
         task.cancel()

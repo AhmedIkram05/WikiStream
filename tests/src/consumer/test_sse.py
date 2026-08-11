@@ -3,7 +3,7 @@
 Run from repo root: PYTHONPATH=consumer pytest tests/ -v
 """
 
-from src.sse import SSEEvent, SSEParser
+from src.sse import SSEParser
 
 
 def test_single_complete_frame():
@@ -137,7 +137,7 @@ def test_flush_after_clean_frame_resets():
 
 def test_multibyte_utf8_split_across_chunks():
     parser = SSEParser()
-    raw = "data: café ☕\n\n".encode("utf-8")
+    raw = "data: café ☕\n\n".encode()
     assert parser.feed(raw[:10]) == []  # split inside the é (2-byte char)
     events = parser.feed(raw[10:])
     assert len(events) == 1
