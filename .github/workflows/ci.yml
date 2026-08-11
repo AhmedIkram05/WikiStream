@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # ADR-008 fallback seam (Phase 2): if GitHub Environments required-reviewers
+  # is unavailable, the gated apply runs via workflow_dispatch.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch — free now, matters once GX,
+# migration tests and the burst test ride this workflow.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege baseline (ADR-010 posture). Phase 2's registry push and
+# gated apply get scoped permissions in their own workflows (apply.yml, task 2.4).
+permissions:
+  contents: read
+
+env:
+  # ADR-009 / coverage-boundary.md: 100% line bar on business-critical modules.
+  # Phase 6 extends this list (src.models, src.batcher, src.dead_letter,
+  # migrations/** , gx/suite.py) and adds the ~90% overall gate
+  # (--cov=src --cov-fail-under=90). Extend as comma-separated values —
+  # pytest-cov accepts --cov=pkg1,pkg2. Referenced via shell syntax below —
+  # the `env` context is unavailable inside strategy.matrix.
+  BUSINESS_CRITICAL_MODULES: src.sse
+
+jobs:
+  # One matrix, three independent checks. compose-smoke runs on exactly one
+  # runner (single entry); ruff and unit-tests are the other two entries.
+  # fail-fast: false so one broken check doesn't cancel the others.
+  checks:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ruff
+            command: |
+              ruff check .
+              ruff format --check .
+
+          # Runs EVERYTHING pytest.ini collects (testpaths=tests today).
+          # New test trees are added in pytest.ini — this command follows
+          # automatically, no CI edit needed.
+          - name: unit-tests
+            command: |
+              # -q: dot-per-test, no per-test lines. --tb=short: full assertion
+              # context, only the frames that matter. Failures stay debuggable
+              # without the wall of text.
+              uv run --project consumer pytest -q --tb=short
+              uv run --project consumer pytest -q --tb=short --cov="$BUSINESS_CRITICAL_MODULES" --cov-report=term-missing --cov-fail-under=100
+
+          # Full walking-skeleton smoke: AC1-AC6 gates against the real stack.
+          # `up -d --build` also validates the Dockerfile on every PR — image
+          # build+push to Artifact Registry is apply.yml's job (Phase 2, Q7).
+          - name: compose-smoke
+            command: |
+              set -euo pipefail
+              echo "== AC1: stack up =="
+              docker compose up -d --build
+
+              echo "== AC3: wait for first rows =="
+              q="docker compose exec -T clickhouse clickhouse-client --user wikistream --password wikistream_dev_password --query"
+              c=0
+              for i in $(seq 1 90); do
+                c=$($q "SELECT count() FROM default.raw_events" 2>/dev/null || true)
+                if [ "${c:-0}" -ge 1 ] 2>/dev/null; then
+                  echo "rows landed: count()=${c} after ~$((i * 10))s"
+                  break
+                fi
+                sleep 10
+              done
+              [ "${c:-0}" -ge 1 ] 2>/dev/null || { echo "::error::no rows in default.raw_events within 900s"; exit 1; }
+
+              echo "== AC4: count() strictly increases over >= 1 min =="
+              c1=$c
+              sleep 60
+              c2=$($q "SELECT count() FROM default.raw_events")
+              echo "count() ${c1} -> ${c2}"
+              [ "$c2" -gt "$c1" ] || { echo "::error::count() did not strictly increase (${c1} -> ${c2})"; exit 1; }
+
+              echo "== AC2: consumer connected, no tracebacks =="
+              connected=$(docker compose logs consumer | grep -c "connected url=" || true)
+              tracebacks=$(docker compose logs consumer | grep -c "Traceback" || true)
+              echo "connected lines: ${connected}, tracebacks: ${tracebacks}"
+              [ "${connected}" -ge 1 ] || { echo "::error::consumer never connected"; exit 1; }
+              [ "${tracebacks}" -eq 0 ] || { echo "::error::tracebacks in consumer logs"; exit 1; }
+
+              echo "== AC5: Grafana up + dashboard provisioned =="
+              code=000
+              for i in $(seq 1 30); do
+                code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health || true)
+                [ "$code" = "200" ] && break
+                sleep 5
+              done
+              [ "$code" = "200" ] || { echo "::error::grafana not healthy after 150s"; exit 1; }
+              curl -sf -u admin:admin "http://localhost:3000/api/search" | grep -q "Phase 1" \
+                || { echo "::error::dashboard not provisioned"; exit 1; }
+
+              echo "== AC6: panel query returns rows through Grafana =="
+              curl -s -u admin:admin -H "Content-Type: application/json" \
+                -d '{"from":"now-6h","to":"now","queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t","format":"time_series"}]}' \
+                -o /tmp/dsquery.json http://localhost:3000/api/ds/query
+              python3 - <<'EOF'
+              import json
+              r = json.load(open("/tmp/dsquery.json"))
+              res = r["results"]
+              assert all(v.get("status") == 200 for v in res.values()), f"non-200 in ds/query: {res}"
+              has_rows = any(
+                  (f.get("data") or {}).get("values") and len(f["data"]["values"][0]) > 0
+                  for v in res.values() for f in v.get("frames", [])
+              )
+              assert has_rows, "no rows returned through Grafana"
+              print("ds/query: 200, rows present")
+              EOF
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13" # pinned per plan (GX caps <3.14); do not float
+
+      # uv caching is automatic on PRs/push (enable-cache: auto) and keyed on
+      # pyproject.toml + uv.lock, so dependency installs stay ~seconds.
+      - uses: astral-sh/setup-uv@v6
+
+      # Extension seam: when a new python package lands (Phase 3A migrations
+      # runner, Phase 4 gx/), add its own `uv sync --project <pkg> --frozen`
+      # line here — its tests then run in the matrix with no other change.
+      # Skipped for compose-smoke — it only needs docker.
+      - name: Install dependencies
+        if: matrix.name != 'compose-smoke'
+        run: |
+          uv sync --project consumer --frozen
+          uv tool install ruff==0.16.2
+
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.command }}
