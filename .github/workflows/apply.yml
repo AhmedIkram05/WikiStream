@@ -98,4 +98,4 @@ jobs:
       # instance comes up unhealthy. Explicit --zone: the runner has no
       # gcloud config, so region/zone defaults cannot be assumed.
       - name: Reset VM
-        run: gcloud compute instances reset wikistream-vm --zone us-central1-a
+        run: gcloud compute instances reset wikistream-vm --zone us-east1-b
