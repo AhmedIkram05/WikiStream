@@ -215,7 +215,12 @@ Status lines are filled as each task is worked, per the logging rules.
 
 ### 2.5 — First deploy through the gate
 
-**Status:** pending
+**Status:** in progress (gated apply run #1 FAILED at terraform apply; fix applied, re-run pending)
+
+**2026-08-11:** PR #4 merged to main → `apply.yml` ran: job 1 build-push SUCCESS (consumer image pushed to AR as `sha-<commit>` + `:latest` — AC3). Job 2 (`apply`, environment `production`) showed **Waiting** in the Actions UI and was approved by AhmedIkram05 (AC4 evidenced in run #1: approval identity + timestamp in the run's timeline) — then `terraform apply` **FAILED**:
+`Error: Error creating service account: googleapi: Error 403: Identity and Access Management (IAM) API has not been used in project 984854414993 before or it is disabled...` on `module.iam.google_service_account.wikistream_vm` (modules/iam/iam.tf:1).
+**DEVIATION (plan gap, Q1 API list incomplete):** the bootstrap list enabled 7 APIs but NOT `iam.googleapis.com` — service-account CRUD needs it; the deploy SA's roles cannot auto-enable APIs. The failed run had already created 3 resources (VPC, subnet, allow-internal firewall) — those remain in state; re-run continues from there. Fix: added `iam.googleapis.com` as the 8th API in `infra/bootstrap/main.tf` (with in-file comment), bootstrap re-applied (1 added, outputs unchanged), API enablement verified propagated (2026-08-11). Re-run = workflow_dispatch on the Apply (GCP) workflow → approval → resume.
+Also noted (informational): runner log shows Node 20 deprecation notice — Actions now default to Node 24; no action needed, pins unaffected.
 
 
 ### 2.6 — Deploy-path proof (Q2): reset → recover

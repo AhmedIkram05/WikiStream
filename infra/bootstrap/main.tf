@@ -45,6 +45,7 @@ resource "google_project_service" "apis" {
     "compute.googleapis.com",
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
+    "iam.googleapis.com", # service account CRUD (module.iam)
     "iamcredentials.googleapis.com",
     "sts.googleapis.com", # workload identity federation token exchange
     "oslogin.googleapis.com",
