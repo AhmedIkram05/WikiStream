@@ -1,0 +1,101 @@
+name: Apply (GCP)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Serialize applies per branch. cancel-in-progress: true is safe for a solo
+# dev on push-to-main: a superseded push's deploy would be overwritten by the
+# newer push's deploy anyway, so killing the stale run loses nothing (queuing
+# with false would just delay the newer, correct deploy).
+concurrency:
+  group: apply-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege (ADR-010): contents read for checkout, id-token for the WIF
+# exchange. Registry push and compute ops ride the deploy SA's granted roles.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Ungated on purpose: producing an immutable image is not a deployment
+  # decision. The reviewer gate belongs on the apply job below, not on
+  # building artifacts (ADR-008).
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # WIF: identity from the run's OIDC token, no stored key. Version
+      # pinned at build 2026-08-11.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github
+          service_account: wikistream-deploy@wikistream-505003.iam.gserviceaccount.com
+
+      # Required: the bare `gcloud auth configure-docker` below needs the
+      # gcloud CLI on the runner.
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Short commit sha
+        id: meta
+        run: echo "sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./consumer
+          push: true
+          tags: |
+            us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/consumer:sha-${{ steps.meta.outputs.sha }}
+            us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/consumer:latest
+
+  # Gated: the production environment's required reviewer pauses this job
+  # here until approved (self-review allowed). Plan-then-apply stays INSIDE
+  # the gated job — approval must cover the apply decision itself, so the
+  # plan never runs ungated.
+  apply:
+    needs: build-push
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4 # fresh runner: no source tree carried over
+
+      - uses: google-github-actions/auth@v2 # pinned at build 2026-08-11
+        with:
+          workload_identity_provider: projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github
+          service_account: wikistream-deploy@wikistream-505003.iam.gserviceaccount.com
+
+      # setup-gcloud: the reset step at the bottom runs bare `gcloud`.
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.6 # match local dev (1.15.6); do not float
+
+      - name: Init
+        working-directory: infra/main
+        run: terraform init -input=false
+
+      - name: Plan
+        working-directory: infra/main
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Apply
+        working-directory: infra/main
+        run: terraform apply -input=false tfplan
+
+      # Every apply is a full re-deploy: the VM reboots (~1–2 min) and pulls
+      # the new image. The startup log (journald/systemd) plus `gcloud compute
+      # instances get-serial-port-output` are the recovery evidence if the
+      # instance comes up unhealthy. Explicit --zone: the runner has no
+      # gcloud config, so region/zone defaults cannot be assumed.
+      - name: Reset VM
+        run: gcloud compute instances reset wikistream-vm --zone us-central1-a
