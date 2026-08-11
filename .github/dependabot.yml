@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # Python deps (consumer/pyproject.toml + uv.lock). The dedicated `uv`
+  # ecosystem (GA 2025-03) is first-class for uv projects: it updates the
+  # manifest and lockfile together, so `uv sync --frozen` in CI and the
+  # Dockerfile keep working unchanged.
+  - package-ecosystem: uv
+    directory: /consumer
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: "deps(python)"
+
+  # GitHub Actions: action version bumps + workflow linting
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(actions)"
+
+  # Container base image (consumer/Dockerfile)
+  - package-ecosystem: docker
+    directory: /consumer
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"
+
+  # Terraform providers. Seam: when infra/main + infra/bootstrap land
+  # (Phase 2), point each module here as its own directory entry.
+  - package-ecosystem: terraform
+    directory: /infra
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(terraform)"
