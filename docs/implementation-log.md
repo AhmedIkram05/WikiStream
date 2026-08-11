@@ -215,12 +215,17 @@ Status lines are filled as each task is worked, per the logging rules.
 
 ### 2.5 — First deploy through the gate
 
-**Status:** in progress (gated apply run #1 FAILED at terraform apply; fix applied, re-run pending)
+**Status:** in progress (gated apply run #2 FAILED at instance creation; image-family fix applied, re-run pending)
 
 **2026-08-11:** PR #4 merged to main → `apply.yml` ran: job 1 build-push SUCCESS (consumer image pushed to AR as `sha-<commit>` + `:latest` — AC3). Job 2 (`apply`, environment `production`) showed **Waiting** in the Actions UI and was approved by AhmedIkram05 (AC4 evidenced in run #1: approval identity + timestamp in the run's timeline) — then `terraform apply` **FAILED**:
 `Error: Error creating service account: googleapi: Error 403: Identity and Access Management (IAM) API has not been used in project 984854414993 before or it is disabled...` on `module.iam.google_service_account.wikistream_vm` (modules/iam/iam.tf:1).
 **DEVIATION (plan gap, Q1 API list incomplete):** the bootstrap list enabled 7 APIs but NOT `iam.googleapis.com` — service-account CRUD needs it; the deploy SA's roles cannot auto-enable APIs. The failed run had already created 3 resources (VPC, subnet, allow-internal firewall) — those remain in state; re-run continues from there. Fix: added `iam.googleapis.com` as the 8th API in `infra/bootstrap/main.tf` (with in-file comment), bootstrap re-applied (1 added, outputs unchanged), API enablement verified propagated (2026-08-11). Re-run = workflow_dispatch on the Apply (GCP) workflow → approval → resume.
 Also noted (informational): runner log shows Node 20 deprecation notice — Actions now default to Node 24; no action needed, pins unaffected.
+
+**Run #2 (PR #11 hotfix merged, apply re-triggered):** IAM fix verified working — VM SA, both secretAccessor bindings, AR reader binding all created. Then `terraform apply` **FAILED** again at instance creation:
+`Error: Error resolving image name 'ubuntu-os-cloud/ubuntu-2404-lts': Could not find image or family ubuntu-os-cloud/ubuntu-2404-lts` on `module.compute.google_compute_instance.wikistream_vm` (modules/compute/compute.tf:8).
+**DEVIATION (plan Q4 stale upstream reference):** the unqualified image family `ubuntu-2404-lts` no longer exists in `ubuntu-os-cloud` — Canonical renamed to arch-qualified families (verified: `gcloud compute images list` shows only `ubuntu-2404-lts-amd64` / `ubuntu-2404-lts-arm64`; the unqualified family fails with "resource not found" even as project owner, so it is NOT a permission issue). Fix: `image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"` (e2-medium is x86_64; verified the family resolves to a current image). Local re-verification: fmt + validate clean; plan = **1 to add (instance only), 0 change, 0 destroy** — all 12 other resources now in state (VPC, subnet, 4 firewalls, static IP 35.254.92.109, SA, 2 bindings, AR reader, 2 secrets+versions, oslogin binding). Static IP was allocated in run #1 and is stable.
+
 
 
 ### 2.6 — Deploy-path proof (Q2): reset → recover
