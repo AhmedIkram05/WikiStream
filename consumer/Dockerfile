@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # uv is the package manager for this project (pyproject.toml + uv.lock).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
