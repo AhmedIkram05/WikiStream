@@ -15,7 +15,7 @@ resource "google_compute_instance" "wikistream_vm" {
 
   boot_disk {
     initialize_params {
-      image = "ubuntu-os-cloud/ubuntu-2404-lts"
+      image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64" # family renamed upstream (2026): unqualified ubuntu-2404-lts no longer exists
       size  = 50
       type  = "pd-standard"
     }
