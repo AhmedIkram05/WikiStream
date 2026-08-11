@@ -34,6 +34,12 @@ else
 fi
 cd /opt/wikistream
 
+# 2b. Containers read bind mounts as unprivileged users (grafana uid 472), but
+#     umask 077 leaves the clone 700/600 root — grafana provisioning dies with
+#     "permission denied". Open the tree (r+X) BEFORE rendering secrets below
+#     so .env + 001-init.sql still land 600. Found 2026-08-11 on first prod boot.
+chmod -R a+rX /opt/wikistream
+
 # 3. Project id from the metadata server — deterministic, no gcloud config
 GCP_PROJECT=$(curl -fsS -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/project/project-id)
 
