@@ -224,6 +224,8 @@ __marimo__/
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
+tfplan
 crash.log
 override.tf
 override.tf.json
