@@ -10,10 +10,10 @@ from dataclasses import dataclass
 
 @dataclass
 class SSEEvent:
-    event: str = "message"     # default per spec when no `event:` field
+    event: str = "message"  # default per spec when no `event:` field
     data: str = ""
-    id: str | None = None      # for Last-Event-ID resume
-    retry: int | None = None   # reconnect hint, in ms
+    id: str | None = None  # for Last-Event-ID resume
+    retry: int | None = None  # reconnect hint, in ms
 
 
 class SSEParser:
@@ -79,9 +79,8 @@ class SSEParser:
         if colon == -1:
             return  # malformed line (no colon) — skipped
         field = line[:colon]
-        value = line[colon + 1:]
-        if value.startswith(" "):
-            value = value[1:]  # strip exactly ONE leading space (WHATWG)
+        value = line[colon + 1 :]
+        value = value.removeprefix(" ")  # strip exactly ONE leading space (WHATWG)
         if field == "event":
             self._event_type = value
         elif field == "data":
@@ -90,9 +89,8 @@ class SSEParser:
         elif field == "id":
             if "\x00" not in value:
                 self._event_id = value
-        elif field == "retry":
-            if value.isdigit():
-                self._retry = int(value)
+        elif field == "retry" and value.isdigit():
+            self._retry = int(value)
         # any other field name is ignored per spec
 
     def _dispatch(self) -> SSEEvent | None:

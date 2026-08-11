@@ -13,3 +13,12 @@ dev = [
     "pytest>=8",
     "pytest-cov>=5",
 ]
+
+# Ruff config (consumed by CI `ruff check .`, pre-commit ruff hook, and local
+# `ruff` alike — one source of truth; ruff discovers this file for consumer/).
+# BLE001: the consumer's Phase 1 resilience contract is never-crash — the
+# broad catches in consumer.py (insert-failed, consume-loop, cold-start
+# retry) are deliberate: log the failure, keep the stream alive. Narrowing
+# them would change behavior, not improve it. SIM102 was fixed in code.
+[tool.ruff.lint]
+ignore = ["BLE001"]

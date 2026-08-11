@@ -1,0 +1,7 @@
+# Repo-wide ruff defaults for CI (bare `ruff check .` / `ruff format --check .`
+# from repo root), the pre-commit ruff hooks, and local runs — one discovery
+# point for every file OUTSIDE consumer/ (consumer/ carries its own settings
+# in consumer/pyproject.toml).
+# docs/ holds locked planning artifacts: ruff-format rewrites python fenced
+# code blocks inside markdown, so it must never touch them.
+extend-exclude = ["docs"]

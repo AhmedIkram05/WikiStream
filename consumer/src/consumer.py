@@ -11,7 +11,7 @@ import logging
 import os
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx2
 from clickhouse_connect import get_async_client
@@ -60,7 +60,7 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
     """Wait up to `seconds`; True when a shutdown was requested during the wait."""
     try:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return stop.is_set()
     return True
 
@@ -72,7 +72,7 @@ async def _insert_event(
     try:
         await client.insert(
             "default.raw_events",
-            [[datetime.now(timezone.utc), ev.data]],
+            [[datetime.now(UTC), ev.data]],
             column_names=["inserted_at", "event"],
             settings={"async_insert": 1, "wait_for_async_insert": 0},
         )

@@ -1,6 +1,7 @@
 # Phase 1 quality gate. Mirrors what CI runs in .github/workflows/ci.yml.
-# Ruff config intentionally lives here (not pyproject.toml) so this phase
-# touches no files the consumer implementation owns. Default rule set
+# Ruff config lives in consumer/pyproject.toml ([tool.ruff.lint]) — the one
+# source of truth for CI, this hook, and local `ruff` (version pinned to
+# 0.16.2 in BOTH ci.yml and the ruff-pre-commit rev below). Default rule set
 # (F + E4/E7/E9) + ruff-format; widen later if Phase 4+ needs it.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks

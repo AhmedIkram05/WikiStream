@@ -104,8 +104,13 @@ jobs:
                 || { echo "::error::dashboard not provisioned"; exit 1; }
 
               echo "== AC6: panel query returns rows through Grafana =="
+              # DEVATION (Phase 2, recorded in implementation-log.md): the
+              # `format` field was dropped from this ds/query payload —
+              # grafana-clickhouse-datasource 4.20.0 rejects "time_series"
+              # here with `invalid format value` (500). Omitting it returns
+              # 200 with rows; verified live against the pinned plugin.
               curl -s -u admin:admin -H "Content-Type: application/json" \
-                -d '{"from":"now-6h","to":"now","queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t","format":"time_series"}]}' \
+                -d '{"from":"now-6h","to":"now","queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t"}]}' \
                 -o /tmp/dsquery.json http://localhost:3000/api/ds/query
               python3 - <<'EOF'
               import json
