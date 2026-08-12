@@ -65,9 +65,23 @@ PARITY_FILES = {
 #: (table, [columns]) the export SQL selects from — schema-drift guard.
 SELECTED = {
     "default.mv_edits_per_minute": ["minute", "wiki", "is_bot", "edits", "bytes_delta"],
-    "default.mv_top_pages_per_minute": ["minute", "title", "wiki", "edits", "bytes_delta"],
+    "default.mv_top_pages_per_minute": [
+        "minute",
+        "title",
+        "wiki",
+        "edits",
+        "bytes_delta",
+    ],
     "default.mv_edit_sizes_per_minute": ["minute", "bucket", "edits"],
-    "default.raw_events": ["inserted_at", "event", "wiki", "title", "user", "is_bot", "event_type"],
+    "default.raw_events": [
+        "inserted_at",
+        "event",
+        "wiki",
+        "title",
+        "user",
+        "is_bot",
+        "event_type",
+    ],
 }
 
 
@@ -185,9 +199,7 @@ def insert_fixture():
 def export_window():
     """(start, end) literals for {START}/{END}: the current whole UTC hour."""
     start = scalar("SELECT toString(toStartOfHour(now()))")
-    end = scalar(
-        "SELECT toString(toStartOfHour(now()) + INTERVAL 1 hour)"
-    )
+    end = scalar("SELECT toString(toStartOfHour(now()) + INTERVAL 1 hour)")
     return start, end
 
 
@@ -373,7 +385,9 @@ def test_parity_ch_sums_match_export(seeded):
 
     sizes = scalar(
         "SELECT SUM(edits) AS edits FROM ("
-        + substitute((WAREHOUSE_SQL / EXPORT_FILES["kpi_sizes"]).read_text(), start, end)
+        + substitute(
+            (WAREHOUSE_SQL / EXPORT_FILES["kpi_sizes"]).read_text(), start, end
+        )
         + ")"
     )
     assert sizes == str(sum(int(v) for v in BUCKET_COUNTS.values())), sizes
@@ -396,7 +410,9 @@ def test_parity_bq_sql_shape(seeded):
         sub = substitute(text, start, end)
         assert "{START}" not in sub and "{END}" not in sub, fname
         if label == "raw_sample":
-            assert sub.startswith("SELECT COUNT(*) AS row_count\nFROM wikistream.raw_events_sample")
+            assert sub.startswith(
+                "SELECT COUNT(*) AS row_count\nFROM wikistream.raw_events_sample"
+            )
         else:
             assert "FROM wikistream.kpi_" in sub and "WHERE hour >= TIMESTAMP(" in sub
 
@@ -422,7 +438,9 @@ def test_export_runs_shape(seeded):
         **counts,
     }
     assert line["rows_edits"] > 0
-    assert line["rows_raw_sample"] >= 1  # may include probes seeded by the raw-sample test
+    assert (
+        line["rows_raw_sample"] >= 1
+    )  # may include probes seeded by the raw-sample test
     assert set(line) == {
         "exported_at",
         "window_start",
