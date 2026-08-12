@@ -6,7 +6,7 @@
 # code blocks inside markdown, so it must never touch them.
 extend-exclude = ["docs"]
 
-[tool.ruff.lint]
+[lint]
 # Pin the rule set explicitly: FLY only joined ruff's DEFAULTS in 0.16.x, so a
 # select-less config silently dropped it on older binaries — the 3B FLY002
 # slipped past a 0.15.15 local `ruff` while CI/pre-commit (0.16.2) caught it.
