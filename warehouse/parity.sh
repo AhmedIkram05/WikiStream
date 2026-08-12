@@ -141,17 +141,18 @@ fi
 
 # Compare CH vs BQ for the window. $1 = result var name, $2 = label,
 # $3 = export SQL filename ("" = raw-sample fixed query), $4 = CH aggregate
-# over the export SQL, $5 = bq parity SQL. Any query error or mismatch exits 1.
+# over the export SQL, $5 = bq parity SQL, $6 = comma-separated BQ column
+# names in CH order. Any query error or mismatch exits 1.
 compare_table() {
   local -n tvar=$1
-  local name=$2 export_sql=$3 aggregate=$4 bq_sql=$5
+  local name=$2 export_sql=$3 aggregate=$4 bq_sql=$5 bq_cols=$6
   local ch_out bq_out verdict
 
   if [ -n "$aggregate" ]; then
     if ! ch_out="$(docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
         --password "$CLICKHOUSE_PASSWORD" --format TSV \
         <<<"SELECT $aggregate FROM (
-$(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/$export_sql")
+$(sed "s/{START}/$START/; s/{END}/$END/" "sql/$export_sql")
 )")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
       tvar="error"
@@ -165,7 +166,7 @@ $(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/$export_sql")
     if ! ch_out="$(docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
         --password "$CLICKHOUSE_PASSWORD" --format TSV \
         <<<"SELECT count() AS row_count FROM (
-$(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/export_raw_sample.sql")
+$(sed "s/{START}/$START/; s/{END}/$END/" "sql/export_raw_sample.sql")
 )")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
       tvar="error"
@@ -175,9 +176,16 @@ $(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/export_raw_sample.sql")
     fi
   fi
 
+  # bq --format=json emits columns in ALPHABETICAL order (not SELECT order),
+  # so read them by name in the CH column order passed as $6.
   if ! bq_out="$(bq query --use_legacy_sql=false --format=json \
-      "$(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/$bq_sql")" \
-      | python3 -c 'import json, sys; d = json.load(sys.stdin); print(" ".join(str(v) for v in d[0].values()))')"; then
+      "$(sed "s/{START}/$START/; s/{END}/$END/" "sql/$bq_sql")" \
+      | python3 -c '
+import json, sys
+cols = sys.argv[1].split(",")
+d = json.load(sys.stdin)
+print(" ".join(str(d[0][c]) for c in cols))
+' "$bq_cols")"; then
     echo "[parity] $name: BigQuery query failed" >&2
     tvar="error"
     status=error
@@ -204,10 +212,10 @@ PY
   fi
 }
 
-compare_table t_edits      kpi_edits    export_edits.sql      "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_edits.sql
-compare_table t_top_pages  top_pages    export_top_pages.sql  "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_top_pages.sql
-compare_table t_sizes      sizes        export_sizes.sql      "sum(edits) AS edits"                                 parity_bq_sizes.sql
-compare_table t_raw_sample raw_sample   ""                    ""                                                    parity_bq_raw_sample.sql
+compare_table t_edits      kpi_edits    export_edits.sql      "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_edits.sql       edits,bytes_delta
+compare_table t_top_pages  top_pages    export_top_pages.sql  "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_top_pages.sql   edits,bytes_delta
+compare_table t_sizes      sizes        export_sizes.sql      "sum(edits) AS edits"                                 parity_bq_sizes.sql       edits
+compare_table t_raw_sample raw_sample   ""                    ""                                                    parity_bq_raw_sample.sql  row_count
 
 emit_log
 if [ "$status" != "ok" ]; then
