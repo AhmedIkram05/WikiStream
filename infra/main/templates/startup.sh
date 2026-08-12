@@ -57,6 +57,10 @@ if [ -b "$DEV" ]; then
   fi
   UUID=$(blkid -s UUID -o value "$DEV")
   grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /mnt/ch-data ext4 defaults,nofail 0 2" >> /etc/fstab
+  # mount point must exist before "mount" (fresh recreate has a bare /mnt).
+  # mkdir BEFORE mount; mountpoint -q on a missing dir returns false, and a
+  # failed mount would kill the script via set -e (hit on 2026-08-12 deploy).
+  mkdir -p /mnt/ch-data
   mountpoint -q /mnt/ch-data || mount /mnt/ch-data
   mkdir -p /mnt/ch-data/clickhouse
   export CH_DATA_DIR=/mnt/ch-data/clickhouse
