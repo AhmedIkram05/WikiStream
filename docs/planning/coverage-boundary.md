@@ -16,8 +16,23 @@ definitions (`004/005/006_mv_*.sql`, ADR-006) are now REAL paths, with
 `tests/migrations/` (6 ch tests) and the new `tests/mv/` equivalence suite
 (6 tests + 1 3C-aware skip) as their spot-check guarantee — MV output is
 asserted equal to the equivalent raw GROUP BY, synthetically in CI and again on
-live stream data at the 3B deploy spot-check. `warehouse/sql` + `tests/warehouse`
-arrive with Phase 3C (AC21 phase-final wording) and stay predicted until then.
+live stream data at the 3B deploy spot-check.
+
+**2026-08-12 (Phase 3C correction, AC21 phase-final wording):**
+`warehouse/sql/` and the new `tests/warehouse/` suite are now REAL paths.
+The Phase 3 CQL story is complete: **`migrations/` + `warehouse/sql/` + the
+three test suites (`tests/migrations`, `tests/mv`, `tests/warehouse`) form the
+business-critical 100% line-coverage story** — the warehouse SQL is exercised
+by the 3C ch suite (8 tests: export rollups, deterministic raw sample, CH-side
+parity totals, BQ-dialect SQL shape, export_runs record shape, schema-drift
+guards against `SHOW TABLES`/`DESCRIBE TABLE`), exactly as the Ingest+MVs pair
+is. The bash wrappers (`warehouse/export.sh`, `warehouse/parity.sh`) are
+**thick-enough orchestrators and deliberately OUTSIDE the pytest-cov gate** —
+their exit codes and log lines are verified by the production timer runs
+(parity's non-zero exit is the Phase 5 alert hook) and by `bash -n` +
+mocked-dependency unit coverage in the 3C suite. The SQL files they execute
+(and substitute `{START}`/`{END}` into) ARE in the 100% story via
+`tests/warehouse`.
 
 ## The modules
 
@@ -28,6 +43,7 @@ arrive with Phase 3C (AC21 phase-final wording) and stay predicted until then.
 | `consumer/src/batcher.py` | Batch assembly + flush-trigger logic (size / interval) | Wrong flush logic = orphaned or lost events = the data-loss window |
 | `consumer/src/dead_letter.py` | Dead-letter routing to `dead_letter` table | Schema-drift catch (ADR-004/005); a broken route makes drift look like success |
 | `migrations/**` + MV definitions | Versioned DDL + materialized views (ADR-006) | A silently-wrong MV is ADR-006's named risk; assertions here are the spot-check guarantee |
+| `warehouse/sql/**` | Hourly BigQuery rollup + parity SQL (ADR-003/010, Q6/Q7) | The BQ warehouse is the audit tier; a silently-wrong export SQL ships wrong numbers to BigQuery with no consumer error |
 | `gx/suite.py` | GX suite configuration + execution | The periodic data-quality gate; a broken suite is a broken guarantee with no alarm |
 
 ## Enforcement notes (for Phase 6)

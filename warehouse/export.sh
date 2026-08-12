@@ -47,13 +47,18 @@ fi
 WINDOW_START="$(printf '%sZ' "${START/ /T}")"
 WINDOW_END="$(printf '%sZ' "${END/ /T}")"
 STAMP="$(date -u +%Y%m%d%H)"
+# Unique per run: staging objects are consumed by bq load immediately and the
+# VM SA only has objectCreator/objectViewer on the bucket (ADR-010) — it cannot
+# overwrite an existing object, so re-running the same hour needs a fresh name.
+RUN_ID="$(date -u +%H%M%S)"
 
 # key | export SQL | BQ table | partition field
 TABLES=(
-  "kpi_edits|export_edits.sql|kpi_edits_hourly|hour"
-  "kpi_top_pages|export_top_pages.sql|kpi_top_pages_hourly|hour"
-  "kpi_sizes|export_sizes.sql|kpi_edit_sizes_hourly|hour"
-  "raw_sample|export_raw_sample.sql|raw_events_sample|inserted_at"
+  # key|sqlfile|bq_table|partition_field|clustering_fields
+  "kpi_edits|export_edits.sql|kpi_edits_hourly|hour|wiki"
+  "kpi_top_pages|export_top_pages.sql|kpi_top_pages_hourly|hour|"
+  "kpi_sizes|export_sizes.sql|kpi_edit_sizes_hourly|hour|"
+  "raw_sample|export_raw_sample.sql|raw_events_sample|inserted_at|"
 )
 rows_kpi_edits=0
 rows_kpi_top_pages=0
@@ -61,19 +66,20 @@ rows_kpi_sizes=0
 rows_raw_sample=0
 
 for entry in "${TABLES[@]}"; do
-  IFS='|' read -r key sqlfile btable partfield <<<"$entry"
+  IFS='|' read -r key sqlfile btable partfield cluster_fields <<<"$entry"
   mkdir -p "$STAGING_TMP/$key"
-  object="$STAGING_TMP/$key/$STAMP.jsonl"
+  object="$STAGING_TMP/$key/${STAMP}-${RUN_ID}.jsonl"
 
   docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
     --password "$CLICKHOUSE_PASSWORD" --format JSONEachRow \
-    < <(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/$sqlfile") > "$object"
+    < <(sed "s/{START}/$START/; s/{END}/$END/" "sql/$sqlfile") > "$object"
 
   rows="$(wc -l < "$object" | tr -d ' ')"
   if [ -s "$object" ]; then
     gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null
     bq load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
-      --schema="warehouse/schemas/$btable.json" "$BQ_DATASET.$btable" "$object"
+      ${cluster_fields:+--clustering_fields="$cluster_fields"} \
+      --schema="schemas/$btable.json" "$BQ_DATASET.$btable" "$object"
   else
     # Empty window for this table: drop the object, skip cp + load, rows stays 0.
     rm -f "$object"
@@ -100,6 +106,6 @@ print(json.dumps({"exported_at": exported_at, "window_start": ws, "window_end": 
                  sort_keys=True))
 PY
 bq load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field=exported_at \
-  --schema="warehouse/schemas/export_runs.json" "$BQ_DATASET.export_runs" "$runs_file"
+  --schema="schemas/export_runs.json" "$BQ_DATASET.export_runs" "$runs_file"
 
 echo "[export] success window=$WINDOW_START..$WINDOW_END rows_edits=$rows_kpi_edits rows_top_pages=$rows_kpi_top_pages rows_sizes=$rows_kpi_sizes rows_raw_sample=$rows_raw_sample"
