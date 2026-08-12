@@ -77,9 +77,11 @@ PY
   echo "$line"
 }
 
-# Freshness gate: the newest export_runs row must be the current window and successful.
+# Freshness gate: the export_runs row for THIS window (not whatever row is
+# newest — a manual backfill of another window writes a newer row) must exist
+# and be successful.
 if ! fresh_json="$(bq query --use_legacy_sql=false --format=json \
-    "SELECT exported_at, window_start, window_end, status FROM $BQ_DATASET.export_runs ORDER BY exported_at DESC LIMIT 1")"; then
+    "SELECT exported_at, window_start, window_end, status FROM $BQ_DATASET.export_runs WHERE window_end = TIMESTAMP('${WINDOW_END}') ORDER BY exported_at DESC LIMIT 1")"; then
   echo "[parity] freshness gate: bq export_runs query failed" >&2
   freshness=stale
   status=error
@@ -91,10 +93,27 @@ if ! fresh_json="$(bq query --use_legacy_sql=false --format=json \
   exit 1
 fi
 
-if ! gate="$(python3 - "$fresh_json" <<'PY'
+if ! gate="$(python3 - "$fresh_json" "$WINDOW_END" <<'PY'
 import json, sys
-d = json.loads(sys.argv[1])
-print("|") if not d else print(f"{d[0].get('status', '')}\t{d[0].get('window_end', '')}")
+
+def norm(ts):
+    # bq --format=json renders TIMESTAMP with nanosecond fraction, e.g.
+    # '2026-08-12T12:00:00.000Z'; WINDOW_END is '2026-08-12T12:00:00Z'.
+    # Normalize both sides so equivalence does not flake on formatting.
+    t = (ts or "").strip().replace(" ", "T")
+    if "." in t:
+        t = t.split(".")[0]
+    return t.rstrip("Z") + "Z" if t else ""
+
+data = json.loads(sys.argv[1])
+if not data:
+    print("EMPTY")
+else:
+    row = data[0]
+    if row.get("status") == "success" and norm(str(row.get("window_end") or "")) == norm(sys.argv[2]):
+        print("OK")
+    else:
+        print(f"MISMATCH {row.get('status')} {row.get('window_end')}")
 PY
 )"; then
   echo "[parity] freshness gate: could not parse bq export_runs output" >&2
@@ -107,11 +126,9 @@ PY
   emit_log
   exit 1
 fi
-gate_status="${gate%%$'\t'*}"
-gate_window="${gate#*$'\t'}"
 
-if [ -z "$gate_status" ] || [ "$gate_status" != "success" ] || [ "$gate_window" != "$WINDOW_END" ]; then
-  echo "[parity] freshness gate failed: status='$gate_status' window_end='$gate_window' (want 'success'/'$WINDOW_END')" >&2
+if [ "$gate" != "OK" ]; then
+  echo "[parity] freshness gate failed: $gate (want success/'$WINDOW_END')" >&2
   freshness=stale
   status=error
   t_edits="error"
@@ -143,10 +160,13 @@ $(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/$export_sql")
       exit 1
     fi
   else
-    local ch_sql="SELECT count() AS row_count FROM default.raw_events WHERE inserted_at >= '{START}' AND inserted_at < '{END}' AND sipHash64(event) % 100 < 10"
+    # Single source of truth: count over the committed export SQL, so the 10%
+    # deterministic-sample predicate can never drift out of sync with export.sh.
     if ! ch_out="$(docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
         --password "$CLICKHOUSE_PASSWORD" --format TSV \
-        <<<"$(sed "s/{START}/$START/; s/{END}/$END/" <<<"$ch_sql")")"; then
+        <<<"SELECT count() AS row_count FROM (
+$(sed "s/{START}/$START/; s/{END}/$END/" "warehouse/sql/export_raw_sample.sql")
+)")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
       tvar="error"
       status=error

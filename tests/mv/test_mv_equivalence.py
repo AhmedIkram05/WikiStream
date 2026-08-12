@@ -424,6 +424,37 @@ def test_warehouse_export_sql_empty_safe():
         pytest.skip("(3C not landed; export SQL empty-safe)")
 
     tables = set(query("SHOW TABLES").split())
+    # CI's analytics-tests job boots a pristine ClickHouse (no live stream) and
+    # this module collects before tests/warehouse seeds any data: export_*.sql
+    # run over the full range below would return zero rows and trip the
+    # non-empty assertion. Seed one synthetic edit (feeds raw_events AND all
+    # three MVs via the materialized views) until the deterministic 10% sipHash
+    # sample hits, so every export file is non-empty regardless of order.
+    # Each attempt must VARY: sipHash64(event) is deterministic, so the same
+    # content either always passes the 10% sample or never does. Bounded so a
+    # pathological hash run cannot hang CI; ~10 iterations expected.
+    seed_index = 0
+    while (
+        seed_index < 300
+        and scalar(
+            "SELECT count() FROM default.raw_events WHERE sipHash64(event) % 100 < 10"
+        )
+        == "0"
+    ):
+        seed_index += 1
+        seed = {
+            "type": "edit",
+            "wiki": "enwiki",
+            "title": f"3C_Seed_{seed_index}",
+            "user": "3c-seed",
+            "bot": False,
+            "timestamp": "2026-08-12T10:00:00Z",
+            "length": {"new": 10, "old": 5},
+        }
+        query(
+            "INSERT INTO default.raw_events (inserted_at, event) VALUES "
+            f"(toDateTime64(now(), 3), {sql_literal(json.dumps(seed))})"
+        )
     for path in exports:
         sql = path.read_text()
         # export.sh/parity.sh substitute these placeholders (plan 3.3.3);

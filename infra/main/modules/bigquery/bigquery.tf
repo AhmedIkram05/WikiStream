@@ -74,13 +74,25 @@ resource "google_bigquery_table" "export_runs" {
   }
 }
 
-# VM SA writes exports (load jobs) — dataset-scoped only, deliberately no
-# project-level bigquery roles (least privilege).
+# VM SA reads/writes warehouse data — dataset-scoped dataEditor only.
 resource "google_bigquery_dataset_iam_member" "vm_data_editor" {
   project    = var.project_id
   dataset_id = google_bigquery_dataset.wikistream.dataset_id
   role       = "roles/bigquery.dataEditor"
   member     = "serviceAccount:${var.service_account_email}"
+}
+
+# BigQuery jobs are PROJECT-scoped: roles/bigquery.dataEditor grants no
+# bigquery.jobs.create, and dataset IAM cannot grant it, so every bq load
+# (export.sh), bq query (parity.sh) and the Grafana GCE-auth datasource would
+# fail AccessDenied. jobUser at project scope creates jobs but cannot read or
+# write data — table access stays dataset-scoped above (ADR-010 least
+# privilege). DEVIATION from plan Q8 "dataEditor ONLY": recorded in
+# docs/implementation-log.md (code-review BLOCKER, 2026-08-12).
+resource "google_project_iam_member" "vm_job_user" {
+  project = var.project_id
+  role    = "roles/bigquery.jobUser"
+  member  = "serviceAccount:${var.service_account_email}"
 }
 
 # Staging bucket for exports (e.g. external tables / gs:// loads). Objects

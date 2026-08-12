@@ -672,6 +672,18 @@ touches it. Note: the API was already enabled in the project (verified via
 recorded below in 3.3.8** (per spec the apply precedes the 3C merge; see the
 evidence line there). AC14.
 
+**Applied** 2026-08-12 (before the 3C merge, per spec): `terraform
+-chdir=infra/bootstrap plan -var='project_id=wikistream-505003'` → plan was
+`1 to add, 0 to change, 0 to destroy` (only
+`google_project_service.apis["bigquery.googleapis.com"]`), then `terraform
+-chdir=infra/bootstrap apply -var='project_id=wikistream-505003'
+-input=false -auto-approve` → `Apply complete! Resources: 1 added, 0 changed,
+0 destroyed`. Outputs: `deploy_sa_email =
+wikistream-deploy@wikistream-505003.iam.gserviceaccount.com`,
+`wif_provider_name` unchanged. Local state touched; CI untouched (bootstrap is
+manual by design). AC14 satisfied (`gcloud services list --enabled
+--filter=config.name:bigquery.googleapis.com` shows it enabled).
+
 ### 3.3.2 — `modules/bigquery` (Q8)
 
 **Implemented** 2026-08-12 (ADR-007 extension): new 5th Terraform module
@@ -790,7 +802,97 @@ equivalence is the point). Coverage boundary row for `warehouse/sql` +
 
 ### 3.3.8 — 3C PR → deploy → verification battery → log
 
-**Evidence (filled in after local + VM verification):** pending — see below.
+**Local verification (pre-PR, 2026-08-12):**
+- `CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream
+  CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q
+  --tb=short -m ch` → **21 passed** (6 migrations + 7 mv incl. the 3C pre-hook
+  + 8 warehouse), 19 deselected, 13s. Local consumer container was stopped for
+  the run so live-stream writes don't contaminate the deterministic fixtures
+  (CI analytics-tests has no stream by construction).
+- pre-commit run --all-files → all 8 hooks Passed (trailing-whitespace,
+  end-of-file-fixer, check-yaml, check-json, check-merge-conflict,
+  check-added-large-files, ruff, ruff-format).
+- `bash -n warehouse/export.sh warehouse/parity.sh` OK; `python3 -m json.tool`
+  on all 5 schemas + dashboard OK; both datasource YAMLs parse; `docker
+  compose config -q` OK; `terraform init -backend=false && terraform validate`
+  in infra/main → `Success! The configuration is valid.`
+
+**Deviations / bugs caught by the test suite (all resolved):**
+1. **ClickHouse alias shadowing (critical, tests-caught)** —
+   `warehouse/sql/export_raw_sample.sql` originally selected
+   `formatDateTime(inserted_at, ...) AS inserted_at`. ClickHouse 26.3 resolves
+   the WHERE `inserted_at >= '{START}' AND inserted_at < '{END}'` to the
+   NEW string alias, so the T-separator RFC3339 value was compared against the
+   space-form literal — lexicographically every row failed the `< END` bound
+   and the query silently returned ZERO rows (rc=0) on both the HTTP path and
+   the production `clickhouse-client` path. This would have produced empty
+   raw-sample exports in production with no error. Fixed by a nested query:
+   inner query aliases the formatted value `AS ts` (no shadowing), outer query
+   renames `ts AS inserted_at` for the BQ schema. Verified via `docker exec`
+   against live data. The other three export files are unaffected (their alias
+   `hour` never shadows a source column).
+2. **tests/mv 3C pre-hook determinism** — the seed loop inserted identical
+   event content; since `sipHash64(event)` is deterministic the 10% sample
+   could never hit → infinite loop on a pristine CI CH. Now varies the title
+   per attempt (`3C_Seed_{i}`, capped at 300 → P(hang) ≈ 0.9^300), so
+   `warehouse/sql/export_*.sql` full-range substitution always returns
+   non-empty regardless of test ordering (CI has no live data).
+3. **tests/warehouse probe leakage** — `_seed_sampled` probe events seeded
+   with `"type": "log"` so they are invisible to the MVs
+   (`event_type IN ('edit','new')`) while still reflected in
+   `export_raw_sample` (which has no type filter) — parity sums stay exact.
+4. **parity.sh freshness gate** — `bq query --format=json` renders TIMESTAMPs
+   with fractional seconds (`...T12:00:00.000Z`); the gate now normalizes
+   (strips fraction + trailing Z) before comparing to `WINDOW_END`, else the
+   exact-equality check would flake on every run.
+5. SA deviations carried forward: parity.sh logs table value `"error"` on hard
+   query-failure paths (honest marker that the compare never ran);
+   `gcloud storage cp` output suppressed to `/dev/null` to keep the completion
+   line's stdout clean.
+
+**Subagent code review (code-reviewer on the 3C working-tree diff, 2026-08-12)
+— 8 findings, all resolved before commit:**
+1. **BLOCKER → fixed (deviation from plan Q8):** the VM SA had dataset-scoped
+   `roles/bigquery.dataEditor` only, which grants **no** `bigquery.jobs.create`
+   (verified: `gcloud iam roles describe roles/bigquery.dataEditor` has zero
+   `jobs.*` permissions). BigQuery jobs are project-scoped and dataset IAM
+   cannot grant them — so every `bq load` (export.sh), `bq query` (parity.sh)
+   and the Grafana GCE-auth datasource would `AccessDenied` on first run.
+   Added `google_project_iam_member.vm_job_user` with `roles/bigquery.jobUser`
+   at **project** scope in `infra/main/modules/bigquery/bigquery.tf` (one
+   mandatory project-scoped role; grアント jobs only, no data read/write —
+   table access stays dataset-scoped dataEditor, ADR-010 least privilege
+   preserved).
+2. **MINOR → fixed:** `infra/main/templates/startup.sh` now runs
+   `gcloud config set project "$GCP_PROJECT"` (export/parity call bq/gcloud
+   storage without `--project_id`; pins SDK project resolution).
+3. **MINOR → fixed:** `warehouse/wikistream-parity.service` gained
+   `After=wikistream-export.service` so a `Persistent=true` catch-up after VM
+   downtime cannot run parity ahead of a still-running export.
+4. **MINOR → fixed:** parity.sh freshness gate now queries
+   `WHERE window_end = TIMESTAMP('<WINDOW_END>')` instead of newest-row
+   (`ORDER BY exported_at DESC LIMIT 1`), so a manual backfill of another
+   window can no longer mask/stale the current-window check.
+5. **MINOR → fixed:** `test_export_runs_shape` now calls `_seed_sampled()`
+   itself — no dependence on a sibling test's side effect (was a ~28%
+   isolation flake).
+6. **NIT → fixed:** parity.sh `norm()` normalizes space-form timestamps
+   (`.replace(" ", "T")`) before fraction-strip.
+7. **NIT → fixed:** parity raw-sample CH count now wraps the COMMITTED
+   `export_raw_sample.sql` in `SELECT count() FROM (...)`, removing the
+   hand-mirrored predicate (single source of truth).
+8. **NIT → not applied:** START/END arg regex validation — operation-only
+   surface on a private VM; malformed args fail naturally; spec already allows
+   arbitrary windows by design.
+Explicitly cleared by review: `schema=file("${path.module}/../../../../warehouse/schemas/…")`
+path resolution, NULLABLE partition columns, `phase` label in-place update
+(no ForceNew), CH `%i` + `GROUP BY` alias resolution, BQ `TIMESTAMP('…')`
+space-form parsing, `'true'/'false'` → BOOL loading, Grafana
+`format: 1` = Table, plugin 3.2.0/Grafana 13.1.1 compatibility, boot.sh unit
+install idempotence, no secrets in any new file.
+
+**VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go: pending — filled
+after the merge + apply + VM battery below.**
 
 ## Phase 4 — Data Quality & Resilience
 
