@@ -232,3 +232,6 @@ override.tf.json
 
 # Graphify
 /graphify-out
+
+# Phase 3A pre-merge TSV capture (raw_events on the live VM)
+legacy-raw-events.tsv.gz
