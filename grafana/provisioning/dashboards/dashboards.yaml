@@ -1,6 +1,6 @@
 apiVersion: 1
 providers:
-  - name: phase1
+  - name: wikistream
     orgId: 1
     folder: ""
     type: file

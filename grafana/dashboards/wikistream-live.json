@@ -1,0 +1,357 @@
+{
+  "id": null,
+  "uid": "wikistream-live",
+  "title": "WikiStream Live Analytics",
+  "tags": ["wikistream"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "datasource": {
+    "type": "grafana-clickhouse-datasource",
+    "uid": "wikistream-clickhouse"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "window",
+        "type": "custom",
+        "query": "1 hour,24 hour",
+        "current": {
+          "text": "1 hour",
+          "value": "1 hour"
+        },
+        "options": [
+          {
+            "text": "1 hour",
+            "value": "1 hour"
+          },
+          {
+            "text": "24 hour",
+            "value": "24 hour"
+          }
+        ],
+        "hide": 0,
+        "label": "Window",
+        "includeAll": false,
+        "multi": false,
+        "sort": 0,
+        "refresh": ""
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Edit velocity",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "wikistream-clickhouse"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "a",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "wikistream-clickhouse"
+          },
+          "refId": "A",
+          "rawSql": "SELECT toStartOfMinute(minute) AS t, if(is_bot = 1, 'bot', 'human') AS series, sum(edits) AS edits FROM default.mv_edits_per_minute WHERE minute >= now() - INTERVAL 1 HOUR GROUP BY t, series ORDER BY t",
+          "format": 0
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "piechart",
+      "title": "Bot vs human ratio",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "wikistream-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "wikistream-clickhouse"
+          },
+          "refId": "A",
+          "rawSql": "SELECT if(is_bot = 1, 'bot', 'human') AS series, sum(edits) AS edits FROM default.mv_edits_per_minute WHERE minute >= now() - INTERVAL ${window} GROUP BY series",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "Top pages",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "wikistream-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "auto",
+        "showUnfilled": true,
+        "displayMode": "gradient"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "wikistream-clickhouse"
+          },
+          "refId": "A",
+          "rawSql": "SELECT title, wiki, sum(edits) AS edits FROM default.mv_top_pages_per_minute WHERE minute >= now() - INTERVAL ${window} GROUP BY title, wiki ORDER BY edits DESC LIMIT 10",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "barchart",
+      "title": "Project/language breakdown",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "wikistream-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "wikistream-clickhouse"
+          },
+          "refId": "A",
+          "rawSql": "SELECT wiki, sum(edits) AS edits FROM default.mv_edits_per_minute WHERE minute >= now() - INTERVAL ${window} GROUP BY wiki ORDER BY edits DESC LIMIT 15",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "Edit-size histogram",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "wikistream-clickhouse"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "wikistream-clickhouse"
+          },
+          "refId": "A",
+          "rawSql": "SELECT bucket, sum(edits) AS edits FROM default.mv_edit_sizes_per_minute WHERE minute >= now() - INTERVAL ${window} GROUP BY bucket ORDER BY multiIf(bucket = '0', 0, bucket = '1-10', 1, bucket = '11-100', 2, bucket = '101-1000', 3, bucket = '1001-10000', 4, 5)",
+          "format": 1
+        }
+      ]
+    }
+  ]
+}
