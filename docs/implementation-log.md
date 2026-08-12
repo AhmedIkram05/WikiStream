@@ -663,19 +663,134 @@ until 3C/AC21.
 
 ### 3.3.1 — Bootstrap: `bigquery.googleapis.com` (Q8)
 
+**Implemented** 2026-08-12: added `"bigquery.googleapis.com"` to the
+`google_project_service` `for_each = toset([...])` list in
+`infra/bootstrap/main.tf` (alongside the existing 8 APIs). Bootstrap stays a
+manual, local-state apply (`terraform -chdir=infra/bootstrap apply`) — CI never
+touches it. Note: the API was already enabled in the project (verified via
+`gcloud services list --enabled`), so the apply is a no-op state update. **Apply
+recorded below in 3.3.8** (per spec the apply precedes the 3C merge; see the
+evidence line there). AC14.
+
 ### 3.3.2 — `modules/bigquery` (Q8)
+
+**Implemented** 2026-08-12 (ADR-007 extension): new 5th Terraform module
+`infra/main/modules/bigquery/`:
+- `bigquery.tf` — `google_bigquery_dataset wikistream` (US, labels);
+  5 `google_bigquery_table`s (kpi_edits_hourly / kpi_top_pages_hourly /
+  kpi_edit_sizes_hourly / raw_events_sample / export_runs), each with
+  `schema = file("${path.module}/../../../../warehouse/schemas/<name>.json")`
+  (single source shared with `bq load`) + `time_partitioning { type = "DAY",
+  field = <ts> }` (kpi_edits_hourly additionally `clustering = ["wiki"]`);
+  `google_bigquery_dataset_iam_member` giving the VM SA
+  `roles/bigquery.dataEditor` dataset-scoped ONLY (ADR-010 least privilege —
+  no project-level bigquery roles); `google_storage_bucket
+  wikistream-505003-bq-staging` (US, uniform access, 7-day Delete
+  lifecycle_rule) + bucket-scoped `storage.objectCreator` /
+  `storage.objectViewer` for the VM SA.
+- `variables.tf` (project_id, service_account_email, labels) + `outputs.tf`
+  (dataset_id, bucket_name).
+- `infra/main/main.tf`: `locals.labels.phase` bumped `"2"` → `"3"`; wired
+  `module "bigquery"` (project_id, service_account_email =
+  module.iam.service_account_email, labels = local.labels). No other modules
+  touched. AC15 (verification in 3.3.8).
 
 ### 3.3.3 — warehouse/sql + warehouse/schemas (Q6/Q7)
 
+**Implemented** 2026-08-12:
+- `warehouse/sql/export_edits.sql`, `export_top_pages.sql`,
+  `export_sizes.sql`, `export_raw_sample.sql` — single source of truth with
+  literal `{START}`/`{END}` placeholders (UTC), shared by export.sh, parity.sh
+  and the pytest suite. Every timestamp column is unconditionally wrapped
+  `formatDateTime(..., '%Y-%m-%dT%H:%i:%sZ')` (RFC3339 for the bq JSON
+  loader — space-form is CSV-only), and BOOL columns are cast
+  `if(is_bot, 'true', 'false')` (bq JSON parser requires true/false, not 0/1).
+  `export_raw_sample.sql` samples deterministic `sipHash64(event) % 100 < 10`.
+- `warehouse/schemas/{kpi_edits_hourly,kpi_top_pages_hourly,
+  kpi_edit_sizes_hourly,raw_events_sample,export_runs}.json` — BQ schema
+  arrays (all columns NULLABLE) referenced by BOTH the TF module
+  (`file()`/`abspath` — the single-source path) and `bq load --schema`.
+- `warehouse/sql/parity_bq_{edits,top_pages,sizes,raw_sample}.sql` —
+  BQ-dialect twin queries (windowed SUM over the hourly BQ tables; COUNT for
+  the raw sample; grain differs from CH by design per Q7).
+
 ### 3.3.4 — export.sh + parity.sh (Q7)
+
+**Implemented** 2026-08-12: `warehouse/export.sh` and `warehouse/parity.sh`
+(executable in git). Both are `set -euo pipefail`, `SCRIPT_DIR`-relative,
+source `/opt/wikistream/.env` when present for `CLICKHOUSE_PASSWORD` (no
+secrets in unit files), accept optional START/END args with a GNU-date default
+of last completed UTC hour (END = start of current hour, START = END − 1h).
+- `export.sh`: per table (kpi_edits → kpi_top_pages → kpi_sizes →
+  raw_sample) the locked pipeline — `docker exec -i wikistream-clickhouse
+  clickhouse-client --user wikistream --password … --format JSONEachRow <
+  <(sed "s/{START}/$START/; s/{END}/$END/" …)` → staged JSONL (0-byte results
+  are removed and skipped), `gcloud storage cp` to the staging bucket, `bq
+  load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field=…
+  --schema=warehouse/schemas/<table>.json` (append semantics) → final single-
+  line export_runs record (status success + 4 row counts) loaded through the
+  committed export_runs.json schema. Any failure aborts non-zero.
+- `parity.sh`: freshness gate on the latest export_runs row (status
+  "success" AND window_end == the window just exported, else exit non-zero);
+  per-table CH-vs-BQ comparison against the SAME window — CH side wraps the
+  committed export SQL in an outer SUM (merge-state-independent; never row
+  counts), BQ side runs the committed parity_bq_*.sql twins — any mismatch
+  exits non-zero; appends one JSON line to `/var/log/wikistream-parity.log`
+  (Phase 5 alert hook) and echoes it to stdout/journald.
+- Deliberate detail: parity compares SUMS not row counts (BQ hourly grain vs
+  CH minute grain; SummingMergeTree row counts are merge-state-dependent,
+  sums are not). Documented double-load remediation: re-exported windows
+  append (at-least-once), surfaced by parity, remediated by windowed DELETE +
+  reload.
 
 ### 3.3.5 — systemd units + timers + boot.sh install step
 
+**Implemented** 2026-08-12:
+- `warehouse/wikistream-export.{service,timer}` —
+  `OnCalendar=*-*-* *:00:00`, `Persistent=true`, Type=oneshot,
+  ExecStart=/opt/wikistream/warehouse/export.sh (scripts source their own env;
+  no EnvironmentFile, no secrets in units).
+- `warehouse/wikistream-parity.{service,timer}` — same shape,
+  `OnCalendar=*-*-* *:05:00` (5 min after :00 export).
+- `scripts/boot.sh` — appended the idempotent Phase 3C install step: `cp`
+  the 4 unit files to /etc/systemd/system/, `systemctl daemon-reload`,
+  `systemctl enable --now wikistream-export.timer wikistream-parity.timer`
+  (absolute paths; timers run as root on the VM; executables ship with the
+  git exec bit).
+
 ### 3.3.6 — BigQuery datasource + freshness panel (ADR-010)
+
+**Implemented** 2026-08-12:
+- `docker-compose.yml`: `GF_PLUGINS_PREINSTALL` extended to the single
+  comma-separated string
+  `grafana-clickhouse-datasource@4.20.0,grafana-bigquery-datasource@3.2.0`
+  (GF_INSTALL_PLUGINS is broken in Grafana 13.1.1 — GF_PLUGINS_PREINSTALL is
+  the only path; 3.2.0 requires Grafana ≥ 11.6, compatible).
+- `grafana/provisioning/datasources/bigquery.yaml` (NEW): datasource name
+  BigQuery, uid `wikistream-bigquery`, type grafana-bigquery-datasource,
+  `jsonData { authenticationType: gce, defaultProject: wikistream-505003 }`,
+  NOT the default (ClickHouse remains default). GCE auth reads the VM SA
+  token from the metadata server; the dataset-scoped dataEditor covers its
+  jobs (no new IAM) — expected to fail on local dev (no metadata server),
+  documented §9.
+- `grafana/dashboards/wikistream-live.json`: panel 6 "Warehouse freshness"
+  (`stat`, BQ datasource uid, gridPos h8 w6 x0 y18 — new row, no overlap of
+  the full y10 row), rawSql
+  `SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(exported_at), MINUTE) AS minutes_since FROM wikistream.export_runs`,
+  format 1, thresholds green < 60 / orange 60–120 / red > 120, unit min;
+  dashboard `version` 1 → 2. Requires the 3B-8 grafana restart to pick up the
+  new datasource/panel after deploy.
 
 ### 3.3.7 — tests/warehouse suite
 
+**Implemented** 2026-08-12: `tests/warehouse/test_export_parity.py`
+(`@pytest.mark.ch`, local CH only — gcloud/bq are not exercised; local
+equivalence is the point). Coverage boundary row for `warehouse/sql` +
+`tests/warehouse` added in AC21. Evidence: pytest run output in 3.3.8.
+
 ### 3.3.8 — 3C PR → deploy → verification battery → log
+
+**Evidence (filled in after local + VM verification):** pending — see below.
 
 ## Phase 4 — Data Quality & Resilience
 
