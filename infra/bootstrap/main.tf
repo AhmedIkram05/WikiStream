@@ -97,6 +97,11 @@ resource "google_project_iam_member" "deploy_project_roles" {
     "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",
     "roles/resourcemanager.projectIamAdmin",
+    # 3C: infra/main now creates the BigQuery dataset (bigquery.datasets.create)
+    # and the GCS staging bucket (storage.buckets.create); both are project
+    # primitives that dataset/bucket-scoped roles cannot grant.
+    "roles/bigquery.admin",
+    "roles/storage.admin",
   ])
   project = var.project_id
   role    = each.key

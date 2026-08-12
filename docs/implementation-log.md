@@ -891,6 +891,21 @@ space-form parsing, `'true'/'false'` → BOOL loading, Grafana
 `format: 1` = Table, plugin 3.2.0/Grafana 13.1.1 compatibility, boot.sh unit
 install idempotence, no secrets in any new file.
 
+**Post-merge deployment issue + fix (2026-08-12, recorded as deviation):**
+the first gated `apply` (via PR #19 merge) failed with two 403s — the
+**deploy SA** (which runs `infra/main` through WIF) lacks
+`bigquery.datasets.create` and `storage.buckets.create`, both project
+primitives that neither dataset- nor bucket-scoped roles can grant. Added
+`roles/bigquery.admin` + `roles/storage.admin` to the deploy SA's
+`deploy_project_roles` in `infra/bootstrap/main.tf` and applied **locally
+with bootstrap state** (CI never touches bootstrap; `plan` 2 to add →
+`Apply complete! Resources: 2 added`) — same ceremony as the 3.3.1 bootstrap
+apply. The apply also recreated the VM once (expected: `startup.sh` is
+referenced via `file()` in the compute module, so the added
+`gcloud config set project` line forces a new instance); the pre-existing
+`google_project_iam_member.vm_job_user` (bigquery.jobUser) was created
+successfully in that same run.
+
 **VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go: pending — filled
 after the merge + apply + VM battery below.**
 
