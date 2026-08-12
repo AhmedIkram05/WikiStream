@@ -50,6 +50,7 @@ resource "google_project_service" "apis" {
     "sts.googleapis.com", # workload identity federation token exchange
     "oslogin.googleapis.com",
     "cloudresourcemanager.googleapis.com",
+    "bigquery.googleapis.com",
   ])
   service = each.key
 }
