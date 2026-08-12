@@ -1,0 +1,37 @@
+[
+  {
+    "name": "inserted_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "event",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "wiki",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "title",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "user",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "is_bot",
+    "type": "BOOL",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "event_type",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  }
+]

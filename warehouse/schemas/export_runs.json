@@ -1,0 +1,42 @@
+[
+  {
+    "name": "exported_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "window_start",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "window_end",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "status",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "rows_edits",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "rows_top_pages",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "rows_sizes",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "rows_raw_sample",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  }
+]

@@ -1,0 +1,9 @@
+[Unit]
+Description=WikiStream hourly warehouse parity check timer
+
+[Timer]
+OnCalendar=*-*-* *:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

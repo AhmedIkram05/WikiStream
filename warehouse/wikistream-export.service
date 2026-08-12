@@ -1,0 +1,10 @@
+[Unit]
+Description=WikiStream hourly BigQuery export
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wikistream/warehouse/export.sh
+StandardOutput=journal
+StandardError=journal

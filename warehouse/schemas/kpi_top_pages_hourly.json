@@ -1,0 +1,27 @@
+[
+  {
+    "name": "hour",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "title",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "wiki",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "edits",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "bytes_delta",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  }
+]

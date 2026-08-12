@@ -1,0 +1,10 @@
+[Unit]
+Description=WikiStream hourly warehouse parity check
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wikistream/warehouse/parity.sh
+StandardOutput=journal
+StandardError=journal
