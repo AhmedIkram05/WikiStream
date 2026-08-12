@@ -83,6 +83,15 @@ def reset():
     # Disposable-container hygiene. schema_migrations is dropped too: the
     # runner skips anything already recorded, so a prior test's recorded 001
     # would silently defeat this test's fresh apply (no table created).
+    # Since 3B (migrations 004-006) the mv_* views exist: drop them BEFORE
+    # raw_events or a legacy-shape insert fires the MV and 404s on the
+    # missing materialized column (test_legacy_migration).
+    for t in (
+        "mv_edits_per_minute",
+        "mv_top_pages_per_minute",
+        "mv_edit_sizes_per_minute",
+    ):
+        query(f"DROP TABLE IF EXISTS default.{t}")
     query("DROP TABLE IF EXISTS default.raw_events")
     query("DROP TABLE IF EXISTS default.raw_events_v1")
     query("DROP TABLE IF EXISTS default.schema_migrations")

@@ -367,7 +367,7 @@ task 3.1.8 cross-references it, it is NOT re-recorded.
 
 **Evidence:** Live run: **6 passed, 19 deselected, 3.17s** against throwaway `clickhouse-server:26.3.17.110` (port 18125), real `apply.sh` + real migration files + real `bootstrap-user.dev.sql`.
 
-### DEVIATIONS & FINDINGS (3A, so far)
+### DEVIATIONS & FINDINGS
 
 - **002 backfill: `LEFT JOIN ... WHERE r.event IS NULL` broken → `LEFT ANTI JOIN`.** On ClickHouse 26.3.17 with default `join_use_nulls=0`, unmatched right-side columns come back as type defaults (`''`), never NULL, so the planned anti-join predicate matches nothing and 002 would be a silent no-op (003 would then drop the legacy table losing its data). **Verified three times** (migrations agent's native-client + HTTP smokes, tests agent's legacy test, my own `t_a`/empty-`t_b` reproduction: plan-form count = 0, `LEFT ANTI JOIN` count = 3). `LEFT ANTI JOIN` is semantically identical and idempotent; documented in the 002 header.
 - **`system.tables.ttl_expression` absent on CH 26.3.17** → the plan's canonical AC3/check path fails (`UNKNOWN_IDENTIFIER`). `test_ttl_present` probes `hasColumnInTable('system','tables','ttl_expression')` and falls back to `SHOW CREATE TABLE` (which renders `TTL inserted_at + toIntervalDay(30)`). §4-checklist item logs "fallback used: SHOW CREATE" at 3.1.8.
@@ -375,8 +375,53 @@ task 3.1.8 cross-references it, it is NOT re-recorded.
 - **Guard must be migration-file line 1** — a first draft put explanatory headers before `-- guard:`; the first smoke run applied every file unconditionally (then 002 404'd on the missing `raw_events_v1`). Caught in the migrations agent's smoke; all guards now sit on line 1.
 - **Docker daemon side-effect:** starting the daemon for smoke tests auto-restarted the repo's local compose stack (old config, old data on `ch-data` volume) — left running; local ClickHouse on `:8123` is the old shape until a fresh volume/compose up applies 3A.
 - **Cosmetic:** ci.yml line-32 comment "three independent checks" is stale (now four matrix entries).
+- **STARTUP INCIDENT (2026-08-12, deploy-time): fresh recreate died at the ch-data mount.** The 3.1.8 apply's recreated VM booted `startup.sh` and hit `mount: /mnt/ch-data: mount point does not exist.` → `set -e` aborted before §6/§7/§8 (`.env`, pull/up, boot.sh, `startup done` never ran; no containers). Root cause: the mount block mounted to a path that didn't exist yet — `mountpoint -q` on a missing dir returns false, so the `|| mount` fired into thin air. Latent bug invisible to `bash -n`/static review; only a real recreate exercises §5. Fixed by adding `mkdir -p /mnt/ch-data` (with explanatory comment) before the mount; verified and shipped as b081cd1 via PR (CI + TF plan green, only the `metadata_startup_script` diff → ForceNew). The 14:05 reboot after the fix boots clean end-to-end: mount OK, `.env`, `user bootstrap ok`, migrations all `SKIP (recorded)`, `startup done`.
+- **ForceNew detach footgun (structural, phase-3B/3C must know): `google_compute_attached_disk` does NOT re-attach after an instance replacement.** Destroying the replaced instance detaches PDs server-side; the `attached_disk` resource has no config diff (instance/disk/device_name unchanged) so Terraform never re-runs it. The ch-data disk came back `READY`/unattached after the b081cd1 ForceNew. Recovery (documented so future recreates are one-liners): `gcloud compute instances attach-disk wikistream-vm --disk ch-data --zone us-east1-b --device-name ch-data` then reboot (startup script runs on every boot and resumes the disk path). Data was never at risk (disk volume intact). Any future ForceNew must repeat this; likewise the local `legacy-raw-events.tsv.gz` is the standing backstop.
+- **"Workflow green ≠ boot green."** apply.yml completes the instance replacement and `terraform apply` succeeds regardless of what the startup script does afterward (Terraform never waits for startup). VM-facing verification of a deploy must read `/var/log/wikistream-startup.log` tail (sudo) for `startup done`, not the workflow badge. This incident is exactly why 3.1.8's micro-gate double-checks the live VM.
 
 ### 3.1.8 — 3A PR → capture → deploy → import → micro-gate → log
+
+**Status:** DONE
+
+**2026-08-12:** Full 3A lifecycle executed. Gate 1's GO-with-caveat (§2.8) cross-referenced, not re-recorded; the cold-reapply leg it flagged as unproven is now proven three ways: CI `analytics-tests` (fresh container + fresh volume), the clean-DB apply on the brand-new VM, and apply-from-current-state on the live disk.
+
+- **Pre-merge capture:** `legacy-raw-events.tsv.gz` (22.5 MB, **118,788 rows**, sha256 `ee2063f0…5248`) captured from Phase 2's table on the VM (`sudo docker exec` TSV) and parked in the repo (gitignored) as the bulletproof backstop behind the ch-data disk.
+- **Merge/deploy:** PR #15 then PR #16 (feature/Data-Model-Depth → main) merged 13:41:56Z; Apply (GCP) run 31602769079 and CI run 31602769044 both success on sha `1070749b`. Instance ForceNew-recreated (creationTimestamp 14:00:26Z). Boot FAILED at the mount (incident above) → stack brought up manually once (recovery path, also proves §5b–§8), TSV import run: rows 3168 → 122,329 in the typed table (delta 119,161 = 118,788 captured + ~373 live rows during import — **lossless**, AC5).
+- **Micro-gate (HARD CHECKPOINT) — GREEN:** (1) consumer live, counts strictly increasing (~43 ev/s); (2) AC4 — all 10 columns via `system.columns` (incl. `is_bot UInt8`, `length_new/length_old UInt32`, `event_timestamp DateTime64(3,'UTC')`); (3) AC5 spot check — `count() WHERE wiki != ''` = 122,346, sample rows fully typed (jawiktionary categorize, cewiki edit…); (4) AC2 — re-run `apply.sh` → 0 applied, 4 skipped, exit 0; (5) AC3 — `SHOW CREATE TABLE` shows `TTL inserted_at + toIntervalDay(30)`; (6) `schema_migrations` = 000 skipped / 001 applied / 002 skipped / 003 skipped.
+- **Mount-fix deploy (b081cd1):** merged → apply 13:57:40Z on `ffe9ee8` → instance ForceNew again (14:00:26Z) → **disk was left unattached** (structural footgun above) → re-attached + rebooted → 14:05:12Z **clean boot**: mount OK (30G `/dev/sdb` on `/mnt/ch-data`), `/var/lib/clickhouse` on the disk, `user bootstrap ok`, migrations all `SKIP (recorded)`, `startup done`.
+- **Post-fix micro-gate re-check — GREEN:** counts 149,857 → 150,157 in 6 s (~50 ev/s), `wiki != ''` = 150,164 (import data intact and growing), schema_migrations intact, TTL intact. AC5 holds on the disk-backed table across both recreates.
+
+**Evidence:** gh run summaries (runs/31602769079, 31602769044, and the ffe9ee8 CI: ruff / unit-tests / analytics-tests / compose-smoke all success); instance `creationTimestamp`/`lastStartTimestamp` at 14:00:26Z / 14:00:35Z + 14:05 boot; `/var/log/wikistream-startup.log` tails (mount block, redacted bootstrap SQL with `ALTER USER IF EXISTS`, `user bootstrap ok`, `SKIP … (recorded)` ×4, `startup done`); `gcloud compute disks list` (`ch-data` 30 GB READY, re-attached); live counts above.
+
+### §4 BUILD-TIME CHECKLIST — OUTCOMES (3A)
+
+| Check | Outcome |
+|---|---|
+| `parseDateTime64BestEffort` tolerates trailing Z (Wikimedia `…12:34:56Z`) | **confirmed** — materialized `event_timestamp` parsed correctly; no fallback migration needed |
+| AC3 via `system.tables.ttl_expression` | **fallback used: SHOW CREATE** (column absent on CH 26.3.17); `test_ttl_present` probes `hasColumnInTable` first |
+| curl `X-ClickHouse-User/Key` header auth + `--fail-with-body` | **confirmed** |
+| `docker compose exec -T … clickhouse-client --multiquery` accepts piped stdin | **confirmed** (bootstrap, CI, VM) |
+| `metadata_startup_script` ForceNew | **confirmed** (two recreates) — plus the mount-bug incident it surfaced |
+| `docker exec -i` required for piped stdin | **confirmed** (TSV import) |
+| `SYSTEM FLUSH ASYNC INSERT QUEUE` before exports | n/a in 3A (3C task) |
+| `max_suspicious_broken_parts = 1000` on 001 | **confirmed** (DDL + SHOW CREATE) |
+| `LEFT JOIN … WHERE r.event IS NULL` anti-join | **fallback used: LEFT ANTI JOIN** (broken on 26.3.17, see deviations) |
+| `sipHash64(event)` order key | **confirmed** |
+| CI `-m "not ch"` / `@pytest.mark.ch` split | **confirmed** (analytics-tests green incl. cold image pull) |
+| `bootstrap-user.dev.sql` never seen by runner ([0-9]*.sql glob) | **confirmed** |
+
+### ACCEPTANCE CRITERIA — 3A (AC1–AC8)
+
+- **AC1 — migrations apply cleanly to a clean DB:** CI `analytics-tests` green on main (fresh container, fresh volume; 6 ch tests pass incl. `test_clean_db_apply` with `count(schema_migrations) == number of files`), plus the clean-DB apply on the new VM (`SKIP 000 / APPLY 001 / SKIP 002 / SKIP 003`, exit 0).
+- **AC2 — re-runnable:** second `apply.sh` → exit 0, zero new rows, all `SKIP (recorded)` (VM micro-gate and test suite).
+- **AC3 — TTL:** `SHOW CREATE` contains `toIntervalDay(30)` on the live table (fallback, see checklist).
+- **AC4 — full typed schema:** 10/10 columns via `system.columns` incl. all 8 typed MATERIALIZED columns.
+- **AC5 — legacy data lossless:** pre-merge capture 118,788; import delta 119,161 ≥ captured (+ concurrent live rows); `wiki != ''` = 150,164 after two recreates; `test_legacy_migration` green (typed values match the JSON source).
+- **AC6 — initdb.d retired:** `git grep -ni initdb -- . ':(exclude)docs'` clean; `docker compose config` valid; no heredoc/fence in startup.sh.
+- **AC7 — rotation-gap fix live:** `ALTER USER IF EXISTS wikistream …` present (redacted) in the startup log on every boot.
+- **AC8 — user bootstrap from startup:** `user bootstrap ok` in the log; consumer connects with the real Secret Manager password and counts increase monotonically (~43–50 ev/s).
+
+**Handoff to 3B (analytics):** versioned schema + bookkeeping shipped (apply.sh + numbered DDL + `schema_migrations`); typed `raw_events` includes `event_timestamp` (the Phase-4 GX assertion target) and the `sipHash64(event)` order key (cheap Phase-4 dedup); rotation gap closed (password re-syncs every boot); CI shape `-m "not ch"` vs `@pytest.mark.ch` ready for the 3B/3C ch suites (they join via `testpaths=tests`, no CI change needed); coverage boundary for 3B/3C extends to `migrations/` + `tests/migrations/` + `warehouse/` per plan §5 (3A introduced no new Python except tests). **Carry-forward ops notes:** after any VM recreate, re-attach `ch-data` (`gcloud compute instances attach-disk … --device-name ch-data`) and reboot — the disk will NOT re-attach itself (structural footgun above); verify boots by reading `/var/log/wikistream-startup.log` tail (sudo), never just the workflow badge.
 
 ### 3.2.1 — MV migrations 004–006 (Q4)
 
