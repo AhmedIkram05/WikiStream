@@ -11,6 +11,14 @@ predicted path and is verified at **100% line coverage** (19/19 tests pass,
 (`models.py`, `batcher.py`, `dead_letter.py`) do not exist yet; they stay
 predicted and are corrected when their phases land them.
 
+**2026-08-12 (Phase 3B correction):** `migrations/**` and the three MV
+definitions (`004/005/006_mv_*.sql`, ADR-006) are now REAL paths, with
+`tests/migrations/` (6 ch tests) and the new `tests/mv/` equivalence suite
+(6 tests + 1 3C-aware skip) as their spot-check guarantee — MV output is
+asserted equal to the equivalent raw GROUP BY, synthetically in CI and again on
+live stream data at the 3B deploy spot-check. `warehouse/sql` + `tests/warehouse`
+arrive with Phase 3C (AC21 phase-final wording) and stay predicted until then.
+
 ## The modules
 
 | Module (predicted path) | Responsibility | Why business-critical |

@@ -1,4 +1,4 @@
-# WikiPulse — Streaming Analytics Platform: Vision & Architecture Decision Record
+# WikiStream — Streaming Analytics Platform: Vision & Architecture Decision Record
 
 **Status:** Locked — v5 (v2 refactored after critical review; v3 added Cloud Monitoring + Artifact Registry; v4 added BigQuery warehouse layer; v5 added BQ freshness panel + scheduled parity check)
 **Working name:** WikiStream
@@ -237,7 +237,7 @@ flowchart LR
 
 ## 5. Scalability & Future Evolution
 
-WikiPulse is intentionally engineered for **vertical scaling on a single node**, not horizontal/distributed scaling — appropriate for a disposable demo processing one well-bounded stream. If requirements genuinely grew, the natural evolution would be: a replicated ClickHouse cluster with distributed tables once single-node throughput became the bottleneck; Kafka in front of the consumer if multiple, uncoordinated ingestion sources needed merging (the scenario LAAD already covers); horizontal consumer replicas behind a partitioned topic if the async consumer itself became the bottleneck; and multi-region ClickHouse replicas if the dashboard needed to serve geographically distributed users. None of this is built — it's stated here so the scoping reads as a decision, not an oversight.
+WikiStream is intentionally engineered for **vertical scaling on a single node**, not horizontal/distributed scaling — appropriate for a disposable demo processing one well-bounded stream. If requirements genuinely grew, the natural evolution would be: a replicated ClickHouse cluster with distributed tables once single-node throughput became the bottleneck; Kafka in front of the consumer if multiple, uncoordinated ingestion sources needed merging (the scenario LAAD already covers); horizontal consumer replicas behind a partitioned topic if the async consumer itself became the bottleneck; and multi-region ClickHouse replicas if the dashboard needed to serve geographically distributed users. None of this is built — it's stated here so the scoping reads as a decision, not an oversight.
 
 ## 6. Differentiation Layer & Hero Metrics
 

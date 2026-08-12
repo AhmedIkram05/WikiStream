@@ -138,7 +138,7 @@ jobs:
                 sleep 5
               done
               [ "$code" = "200" ] || { echo "::error::grafana not healthy after 150s"; exit 1; }
-              curl -sf -u admin:admin "http://localhost:3000/api/search" | grep -q "Phase 1" \
+              curl -sf -u admin:admin "http://localhost:3000/api/search" | grep -q "WikiStream Live Analytics" \
                 || { echo "::error::dashboard not provisioned"; exit 1; }
 
               echo "== AC6: panel query returns rows through Grafana =="

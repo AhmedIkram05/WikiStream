@@ -425,13 +425,165 @@ task 3.1.8 cross-references it, it is NOT re-recorded.
 
 ### 3.2.1 — MV migrations 004–006 (Q4)
 
+**DONE (2026-08-12).** Three materialized views over `default.raw_events`, all
+`CREATE MATERIALIZED VIEW IF NOT EXISTS … ENGINE = SummingMergeTree`, no guard
+line and no POPULATE (history starts at the 3B deploy; refreshes at ~40–50 ev/s
+within minutes):
+
+- `004_mv_edits_per_minute.sql` — per (minute, wiki, is_bot): `count() AS edits`,
+  `sum(toInt64(length_new) - toInt64(length_old)) AS bytes_delta`; WHERE
+  `event_type IN ('edit','new') AND wiki != ''`; ORDER BY `(minute, wiki, is_bot)`.
+- `005_mv_top_pages_per_minute.sql` — per (minute, title, wiki); composite key so
+  the same title on different wikis does NOT collapse; same WHERE.
+- `006_mv_edit_sizes_per_minute.sql` — per (minute, bucket) via
+  `multiIf(abs(toInt64(length_new) - toInt64(length_old)))` →
+  `'0' / '1-10' / '11-100' / '101-1000' / '1001-10000' / '10000+'`.
+
+All three statement-identical to the locked spec modulo whitespace. Verified on a
+fresh local volume: `apply.sh` → `SKIP 000 (guard 0) / APPLY 001 / SKIP 002 /
+SKIP 003 / APPLY 004 / APPLY 005 / APPLY 006` →
+"migrations complete: 4 applied, 3 skipped"; `SHOW TABLES LIKE 'mv_%'` → exactly
+the 3 views.
+
 ### 3.2.2 — tests/mv equivalence suite (Q5)
+
+**DONE (2026-08-12).** `tests/mv/test_mv_equivalence.py` — 7 `@pytest.mark.ch`
+tests; standalone helpers mirroring the `tests/migrations` conventions (no
+cross-module test imports). `testpaths=tests` collects the suite with zero CI
+changes and `-m "not ch"` skips it:
+
+- `test_mv_tables_exist` — `SHOW TABLES LIKE 'mv_%'` == exactly the 3 MVs.
+- The three `*_equivalence` tests — ADR-006 spot-check as assertions: MV output
+  == equivalent raw GROUP BY over the SAME cutoff literal (a single window string
+  captured before insert, interpolated identically on both sides; only the parse
+  wrapper differs). Both sides are aggregated SUMs — never row counts
+  (SummingMergeTree may return unmerged duplicate rows). 10-row synthetic edge
+  matrix: edit/new/log types, bots + humans, missing `length.old` (new events;
+  JSONExtractUInt defaults 0), empty-wiki rows (EXCLUDED), and all six size
+  buckets incl. a shrinking edit (−450) and a 50k delta. The raw twin carries the
+  MV's canonical filters. The 006 bucket labels are ground-truthed independently
+  (`BUCKET_COUNTS`) and `BUCKET_MULTIIF` is token-verified against the live
+  migration file (catches a boundary typo shared by both copies).
+- `test_mv_excludes_log_and_empty_wiki` — inserted 10 vs included 8 on every MV;
+  no `wiki = ''` row in the wiki-bearing MVs.
+- `test_interval_window_forms` — pins the deployed dashboard forms
+  `now() - INTERVAL 1 hour` / `now() - INTERVAL 24 hour` parse (deviation 3B-2).
+- `test_warehouse_export_sql_empty_safe` — 3C pre-hook: globs
+  `warehouse/sql/export_*.sql`; absent → `pytest.skip` (the plan's
+  "empty-file-safe until then" contract); present → runs each, asserts non-empty,
+  checks its `mv_*` source tables. 3C activates the comparison branch unchanged.
+
+Suite result (fresh container, `-m ch`): **12 passed, 1 skipped** across
+`tests/migrations + tests/mv` (6 + 6 + 1 warehouse skip).
 
 ### 3.2.3 — `wikistream-live` dashboard (Q10)
 
+**DONE (2026-08-12).** `grafana/dashboards/wikistream-live.json` replaces
+`phase1.json` (deleted): uid `wikistream-live`, title **"WikiStream Live
+Analytics"** (WikiPulse deprecated), tags `[wikistream]`, timezone utc, refresh
+10s, time `now-1h → now`, datasource uid `wikistream-clickhouse`
+(grafana-clickhouse-datasource) on every target. Numeric `format` enums
+(0 timeseries / 1 table — the string `"time_series"` 500s on plugin 4.20.0, the
+Phase-1 finding). 5 panels:
+
+1. **Edit velocity** — timeseries, stacked `if(is_bot = 1, 'bot', 'human') AS
+   series`, deliberate FIXED `INTERVAL 1 HOUR` (not `${window}`).
+2. **Bot vs human ratio** — piechart, `INTERVAL ${window}`.
+3. **Top pages** — bar gauge, `mv_top_pages_per_minute`, `ORDER BY edits DESC LIMIT 10`.
+4. **Project/language breakdown** — bar, `mv_edits_per_minute`, `GROUP BY wiki … LIMIT 15`.
+5. **Edit-size histogram** — bar, numeric bucket order via
+   `multiIf(bucket = '0', 0, …, 5)` (plain ORDER BY is lexicographic and would
+   misplace `'10000+'`).
+
+Plus: `grafana/provisioning/dashboards/dashboards.yaml` provider name `phase1` →
+`wikistream`; `.github/workflows/ci.yml` compose-smoke AC5 `/api/search` grep
+`"Phase 1"` → `"WikiStream Live Analytics"`.
+
+**Verified against a LIVE Grafana 13.1.1 + clickhouse plugin 4.20.0 on a fresh
+local volume:** `/api/search` returns only `wikistream-live / WikiStream Live
+Analytics`; every panel SQL returned rows via `/api/ds/query` for BOTH window
+values (`${window}` substituted manually — the raw ds/query endpoint does not
+expand template variables; the dashboard frontend does — see checklist 3B-4).
+
 ### 3.2.4 — 3B PR → deploy → live spot-check → log
 
+**In flight (2026-08-12).** Implementation, local verification and the code review
+are complete; PR → merge → gated VM deploy → live spot-check pending
+(AC9/AC11/AC12/AC13 evidence filled in below after the deploy).
+
 ### 3.2.5 — Docs name sweep: WikiPulse → WikiStream
+
+**DONE (2026-08-12).** `grep -rn -i wikipulse docs/` pre-sweep found exactly
+three product-name occurrences: `docs/planning/master-plan.md:1` (title),
+`docs/planning/vision-and-adr.md:1` (title), and `vision-and-adr.md:240` (the
+single-node vertical-scaling sentence) — all changed to WikiStream (sentence
+bodies byte-identical otherwise). Remaining hits are intentional: deprecation
+notes in `phase-3-implementation.md` (Q4/Q10) and the 3.2.5 log/plan task
+headings — left untouched. phase-1/2 plans, research-notes and
+coverage-boundary had no occurrences.
+
+### DEVIATIONS & FINDINGS (3B)
+
+1. **Branch convention (per user): all Phase-3 work rides `feature/Data-Model-Depth`**
+   — the plan's `feature/phase-3b-analytics` (and later `feature/phase-3c-warehouse`)
+   names are not used; same precedent as 3A. The 3B PR opens from this branch
+   against `main`.
+2. **`INTERVAL 1h` / `INTERVAL 24h` shorthand REJECTED by ClickHouse 26.3.17**
+   (Code 47 `UNKNOWN_IDENTIFIER` / Code 62 syntax; verified independently on two
+   CH 26.3 instances). The dashboard `$window` custom values therefore ship as
+   `1 hour` / `24 hour` (default `1 hour`); panels keep the plan's
+   `minute >= now() - INTERVAL ${window}` SQL verbatim. This is the plan's own
+   build-time-flag path (3.2.3 verify notes → deviate via window values).
+   `tests/mv/test_interval_window_forms` pins the deployed forms.
+3. **3B MVs broke the 3A suite**: 3A's `reset()` dropped `raw_events` but not the
+   `mv_*` storages; `test_legacy_migration` then inserted into a legacy
+   2-column `raw_events`, the still-attached MV fired on the missing materialized
+   columns → `Code 47 UNKNOWN_IDENTIFIER 'title' (while pushing to view) → HTTP
+   404`. Fix: `tests/migrations/test_migrations.py reset()` now drops the 3
+   `mv_*` tables FIRST (before their source), with a comment referencing
+   `test_legacy_migration`. Proved by reproduction before/after. Also required in
+   CI: `analytics-tests` runs on a fresh container where MVs now exist.
+4. **AC13 harness artifact**: `/api/ds/query` does NOT expand Grafana template
+   variables — `${window}` is substituted by the dashboard frontend only. The VM
+   spot-check substitutes `${window}` manually (`1 hour` / `24 hour`).
+5. **AC11 live-equivalence methodology**: naive `minute >= now()-INTERVAL` vs
+   `inserted_at >= now()-INTERVAL` does not match exactly purely because of (a)
+   window-bound shape (minute-bucket vs exact-timestamp bounds drift up to a
+   minute per edge) and (b) the bootstrap minute (rows inserted before the MV's
+   CREATE are raw-only — inherent at every first deploy, self-settling). With
+   minute-aligned bounds on BOTH sides over settled minutes, MV == raw EXACTLY
+   (local proof: 2480==2480 on a settled window). Not an MV defect.
+6. `system.materialized_views` is not a valid table name on 26.3 (harmless; no
+   shipped code references it).
+
+### §4 BUILD-TIME CHECKLIST — OUTCOMES (3B)
+
+| Check | Outcome |
+|---|---|
+| `SHOW TABLES LIKE 'mv_%'` → 3 views | **confirmed** (fresh volume + suite) |
+| CH 26.3 accepts `INTERVAL 1h`/`24h` shorthand | **rejected (Code 47)** → deviation: window values `1 hour`/`24 hour` |
+| MV population synchronous / no POPULATE | **confirmed** (INSERT-blocking views; same-minute visibility) |
+| SummingMergeTree unmerged-row semantics | **confirmed** — equality must be SUM-vs-SUM, never row counts |
+| `format` numeric enum required (not `"time_series"`) | **confirmed** — panels all `0`/`1` |
+| Grafana template-var expansion inside raw `/api/ds/query` | **does NOT expand** — substitute `${window}` in the spot-check harness |
+| MV bootstrap-minute race (rows pre-CREATE stay raw-only) | **observed**, self-settling, non-issue |
+| `testpaths=tests` picks up `tests/mv` with no CI change | **confirmed** (analytics-tests = `pytest -m ch`) |
+| Warehouse export SQL empty-safe skip | **confirmed** (`pytest.skip` until 3C) |
+
+### ACCEPTANCE CRITERIA — 3B (AC9–AC13)
+
+- **AC9 — MVs exist:** `SHOW TABLES LIKE 'mv_%'` → 3 — *pending VM deploy*
+  (confirmed locally).
+- **AC10 — MV equivalence synthetic:** `tests/mv` green in CI (13-test ch suite,
+  1 expected skip) — *pending PR CI run*.
+- **AC11 — MV equivalence live:** minute-aligned settled-window sums MV==raw on
+  all 3 MVs — *pending deploy spot-check* (methodology = deviation 3B-5; proven
+  locally exactly, e.g. 2480==2480).
+- **AC12 — dashboard provisioned / phase1 gone:** `/api/search` contains
+  "WikiStream Live Analytics", not "Phase 1"; uid `wikistream-live` — *pending
+  VM* (confirmed locally).
+- **AC13 — all 5 panels non-null:** per-panel `/api/ds/query` returns rows
+  (substitute `${window}`) — *pending VM* (confirmed locally).
 
 ### 3.3.1 — Bootstrap: `bigquery.googleapis.com` (Q8)
 

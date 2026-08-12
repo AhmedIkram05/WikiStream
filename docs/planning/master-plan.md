@@ -1,4 +1,4 @@
-# WikiPulse — Master Plan
+# WikiStream — Master Plan
 
 **Status:** Locked, pending Implementation Phase Plans
 **Position in the document hierarchy:** Research Notes (why the project exists) → Vision & ADR (what it is, why each architectural decision was made) → **this document** (how it gets built, in what order) → Implementation Phase Plans (exact tasks, commands, file structure, tests — one per phase below).
