@@ -41,6 +41,7 @@ def run_apply(env=None):
         env=e,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -49,14 +50,22 @@ def query(sql: str) -> str:
     e = ch_env()
     out = subprocess.run(
         [
-            "curl", "-sS", "--fail-with-body",
-            "-H", f"X-ClickHouse-User: {e['CH_USER']}",
-            "-H", f"X-ClickHouse-Key: {e['CH_PASSWORD']}",
-            "-X", "POST", "--data-binary", sql,
+            "curl",
+            "-sS",
+            "--fail-with-body",
+            "-H",
+            f"X-ClickHouse-User: {e['CH_USER']}",
+            "-H",
+            f"X-ClickHouse-Key: {e['CH_PASSWORD']}",
+            "-X",
+            "POST",
+            "--data-binary",
+            sql,
             f"http://{e['CH_HOST']}:{e['CH_PORT']}/",
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if out.returncode != 0:
         raise AssertionError(
@@ -118,8 +127,14 @@ def test_clean_db_apply():
         ).split()
     )
     for col in (
-        "wiki", "title", "user", "event_type",
-        "is_bot", "length_new", "length_old", "event_timestamp",
+        "wiki",
+        "title",
+        "user",
+        "event_type",
+        "is_bot",
+        "length_new",
+        "length_old",
+        "event_timestamp",
     ):
         assert col in cols, f"missing typed column: {col}"
 
@@ -193,7 +208,13 @@ def test_legacy_migration():
         " FROM default.raw_events FORMAT TSV"
     )
     assert row.split("\t") == [
-        "enwiki", "Main_Page", "ExampleUser", "edit", "1", "120", "100",
+        "enwiki",
+        "Main_Page",
+        "ExampleUser",
+        "edit",
+        "1",
+        "120",
+        "100",
     ], row
 
     # v1 renamed by 000, dropped by 003 (or kept while 003 is held back):
@@ -228,7 +249,9 @@ def test_materialized_compute():
     )
     # Read the MATERIALIZED columns, NOT the event JSON — proves the
     # expressions ran at insert time (no OPTIMIZE / background pass).
-    row = scalar("SELECT is_bot, length_new, length_old FROM default.raw_events FORMAT TSV")
+    row = scalar(
+        "SELECT is_bot, length_new, length_old FROM default.raw_events FORMAT TSV"
+    )
     assert row.split("\t") == ["1", "500", "450"], row
 
 

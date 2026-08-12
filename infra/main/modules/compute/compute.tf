@@ -64,6 +64,7 @@ resource "google_compute_attached_disk" "ch_data" {
   instance    = google_compute_instance.wikistream_vm.name
   disk        = google_compute_disk.ch_data.id
   device_name = "ch-data"
+  zone        = var.zone
 }
 
 output "instance_name" {
