@@ -21,4 +21,7 @@ dev = [
 # retry) are deliberate: log the failure, keep the stream alive. Narrowing
 # them would change behavior, not improve it. SIM102 was fixed in code.
 [tool.ruff.lint]
+# select pinned for the same reason as ruff.toml: FLY joined defaults in
+# 0.16.x, so an unselected config would silently drop it on older ruff.
+select = ["E", "F", "FLY"]
 ignore = ["BLE001"]

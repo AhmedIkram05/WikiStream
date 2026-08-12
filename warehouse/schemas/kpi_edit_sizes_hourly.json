@@ -1,0 +1,17 @@
+[
+  {
+    "name": "hour",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "bucket",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "edits",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  }
+]

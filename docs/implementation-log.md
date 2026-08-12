@@ -511,9 +511,46 @@ expand template variables; the dashboard frontend does — see checklist 3B-4).
 
 ### 3.2.4 — 3B PR → deploy → live spot-check → log
 
-**In flight (2026-08-12).** Implementation, local verification and the code review
-are complete; PR → merge → gated VM deploy → live spot-check pending
-(AC9/AC11/AC12/AC13 evidence filled in below after the deploy).
+**DONE (2026-08-12).** Merged via PR #18 on `feature/Data-Model-Depth` (merge
+commit `e250d21`; branch-name deviation recorded in 3B-1), gated `apply.yml`
+run 31610076874 (head `e250d21`) **success** at 15:02 UTC — build-push +
+plan/apply in `infra/main` (no infra change this phase, `startup.sh` static)
+→ `gcloud compute instances reset wikistream-vm` → boot. Bootstrap log
+(sudo, VM `34.148.138.220`, us-east1-b) shows `SKIP 000/001/002/003
+(recorded)` then **`APPLY 004_mv_edits_per_minute`, `APPLY
+005_mv_top_pages_per_minute`, `APPLY 006_mv_edit_sizes_per_minute` → `migrations
+complete: 3 applied, 4 skipped`** and `[Wed Aug 12 15:05:08 UTC 2026] startup
+done` — workflow-green verified at boot-green.
+
+**Live spot-check (post-deploy, on the VM):** all remote CH checks via
+`clickhouse-client` over SSH and Grafana API over `localhost:3000` with the SM
+`grafana-admin-password` (redacted here):
+
+- **AC9** `SHOW TABLES LIKE 'mv_%'` → exactly `mv_edit_sizes_per_minute`,
+  `mv_edits_per_minute`, `mv_top_pages_per_minute`.
+- **AC11 (edits_per_minute)** — `WITH toStartOfMinute(now() - INTERVAL 15
+  MINUTE) AS lo, toStartOfMinute(now() - INTERVAL 2 MINUTE) AS hi`, window
+  `lo=2026-08-12 14:57:00 / hi=15:10:00` (minute-aligned settled bounds per
+  deviation 3B-5): **`sum(edits)` MV = 5821 = raw = 5821; `sum(bytes_delta)`
+  MV = 4693117 = raw = 4693117** (TSVWithNames, exact).
+- **AC11 (top_pages + edit_sizes)** — later window, same method:
+  **mv_top = 6946 = raw = 6946** and **mv_sizes = 6946 = raw = 6946**.
+  (Cross-invocation totals differ — 5821 vs 6946 — only because the two SSH
+  windows drifted; within each run MV == raw exactly.)
+- **AC12** — after restarting the `grafana` service (see deviation 3B-8),
+  `GET /api/search` → exactly
+  `[('wikistream-live', 'WikiStream Live Analytics', '/d/wikistream-live/wikistream-live-analytics')]`
+  — uid `wikistream-live`, title correct, `phase1` gone.
+- **AC13** — per-panel `POST /api/ds/query` (Basic admin:<SM password>,
+  `${window}` substituted manually — deviation 3B-4): all 5 panels OK for both
+  `1 hour` and `24 hour`, non-null rows: P1 edit-velocity 30 rows (15 min ×
+  bot/human), P2 ratio 2, P3 top-pages 10, P4 project/lang 15, P5
+  edit-size histogram 6 buckets. Values present (e.g. P5 1-hour bucket sums
+  up to 6008).
+- **AC10** — CI on the 3B head: `analytics-tests` (the 13-test ch suite: 12
+  passed, 1 expected skip) and `compose-smoke` (AC5 now asserts "WikiStream
+  Live Analytics") both **green**; see deviation 3B-7 for the one CI job that
+  did not (ruff, FLY002 — fixed by the follow-up commit).
 
 ### 3.2.5 — Docs name sweep: WikiPulse → WikiStream
 
@@ -559,6 +596,23 @@ coverage-boundary had no occurrences.
    (local proof: 2480==2480 on a settled window). Not an MV defect.
 6. `system.materialized_views` is not a valid table name on 26.3 (harmless; no
    shipped code references it).
+7. **CI `ruff` job red on the 3B head** — the FLY002 finding (`"\n".join([...])`
+   at `tests/mv/test_mv_equivalence.py:327`) slipped into the merged branch
+   (Ahmed committed the pre-review-fix file set). `analytics-tests` and
+   `compose-smoke` were green; the follow-up commit replaces the join with a
+   literal multi-line string and re-runs CI green. (AC10 itself refers to the
+   MV suite, which passed.)
+8. **Grafana provisioning pick-up needs a container restart (3C-critical).**
+   A deploy that only changes `grafana/provisioning/*.yaml` or
+   `grafana/dashboards/*.json` (no image/compose-config change) does NOT reach
+   the running grafana container: `docker compose up -d` at VM boot leaves it
+   `Running` with stale in-memory provisioning (the old `phase1` provider +
+   deleted `phase1.json`), so `/api/search` came back `[]` and
+   `/api/dashboards/uid/wikistream-live` 404'd. Fix: `sudo docker compose -f
+   /opt/wikistream/docker-compose.yml restart grafana` (note: SERVICE name is
+   `grafana`, not container_name `wikistream-grafana`). Surfaced for 3C
+   (bigquery datasource + warehouse-freshness panel will hit the identical
+   failure mode); consider baking the restart into apply.yml/boot.sh.
 
 ### §4 BUILD-TIME CHECKLIST — OUTCOMES (3B)
 
@@ -576,34 +630,269 @@ coverage-boundary had no occurrences.
 
 ### ACCEPTANCE CRITERIA — 3B (AC9–AC13)
 
-- **AC9 — MVs exist:** `SHOW TABLES LIKE 'mv_%'` → 3 — *pending VM deploy*
-  (confirmed locally).
-- **AC10 — MV equivalence synthetic:** `tests/mv` green in CI (13-test ch suite,
-  1 expected skip) — *pending PR CI run*.
-- **AC11 — MV equivalence live:** minute-aligned settled-window sums MV==raw on
-  all 3 MVs — *pending deploy spot-check* (methodology = deviation 3B-5; proven
-  locally exactly, e.g. 2480==2480).
-- **AC12 — dashboard provisioned / phase1 gone:** `/api/search` contains
-  "WikiStream Live Analytics", not "Phase 1"; uid `wikistream-live` — *pending
-  VM* (confirmed locally).
-- **AC13 — all 5 panels non-null:** per-panel `/api/ds/query` returns rows
-  (substitute `${window}`) — *pending VM* (confirmed locally).
+- **AC9 — MVs exist:** `SHOW TABLES LIKE 'mv_%'` → exactly the 3 MVs
+  (`mv_edits_per_minute`, `mv_top_pages_per_minute`, `mv_edit_sizes_per_minute`)
+  — **GREEN** on the VM post-deploy (and on fresh local volume).
+- **AC10 — MV equivalence synthetic:** `tests/mv` suite **GREEN** in CI
+  (`analytics-tests`: 12 passed, 1 expected skip on the 3B head; re-run green
+  on the ruff-fix head). The two review-fix rows probe the bucket boundaries
+  (delta 10 → '1-10', 11 → '11-100').
+- **AC11 — MV equivalence live:** minute-aligned settled-window sums **MV ==
+  raw EXACTLY** on all 3 MVs (printed in 3.2.4: 5821==5821 @
+  14:57–15:10, then 6946==6946 for top_pages and edit_sizes).
+  Methodology per deviation 3B-5; bootstrap-minute race observed and
+  self-settling.
+- **AC12 — dashboard provisioned / phase1 gone:** `/api/search` returns
+  "WikiStream Live Analytics" (not "Phase 1"), uid `wikistream-live` —
+  **GREEN** on the VM (after the grafana restart, deviation 3B-8) and locally.
+- **AC13 — all 5 panels non-null:** per-panel `/api/ds/query` returns rows for
+  all 5 panels at both `${window}` values — **GREEN** on the VM (counts in
+  3.2.4).
+
+**HANDOFF → 3C (2026-08-12):** Phase 3B is green on AC9–AC13 (evidence above;
+the only blemish — the ruff FLY002 lint on the merged head — is fixed by the
+follow-up commit so CI is fully green before 3C starts). Carry-over notes for
+3C: (a) deviation 3B-8 — restart `grafana` after any provisioning/dashboard-only
+deploy (bigquery datasource + warehouse panel will need it); (b) branch is
+`feature/Data-Model-Depth` for the whole phase (not `phase-3c-warehouse`);
+(c) the `warehouse/` `{START}`/`{END}` placeholder contract is already handled
+by `tests/mv/test_warehouse_export_sql_empty_safe` (fixed-range substitution,
+so 3C dropping the export SQL files activates the comparison unchanged);
+(d) coverage-boundary's `warehouse/` + `tests/warehouse` rows stay predicted
+until 3C/AC21.
 
 ### 3.3.1 — Bootstrap: `bigquery.googleapis.com` (Q8)
 
+**Implemented** 2026-08-12: added `"bigquery.googleapis.com"` to the
+`google_project_service` `for_each = toset([...])` list in
+`infra/bootstrap/main.tf` (alongside the existing 8 APIs). Bootstrap stays a
+manual, local-state apply (`terraform -chdir=infra/bootstrap apply`) — CI never
+touches it. Note: the API was already enabled in the project (verified via
+`gcloud services list --enabled`), so the apply is a no-op state update. **Apply
+recorded below in 3.3.8** (per spec the apply precedes the 3C merge; see the
+evidence line there). AC14.
+
+**Applied** 2026-08-12 (before the 3C merge, per spec): `terraform
+-chdir=infra/bootstrap plan -var='project_id=wikistream-505003'` → plan was
+`1 to add, 0 to change, 0 to destroy` (only
+`google_project_service.apis["bigquery.googleapis.com"]`), then `terraform
+-chdir=infra/bootstrap apply -var='project_id=wikistream-505003'
+-input=false -auto-approve` → `Apply complete! Resources: 1 added, 0 changed,
+0 destroyed`. Outputs: `deploy_sa_email =
+wikistream-deploy@wikistream-505003.iam.gserviceaccount.com`,
+`wif_provider_name` unchanged. Local state touched; CI untouched (bootstrap is
+manual by design). AC14 satisfied (`gcloud services list --enabled
+--filter=config.name:bigquery.googleapis.com` shows it enabled).
+
 ### 3.3.2 — `modules/bigquery` (Q8)
+
+**Implemented** 2026-08-12 (ADR-007 extension): new 5th Terraform module
+`infra/main/modules/bigquery/`:
+- `bigquery.tf` — `google_bigquery_dataset wikistream` (US, labels);
+  5 `google_bigquery_table`s (kpi_edits_hourly / kpi_top_pages_hourly /
+  kpi_edit_sizes_hourly / raw_events_sample / export_runs), each with
+  `schema = file("${path.module}/../../../../warehouse/schemas/<name>.json")`
+  (single source shared with `bq load`) + `time_partitioning { type = "DAY",
+  field = <ts> }` (kpi_edits_hourly additionally `clustering = ["wiki"]`);
+  `google_bigquery_dataset_iam_member` giving the VM SA
+  `roles/bigquery.dataEditor` dataset-scoped ONLY (ADR-010 least privilege —
+  no project-level bigquery roles); `google_storage_bucket
+  wikistream-505003-bq-staging` (US, uniform access, 7-day Delete
+  lifecycle_rule) + bucket-scoped `storage.objectCreator` /
+  `storage.objectViewer` for the VM SA.
+- `variables.tf` (project_id, service_account_email, labels) + `outputs.tf`
+  (dataset_id, bucket_name).
+- `infra/main/main.tf`: `locals.labels.phase` bumped `"2"` → `"3"`; wired
+  `module "bigquery"` (project_id, service_account_email =
+  module.iam.service_account_email, labels = local.labels). No other modules
+  touched. AC15 (verification in 3.3.8).
 
 ### 3.3.3 — warehouse/sql + warehouse/schemas (Q6/Q7)
 
+**Implemented** 2026-08-12:
+- `warehouse/sql/export_edits.sql`, `export_top_pages.sql`,
+  `export_sizes.sql`, `export_raw_sample.sql` — single source of truth with
+  literal `{START}`/`{END}` placeholders (UTC), shared by export.sh, parity.sh
+  and the pytest suite. Every timestamp column is unconditionally wrapped
+  `formatDateTime(..., '%Y-%m-%dT%H:%i:%sZ')` (RFC3339 for the bq JSON
+  loader — space-form is CSV-only), and BOOL columns are cast
+  `if(is_bot, 'true', 'false')` (bq JSON parser requires true/false, not 0/1).
+  `export_raw_sample.sql` samples deterministic `sipHash64(event) % 100 < 10`.
+- `warehouse/schemas/{kpi_edits_hourly,kpi_top_pages_hourly,
+  kpi_edit_sizes_hourly,raw_events_sample,export_runs}.json` — BQ schema
+  arrays (all columns NULLABLE) referenced by BOTH the TF module
+  (`file()`/`abspath` — the single-source path) and `bq load --schema`.
+- `warehouse/sql/parity_bq_{edits,top_pages,sizes,raw_sample}.sql` —
+  BQ-dialect twin queries (windowed SUM over the hourly BQ tables; COUNT for
+  the raw sample; grain differs from CH by design per Q7).
+
 ### 3.3.4 — export.sh + parity.sh (Q7)
+
+**Implemented** 2026-08-12: `warehouse/export.sh` and `warehouse/parity.sh`
+(executable in git). Both are `set -euo pipefail`, `SCRIPT_DIR`-relative,
+source `/opt/wikistream/.env` when present for `CLICKHOUSE_PASSWORD` (no
+secrets in unit files), accept optional START/END args with a GNU-date default
+of last completed UTC hour (END = start of current hour, START = END − 1h).
+- `export.sh`: per table (kpi_edits → kpi_top_pages → kpi_sizes →
+  raw_sample) the locked pipeline — `docker exec -i wikistream-clickhouse
+  clickhouse-client --user wikistream --password … --format JSONEachRow <
+  <(sed "s/{START}/$START/; s/{END}/$END/" …)` → staged JSONL (0-byte results
+  are removed and skipped), `gcloud storage cp` to the staging bucket, `bq
+  load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field=…
+  --schema=warehouse/schemas/<table>.json` (append semantics) → final single-
+  line export_runs record (status success + 4 row counts) loaded through the
+  committed export_runs.json schema. Any failure aborts non-zero.
+- `parity.sh`: freshness gate on the latest export_runs row (status
+  "success" AND window_end == the window just exported, else exit non-zero);
+  per-table CH-vs-BQ comparison against the SAME window — CH side wraps the
+  committed export SQL in an outer SUM (merge-state-independent; never row
+  counts), BQ side runs the committed parity_bq_*.sql twins — any mismatch
+  exits non-zero; appends one JSON line to `/var/log/wikistream-parity.log`
+  (Phase 5 alert hook) and echoes it to stdout/journald.
+- Deliberate detail: parity compares SUMS not row counts (BQ hourly grain vs
+  CH minute grain; SummingMergeTree row counts are merge-state-dependent,
+  sums are not). Documented double-load remediation: re-exported windows
+  append (at-least-once), surfaced by parity, remediated by windowed DELETE +
+  reload.
 
 ### 3.3.5 — systemd units + timers + boot.sh install step
 
+**Implemented** 2026-08-12:
+- `warehouse/wikistream-export.{service,timer}` —
+  `OnCalendar=*-*-* *:00:00`, `Persistent=true`, Type=oneshot,
+  ExecStart=/opt/wikistream/warehouse/export.sh (scripts source their own env;
+  no EnvironmentFile, no secrets in units).
+- `warehouse/wikistream-parity.{service,timer}` — same shape,
+  `OnCalendar=*-*-* *:05:00` (5 min after :00 export).
+- `scripts/boot.sh` — appended the idempotent Phase 3C install step: `cp`
+  the 4 unit files to /etc/systemd/system/, `systemctl daemon-reload`,
+  `systemctl enable --now wikistream-export.timer wikistream-parity.timer`
+  (absolute paths; timers run as root on the VM; executables ship with the
+  git exec bit).
+
 ### 3.3.6 — BigQuery datasource + freshness panel (ADR-010)
+
+**Implemented** 2026-08-12:
+- `docker-compose.yml`: `GF_PLUGINS_PREINSTALL` extended to the single
+  comma-separated string
+  `grafana-clickhouse-datasource@4.20.0,grafana-bigquery-datasource@3.2.0`
+  (GF_INSTALL_PLUGINS is broken in Grafana 13.1.1 — GF_PLUGINS_PREINSTALL is
+  the only path; 3.2.0 requires Grafana ≥ 11.6, compatible).
+- `grafana/provisioning/datasources/bigquery.yaml` (NEW): datasource name
+  BigQuery, uid `wikistream-bigquery`, type grafana-bigquery-datasource,
+  `jsonData { authenticationType: gce, defaultProject: wikistream-505003 }`,
+  NOT the default (ClickHouse remains default). GCE auth reads the VM SA
+  token from the metadata server; the dataset-scoped dataEditor covers its
+  jobs (no new IAM) — expected to fail on local dev (no metadata server),
+  documented §9.
+- `grafana/dashboards/wikistream-live.json`: panel 6 "Warehouse freshness"
+  (`stat`, BQ datasource uid, gridPos h8 w6 x0 y18 — new row, no overlap of
+  the full y10 row), rawSql
+  `SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(exported_at), MINUTE) AS minutes_since FROM wikistream.export_runs`,
+  format 1, thresholds green < 60 / orange 60–120 / red > 120, unit min;
+  dashboard `version` 1 → 2. Requires the 3B-8 grafana restart to pick up the
+  new datasource/panel after deploy.
 
 ### 3.3.7 — tests/warehouse suite
 
+**Implemented** 2026-08-12: `tests/warehouse/test_export_parity.py`
+(`@pytest.mark.ch`, local CH only — gcloud/bq are not exercised; local
+equivalence is the point). Coverage boundary row for `warehouse/sql` +
+`tests/warehouse` added in AC21. Evidence: pytest run output in 3.3.8.
+
 ### 3.3.8 — 3C PR → deploy → verification battery → log
+
+**Local verification (pre-PR, 2026-08-12):**
+- `CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream
+  CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q
+  --tb=short -m ch` → **21 passed** (6 migrations + 7 mv incl. the 3C pre-hook
+  + 8 warehouse), 19 deselected, 13s. Local consumer container was stopped for
+  the run so live-stream writes don't contaminate the deterministic fixtures
+  (CI analytics-tests has no stream by construction).
+- pre-commit run --all-files → all 8 hooks Passed (trailing-whitespace,
+  end-of-file-fixer, check-yaml, check-json, check-merge-conflict,
+  check-added-large-files, ruff, ruff-format).
+- `bash -n warehouse/export.sh warehouse/parity.sh` OK; `python3 -m json.tool`
+  on all 5 schemas + dashboard OK; both datasource YAMLs parse; `docker
+  compose config -q` OK; `terraform init -backend=false && terraform validate`
+  in infra/main → `Success! The configuration is valid.`
+
+**Deviations / bugs caught by the test suite (all resolved):**
+1. **ClickHouse alias shadowing (critical, tests-caught)** —
+   `warehouse/sql/export_raw_sample.sql` originally selected
+   `formatDateTime(inserted_at, ...) AS inserted_at`. ClickHouse 26.3 resolves
+   the WHERE `inserted_at >= '{START}' AND inserted_at < '{END}'` to the
+   NEW string alias, so the T-separator RFC3339 value was compared against the
+   space-form literal — lexicographically every row failed the `< END` bound
+   and the query silently returned ZERO rows (rc=0) on both the HTTP path and
+   the production `clickhouse-client` path. This would have produced empty
+   raw-sample exports in production with no error. Fixed by a nested query:
+   inner query aliases the formatted value `AS ts` (no shadowing), outer query
+   renames `ts AS inserted_at` for the BQ schema. Verified via `docker exec`
+   against live data. The other three export files are unaffected (their alias
+   `hour` never shadows a source column).
+2. **tests/mv 3C pre-hook determinism** — the seed loop inserted identical
+   event content; since `sipHash64(event)` is deterministic the 10% sample
+   could never hit → infinite loop on a pristine CI CH. Now varies the title
+   per attempt (`3C_Seed_{i}`, capped at 300 → P(hang) ≈ 0.9^300), so
+   `warehouse/sql/export_*.sql` full-range substitution always returns
+   non-empty regardless of test ordering (CI has no live data).
+3. **tests/warehouse probe leakage** — `_seed_sampled` probe events seeded
+   with `"type": "log"` so they are invisible to the MVs
+   (`event_type IN ('edit','new')`) while still reflected in
+   `export_raw_sample` (which has no type filter) — parity sums stay exact.
+4. **parity.sh freshness gate** — `bq query --format=json` renders TIMESTAMPs
+   with fractional seconds (`...T12:00:00.000Z`); the gate now normalizes
+   (strips fraction + trailing Z) before comparing to `WINDOW_END`, else the
+   exact-equality check would flake on every run.
+5. SA deviations carried forward: parity.sh logs table value `"error"` on hard
+   query-failure paths (honest marker that the compare never ran);
+   `gcloud storage cp` output suppressed to `/dev/null` to keep the completion
+   line's stdout clean.
+
+**Subagent code review (code-reviewer on the 3C working-tree diff, 2026-08-12)
+— 8 findings, all resolved before commit:**
+1. **BLOCKER → fixed (deviation from plan Q8):** the VM SA had dataset-scoped
+   `roles/bigquery.dataEditor` only, which grants **no** `bigquery.jobs.create`
+   (verified: `gcloud iam roles describe roles/bigquery.dataEditor` has zero
+   `jobs.*` permissions). BigQuery jobs are project-scoped and dataset IAM
+   cannot grant them — so every `bq load` (export.sh), `bq query` (parity.sh)
+   and the Grafana GCE-auth datasource would `AccessDenied` on first run.
+   Added `google_project_iam_member.vm_job_user` with `roles/bigquery.jobUser`
+   at **project** scope in `infra/main/modules/bigquery/bigquery.tf` (one
+   mandatory project-scoped role; grアント jobs only, no data read/write —
+   table access stays dataset-scoped dataEditor, ADR-010 least privilege
+   preserved).
+2. **MINOR → fixed:** `infra/main/templates/startup.sh` now runs
+   `gcloud config set project "$GCP_PROJECT"` (export/parity call bq/gcloud
+   storage without `--project_id`; pins SDK project resolution).
+3. **MINOR → fixed:** `warehouse/wikistream-parity.service` gained
+   `After=wikistream-export.service` so a `Persistent=true` catch-up after VM
+   downtime cannot run parity ahead of a still-running export.
+4. **MINOR → fixed:** parity.sh freshness gate now queries
+   `WHERE window_end = TIMESTAMP('<WINDOW_END>')` instead of newest-row
+   (`ORDER BY exported_at DESC LIMIT 1`), so a manual backfill of another
+   window can no longer mask/stale the current-window check.
+5. **MINOR → fixed:** `test_export_runs_shape` now calls `_seed_sampled()`
+   itself — no dependence on a sibling test's side effect (was a ~28%
+   isolation flake).
+6. **NIT → fixed:** parity.sh `norm()` normalizes space-form timestamps
+   (`.replace(" ", "T")`) before fraction-strip.
+7. **NIT → fixed:** parity raw-sample CH count now wraps the COMMITTED
+   `export_raw_sample.sql` in `SELECT count() FROM (...)`, removing the
+   hand-mirrored predicate (single source of truth).
+8. **NIT → not applied:** START/END arg regex validation — operation-only
+   surface on a private VM; malformed args fail naturally; spec already allows
+   arbitrary windows by design.
+Explicitly cleared by review: `schema=file("${path.module}/../../../../warehouse/schemas/…")`
+path resolution, NULLABLE partition columns, `phase` label in-place update
+(no ForceNew), CH `%i` + `GROUP BY` alias resolution, BQ `TIMESTAMP('…')`
+space-form parsing, `'true'/'false'` → BOOL loading, Grafana
+`format: 1` = Table, plugin 3.2.0/Grafana 13.1.1 compatibility, boot.sh unit
+install idempotence, no secrets in any new file.
+
+**VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go: pending — filled
+after the merge + apply + VM battery below.**
 
 ## Phase 4 — Data Quality & Resilience
 

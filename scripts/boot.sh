@@ -50,3 +50,9 @@ echo "user bootstrap ok"
 # 3. Migrations over the HTTP API as the bootstrap user (per-file APPLY/SKIP
 #    lines; any non-zero exit aborts boot.sh via set -e).
 CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream CH_PASSWORD=${CH_PASSWORD} MIGRATIONS_DIR=/opt/wikistream/migrations bash /opt/wikistream/migrations/apply.sh
+
+# Phase 3C: install BigQuery export + parity systemd units/timers (3.3.5)
+cp /opt/wikistream/warehouse/wikistream-export.service /opt/wikistream/warehouse/wikistream-export.timer \
+   /opt/wikistream/warehouse/wikistream-parity.service /opt/wikistream/warehouse/wikistream-parity.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now wikistream-export.timer wikistream-parity.timer

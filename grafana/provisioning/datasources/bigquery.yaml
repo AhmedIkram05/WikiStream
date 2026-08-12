@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: BigQuery
+    uid: wikistream-bigquery
+    type: grafana-bigquery-datasource
+    isDefault: false
+    jsonData:
+      authenticationType: gce
+      defaultProject: wikistream-505003

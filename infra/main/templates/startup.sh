@@ -37,8 +37,11 @@ cd /opt/wikistream
 #     so .env still lands 600. Found 2026-08-11 on first prod boot.
 chmod -R a+rX /opt/wikistream
 
-# 3. Project id from the metadata server — deterministic, no gcloud config
+# 3. Project id from the metadata server — deterministic, no gcloud config.
+#    Pin it: warehouse/export.sh + parity.sh call bq/gcloud storage without
+#    --project_id, relying on SDK project resolution.
 GCP_PROJECT=$(curl -fsS -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/project/project-id)
+gcloud config set project "$GCP_PROJECT"
 
 # 4. Secrets from Secret Manager (VM SA has scoped secretAccessor).
 #    CH_PASSWORD must be EXPORTED: scripts/boot.sh runs as a child process

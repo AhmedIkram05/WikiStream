@@ -41,10 +41,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: ruff
+          # Lint gate = the SAME pre-commit hooks devs run locally
+          # (.pre-commit-config.yaml, ruff@v0.16.2 + pre-commit-hooks).
+          # --all-files pre-empts the "worked on my machine / staged-only"
+          # gap; --show-diff-on-failure surfaces hook fixes in CI output.
+          - name: lint
             command: |
-              ruff check .
-              ruff format --check .
+              pre-commit run --all-files --show-diff-on-failure
 
           # Runs EVERYTHING pytest.ini collects (testpaths=tests today).
           # New test trees are added in pytest.ini — this command follows
@@ -178,11 +181,13 @@ jobs:
       # runner, Phase 4 gx/), add its own `uv sync --project <pkg> --frozen`
       # line here — its tests then run in the matrix with no other change.
       # Skipped for compose-smoke — it only needs docker.
+      # The lint job needs `pre-commit` (it provisions ruff@v0.16.2 itself
+      # from .pre-commit-config.yaml); pytest entries need consumer synced.
       - name: Install dependencies
         if: matrix.name != 'compose-smoke'
         run: |
           uv sync --project consumer --frozen
-          uv tool install ruff==0.16.2
+          uv tool install pre-commit
 
       - name: ${{ matrix.name }}
         run: ${{ matrix.command }}

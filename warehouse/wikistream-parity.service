@@ -1,0 +1,12 @@
+[Unit]
+Description=WikiStream hourly warehouse parity check
+# Serialize with the export one-shot so a Persistent=true catch-up (VM
+# downtime) cannot race parity ahead of a still-running export.
+After=docker.service network-online.target wikistream-export.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wikistream/warehouse/parity.sh
+StandardOutput=journal
+StandardError=journal
