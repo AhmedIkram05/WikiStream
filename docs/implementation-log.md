@@ -511,9 +511,46 @@ expand template variables; the dashboard frontend does — see checklist 3B-4).
 
 ### 3.2.4 — 3B PR → deploy → live spot-check → log
 
-**In flight (2026-08-12).** Implementation, local verification and the code review
-are complete; PR → merge → gated VM deploy → live spot-check pending
-(AC9/AC11/AC12/AC13 evidence filled in below after the deploy).
+**DONE (2026-08-12).** Merged via PR #18 on `feature/Data-Model-Depth` (merge
+commit `e250d21`; branch-name deviation recorded in 3B-1), gated `apply.yml`
+run 31610076874 (head `e250d21`) **success** at 15:02 UTC — build-push +
+plan/apply in `infra/main` (no infra change this phase, `startup.sh` static)
+→ `gcloud compute instances reset wikistream-vm` → boot. Bootstrap log
+(sudo, VM `34.148.138.220`, us-east1-b) shows `SKIP 000/001/002/003
+(recorded)` then **`APPLY 004_mv_edits_per_minute`, `APPLY
+005_mv_top_pages_per_minute`, `APPLY 006_mv_edit_sizes_per_minute` → `migrations
+complete: 3 applied, 4 skipped`** and `[Wed Aug 12 15:05:08 UTC 2026] startup
+done` — workflow-green verified at boot-green.
+
+**Live spot-check (post-deploy, on the VM):** all remote CH checks via
+`clickhouse-client` over SSH and Grafana API over `localhost:3000` with the SM
+`grafana-admin-password` (redacted here):
+
+- **AC9** `SHOW TABLES LIKE 'mv_%'` → exactly `mv_edit_sizes_per_minute`,
+  `mv_edits_per_minute`, `mv_top_pages_per_minute`.
+- **AC11 (edits_per_minute)** — `WITH toStartOfMinute(now() - INTERVAL 15
+  MINUTE) AS lo, toStartOfMinute(now() - INTERVAL 2 MINUTE) AS hi`, window
+  `lo=2026-08-12 14:57:00 / hi=15:10:00` (minute-aligned settled bounds per
+  deviation 3B-5): **`sum(edits)` MV = 5821 = raw = 5821; `sum(bytes_delta)`
+  MV = 4693117 = raw = 4693117** (TSVWithNames, exact).
+- **AC11 (top_pages + edit_sizes)** — later window, same method:
+  **mv_top = 6946 = raw = 6946** and **mv_sizes = 6946 = raw = 6946**.
+  (Cross-invocation totals differ — 5821 vs 6946 — only because the two SSH
+  windows drifted; within each run MV == raw exactly.)
+- **AC12** — after restarting the `grafana` service (see deviation 3B-8),
+  `GET /api/search` → exactly
+  `[('wikistream-live', 'WikiStream Live Analytics', '/d/wikistream-live/wikistream-live-analytics')]`
+  — uid `wikistream-live`, title correct, `phase1` gone.
+- **AC13** — per-panel `POST /api/ds/query` (Basic admin:<SM password>,
+  `${window}` substituted manually — deviation 3B-4): all 5 panels OK for both
+  `1 hour` and `24 hour`, non-null rows: P1 edit-velocity 30 rows (15 min ×
+  bot/human), P2 ratio 2, P3 top-pages 10, P4 project/lang 15, P5
+  edit-size histogram 6 buckets. Values present (e.g. P5 1-hour bucket sums
+  up to 6008).
+- **AC10** — CI on the 3B head: `analytics-tests` (the 13-test ch suite: 12
+  passed, 1 expected skip) and `compose-smoke` (AC5 now asserts "WikiStream
+  Live Analytics") both **green**; see deviation 3B-7 for the one CI job that
+  did not (ruff, FLY002 — fixed by the follow-up commit).
 
 ### 3.2.5 — Docs name sweep: WikiPulse → WikiStream
 
@@ -559,6 +596,23 @@ coverage-boundary had no occurrences.
    (local proof: 2480==2480 on a settled window). Not an MV defect.
 6. `system.materialized_views` is not a valid table name on 26.3 (harmless; no
    shipped code references it).
+7. **CI `ruff` job red on the 3B head** — the FLY002 finding (`"\n".join([...])`
+   at `tests/mv/test_mv_equivalence.py:327`) slipped into the merged branch
+   (Ahmed committed the pre-review-fix file set). `analytics-tests` and
+   `compose-smoke` were green; the follow-up commit replaces the join with a
+   literal multi-line string and re-runs CI green. (AC10 itself refers to the
+   MV suite, which passed.)
+8. **Grafana provisioning pick-up needs a container restart (3C-critical).**
+   A deploy that only changes `grafana/provisioning/*.yaml` or
+   `grafana/dashboards/*.json` (no image/compose-config change) does NOT reach
+   the running grafana container: `docker compose up -d` at VM boot leaves it
+   `Running` with stale in-memory provisioning (the old `phase1` provider +
+   deleted `phase1.json`), so `/api/search` came back `[]` and
+   `/api/dashboards/uid/wikistream-live` 404'd. Fix: `sudo docker compose -f
+   /opt/wikistream/docker-compose.yml restart grafana` (note: SERVICE name is
+   `grafana`, not container_name `wikistream-grafana`). Surfaced for 3C
+   (bigquery datasource + warehouse-freshness panel will hit the identical
+   failure mode); consider baking the restart into apply.yml/boot.sh.
 
 ### §4 BUILD-TIME CHECKLIST — OUTCOMES (3B)
 
@@ -576,18 +630,36 @@ coverage-boundary had no occurrences.
 
 ### ACCEPTANCE CRITERIA — 3B (AC9–AC13)
 
-- **AC9 — MVs exist:** `SHOW TABLES LIKE 'mv_%'` → 3 — *pending VM deploy*
-  (confirmed locally).
-- **AC10 — MV equivalence synthetic:** `tests/mv` green in CI (13-test ch suite,
-  1 expected skip) — *pending PR CI run*.
-- **AC11 — MV equivalence live:** minute-aligned settled-window sums MV==raw on
-  all 3 MVs — *pending deploy spot-check* (methodology = deviation 3B-5; proven
-  locally exactly, e.g. 2480==2480).
-- **AC12 — dashboard provisioned / phase1 gone:** `/api/search` contains
-  "WikiStream Live Analytics", not "Phase 1"; uid `wikistream-live` — *pending
-  VM* (confirmed locally).
-- **AC13 — all 5 panels non-null:** per-panel `/api/ds/query` returns rows
-  (substitute `${window}`) — *pending VM* (confirmed locally).
+- **AC9 — MVs exist:** `SHOW TABLES LIKE 'mv_%'` → exactly the 3 MVs
+  (`mv_edits_per_minute`, `mv_top_pages_per_minute`, `mv_edit_sizes_per_minute`)
+  — **GREEN** on the VM post-deploy (and on fresh local volume).
+- **AC10 — MV equivalence synthetic:** `tests/mv` suite **GREEN** in CI
+  (`analytics-tests`: 12 passed, 1 expected skip on the 3B head; re-run green
+  on the ruff-fix head). The two review-fix rows probe the bucket boundaries
+  (delta 10 → '1-10', 11 → '11-100').
+- **AC11 — MV equivalence live:** minute-aligned settled-window sums **MV ==
+  raw EXACTLY** on all 3 MVs (printed in 3.2.4: 5821==5821 @
+  14:57–15:10, then 6946==6946 for top_pages and edit_sizes).
+  Methodology per deviation 3B-5; bootstrap-minute race observed and
+  self-settling.
+- **AC12 — dashboard provisioned / phase1 gone:** `/api/search` returns
+  "WikiStream Live Analytics" (not "Phase 1"), uid `wikistream-live` —
+  **GREEN** on the VM (after the grafana restart, deviation 3B-8) and locally.
+- **AC13 — all 5 panels non-null:** per-panel `/api/ds/query` returns rows for
+  all 5 panels at both `${window}` values — **GREEN** on the VM (counts in
+  3.2.4).
+
+**HANDOFF → 3C (2026-08-12):** Phase 3B is green on AC9–AC13 (evidence above;
+the only blemish — the ruff FLY002 lint on the merged head — is fixed by the
+follow-up commit so CI is fully green before 3C starts). Carry-over notes for
+3C: (a) deviation 3B-8 — restart `grafana` after any provisioning/dashboard-only
+deploy (bigquery datasource + warehouse panel will need it); (b) branch is
+`feature/Data-Model-Depth` for the whole phase (not `phase-3c-warehouse`);
+(c) the `warehouse/` `{START}`/`{END}` placeholder contract is already handled
+by `tests/mv/test_warehouse_export_sql_empty_safe` (fixed-range substitution,
+so 3C dropping the export SQL files activates the comparison unchanged);
+(d) coverage-boundary's `warehouse/` + `tests/warehouse` rows stay predicted
+until 3C/AC21.
 
 ### 3.3.1 — Bootstrap: `bigquery.googleapis.com` (Q8)
 

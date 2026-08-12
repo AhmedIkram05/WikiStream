@@ -324,18 +324,16 @@ def test_mv_top_pages_per_minute_equivalence():
         "SELECT title, wiki, count() FROM default.raw_events"
         f" WHERE {raw_where(cutoff)} GROUP BY title, wiki ORDER BY title, wiki"
     )
-    want = "\n".join(
-        [
-            "Big_Page\tenwiki\t1",
-            "Edge_High\tptwiki\t1",
-            "Edge_Low\tdewiki\t1",
-            "Huge_Title\tfawiki\t1",
-            "Main_Page\tenwiki\t2",
-            "Main_Page\tfrwiki\t1",
-            "New_Page\tfrwiki\t1",
-            "NoOld_New\tenwiki\t1",
-            "Shrink_Me\tenwiki\t1",
-        ]
+    want = (
+        "Big_Page\tenwiki\t1\n"
+        "Edge_High\tptwiki\t1\n"
+        "Edge_Low\tdewiki\t1\n"
+        "Huge_Title\tfawiki\t1\n"
+        "Main_Page\tenwiki\t2\n"
+        "Main_Page\tfrwiki\t1\n"
+        "New_Page\tfrwiki\t1\n"
+        "NoOld_New\tenwiki\t1\n"
+        "Shrink_Me\tenwiki\t1"
     )
     assert mv == raw == want, f"(title, wiki): MV {mv!r}, raw {raw!r}, want {want!r}"
 
