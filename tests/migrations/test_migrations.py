@@ -41,6 +41,7 @@ def run_apply(env=None):
         env=e,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -57,6 +58,7 @@ def query(sql: str) -> str:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if out.returncode != 0:
         raise AssertionError(
