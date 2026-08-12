@@ -462,16 +462,20 @@ changes and `-m "not ch"` skips it:
   JSONExtractUInt defaults 0), empty-wiki rows (EXCLUDED), and all six size
   buckets incl. a shrinking edit (−450) and a 50k delta. The raw twin carries the
   MV's canonical filters. The 006 bucket labels are ground-truthed independently
-  (`BUCKET_COUNTS`) and `BUCKET_MULTIIF` is token-verified against the live
-  migration file (catches a boundary typo shared by both copies).
-- `test_mv_excludes_log_and_empty_wiki` — inserted 10 vs included 8 on every MV;
-  no `wiki = ''` row in the wiki-bearing MVs.
+(`BUCKET_COUNTS`) and `BUCKET_MULTIIF` is token-verified against the live
+  migration file (catches a boundary typo shared by both copies). The 12-row
+  matrix probes the `1-10`/`11-100` bucket boundary exactly (deltas 10 and 11)
+  so a `<=`/`<` typo in BOTH copies still flips a classified row.
+- `test_mv_excludes_log_and_empty_wiki` — inserted 12 vs included 10 on every
+  MV; no `wiki = ''` row in the wiki-bearing MVs.
 - `test_interval_window_forms` — pins the deployed dashboard forms
   `now() - INTERVAL 1 hour` / `now() - INTERVAL 24 hour` parse (deviation 3B-2).
 - `test_warehouse_export_sql_empty_safe` — 3C pre-hook: globs
   `warehouse/sql/export_*.sql`; absent → `pytest.skip` (the plan's
-  "empty-file-safe until then" contract); present → runs each, asserts non-empty,
-  checks its `mv_*` source tables. 3C activates the comparison branch unchanged.
+  "empty-file-safe until then" contract); present → runs each (with its
+  `{START}`/`{END}` placeholders substituted by a fixed empty range, so
+  `export.sh`-style files land untouched), asserts non-empty, checks its
+  `mv_*` source tables.
 
 Suite result (fresh container, `-m ch`): **12 passed, 1 skipped** across
 `tests/migrations + tests/mv` (6 + 6 + 1 warehouse skip).

@@ -34,15 +34,17 @@ BUCKETS = [
 ]
 BUCKET_COUNTS = {
     "0": "2",
-    "1-10": "1",
-    "11-100": "1",
+    "1-10": "2",
+    "11-100": "2",
     "101-1000": "2",
     "1001-10000": "1",
     "10000+": "1",
 }
 
 #: Edge matrix — (type, wiki, title, is_bot, length{new[, old]}).
-#: 10 rows inserted, 8 reach the MVs (log + empty-wiki excluded).
+#: 12 rows inserted, 10 reach the MVs (log + empty-wiki excluded). Deltas
+#: probe the bucket boundaries exactly (10 -> '1-10', 11 -> '11-100') so a
+#: <=/< typo in BOTH copies of the multiIf still changes a classified row.
 FIXTURE = [
     ("edit", "enwiki", "Main_Page", False, {"new": 100, "old": 100}),  # delta 0 -> '0'
     (
@@ -55,11 +57,25 @@ FIXTURE = [
     ("new", "frwiki", "New_Page", False, {"new": 5, "old": 0}),  # delta 5 -> '1-10'
     (
         "edit",
+        "dewiki",
+        "Edge_Low",
+        False,
+        {"new": 110, "old": 100},
+    ),  # delta 10 -> '1-10' (boundary)
+    (
+        "edit",
         "frwiki",
         "Main_Page",
         False,
         {"new": 150, "old": 100},
     ),  # delta 50 -> '11-100' (same title, other wiki)
+    (
+        "edit",
+        "ptwiki",
+        "Edge_High",
+        False,
+        {"new": 211, "old": 200},
+    ),  # delta 11 -> '11-100' (just over boundary)
     (
         "edit",
         "enwiki",
@@ -288,7 +304,7 @@ def test_mv_edits_per_minute_equivalence():
         f" FROM default.raw_events WHERE {raw_where(cutoff)}"
         " GROUP BY is_bot ORDER BY is_bot"
     )
-    want_bot = "0\t6\t5105\n1\t2\t50000"
+    want_bot = "0\t8\t5126\n1\t2\t50000"
     assert mv_bot == raw_bot == want_bot, (
         f"is_bot split: MV {mv_bot!r}, raw {raw_bot!r}, want {want_bot!r}"
     )
@@ -311,6 +327,8 @@ def test_mv_top_pages_per_minute_equivalence():
     want = "\n".join(
         [
             "Big_Page\tenwiki\t1",
+            "Edge_High\tptwiki\t1",
+            "Edge_Low\tdewiki\t1",
             "Huge_Title\tfawiki\t1",
             "Main_Page\tenwiki\t2",
             "Main_Page\tfrwiki\t1",
@@ -400,8 +418,9 @@ def test_interval_window_forms():
 def test_warehouse_export_sql_empty_safe():
     """One-source-of-truth contract (Q7, 3C pre-hook): export_*.sql in
     warehouse/sql must run and agree with the MV it sources. 3B has no
-    warehouse/ — the skip path executes; 3C adding files activates the
-    comparison branch unchanged."""
+    warehouse/ — the skip path executes; 3C dropping the files in activates
+    the comparison branch (their {START}/{END} placeholders are substituted
+    here with a fixed empty range)."""
     exports = sorted(REPO_ROOT.glob("warehouse/sql/export_*.sql"))
     if not exports:
         pytest.skip("(3C not landed; export SQL empty-safe)")
@@ -409,6 +428,10 @@ def test_warehouse_export_sql_empty_safe():
     tables = set(query("SHOW TABLES").split())
     for path in exports:
         sql = path.read_text()
+        # export.sh/parity.sh substitute these placeholders (plan 3.3.3);
+        # run with a deterministic empty range so 3C files land untouched.
+        sql = re.sub(r"\{START\}", "1970-01-01 00:00:00", sql)
+        sql = re.sub(r"\{END\}", "2299-12-31 00:00:00", sql)
         out = query(sql)  # raises on invalid SQL / missing table
         assert out.strip(), f"{path.name} returned no rows"
         for tbl in re.findall(r"FROM\s+(?:default\.)?(mv_\w+)", sql, re.IGNORECASE):
