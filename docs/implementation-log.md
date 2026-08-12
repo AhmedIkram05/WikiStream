@@ -313,17 +313,68 @@ task 3.1.8 cross-references it, it is NOT re-recorded.
 
 ### 3.1.1 — Durable ch-data disk (Q3)
 
+**Status:** DONE
+
+**2026-08-12:** Implemented by subagent + orchestrator review. `infra/main/modules/compute/compute.tf` gains `google_compute_disk.ch_data` (name `ch-data`, pd-standard 30GB, `var.zone`, `labels`, `lifecycle.prevent_destroy = true`) and `google_compute_attached_disk.ch_data` (`device_name = "ch-data"` → guest path `/dev/disk/by-id/google-ch-data`). `startup.sh` §5 = the plan's idempotent mount block (mkfs-if-unformatted via `blkid`, UUID → fstab `defaults,nofail`, mount-if-not-mounted, `mkdir -p /mnt/ch-data/clickhouse`, `export CH_DATA_DIR`); `.env` render appends `CH_DATA_DIR` when set; `docker-compose.yml` clickhouse volume is now `${CH_DATA_DIR:-ch-data}:/var/lib/clickhouse` (fallback named volume `ch-data` kept for local dev).
+
+**Evidence:** `terraform fmt -check` OK on compute.tf; `docker compose config --quiet` OK; `bash -n startup.sh` OK. Deploy-time proof (plan shows disk+attachment, data surviving the 3.1.8 VM recreate) is logged under 3.1.8.
+
 ### 3.1.2 — Migration runner + `schema_migrations` (Q2)
+
+**Status:** DONE
+
+**2026-08-12:** `migrations/apply.sh` implemented per plan: bash + `curl` HTTP-API only (no `clickhouse-client` binary), `set -euo pipefail`, env `CH_HOST/CH_PORT/CH_USER` defaults localhost/8123/wikistream, `CH_PASSWORD` required. 30×2s readiness wait using the same header auth (`X-ClickHouse-User`/`X-ClickHouse-Key` + `--fail-with-body`; an auth error is "not ready" on first boot); bookkeeping `default.schema_migrations (version String, status String, applied_at DateTime DEFAULT now()) ENGINE = MergeTree ORDER BY version`; per `[0-9]*.sql` (nullglob, sorted): skip-if-recorded, optional line-1 `-- guard: <expr>` (apply iff `SELECT <expr> FORMAT TSV` = 1; guard-0 files RECORDED as `skipped`), apply via `--data-binary @file` with failure branch printing the body and exiting non-zero, record every evaluated file. `migrations/bootstrap-user.dev.sql` = dev credential (header: VM path is boot.sh's heredoc with the real secret — keep in sync).
+
+**Evidence:** Live-tested end-to-end (throwaway container, see 3.1.3/3.1.7). AC1/AC2 exercised by `pytest -m ch` (6 passed) and the clean + re-run runs below.
 
 ### 3.1.3 — Migration files 000–003 (Q1/Q3)
 
+**Status:** DONE
+
+**2026-08-12:** Four files created, `-- guard:` on line 1 (lesson below): `000_detect_legacy` renames the legacy 2-column `raw_events` → `raw_events_v1` when the table exists without a `wiki` column; `001_raw_events` (no guard, `CREATE TABLE IF NOT EXISTS` idempotent) builds the full typed schema — 4 `MATERIALIZED JSONExtract*` strings, `is_bot UInt8 MATERIALIZED JSONExtractBool`, `length_new/length_old UInt32 MATERIALIZED JSONExtractUInt(event,'length','new'/'old')`, `event_timestamp DateTime64(3,'UTC') MATERIALIZED parseDateTime64BestEffort(JSONExtractString(event,'timestamp'))`, `PARTITION BY toYYYYMMDD(inserted_at)`, `ORDER BY (inserted_at, sipHash64(event))` (Phase 4 dedup key), `TTL inserted_at + INTERVAL 30 DAY` (ADR-006), `SETTINGS max_suspicious_broken_parts = 1000` (§2.6 mitigation); `002_backfill_raw_events_v1` guarded on v1 existing, idempotent backfill; `003_drop_raw_events_v1` guarded identically, rollback affordance (`migrations/held/`) documented.
+
+**Evidence:** Clean-DB run: `SKIP 000 (guard 0) / APPLY 001 / SKIP 002 (guard 0) / SKIP 003 (guard 0)`, exit 0, 4 rows recorded (three `skipped`, one `applied`). Legacy run (2-col table + realistic event): all 4 APPLY, backfilled typed values correct (`enwiki / Example page / 192.0.2.1 / edit / 0 / 130 / 20 / 2026-08-11 12:34:56.000`), `raw_events_v1` dropped. Re-run: all `SKIP (recorded)`.
+
 ### 3.1.4 — Startup rework: boot.sh seam + user bootstrap + rotation fix (Q2)
+
+**Status:** DONE
+
+**2026-08-12:** `startup.sh` edited exactly once (its final edit — ForceNew): initdb.d fence + §5 heredoc deleted; §4 `export CH_PASSWORD=...` (see deviation below); §5 mount block; §8 runs `bash /opt/wikistream/scripts/boot.sh` before `startup done`. New `scripts/boot.sh` (git-tracked, `set -euo pipefail`): CH-ready wait (30×2s + final probe), user bootstrap **every boot** with trailing `ALTER USER IF EXISTS` (rotation-gap fix — the old initdb.d path only ran on empty volumes), SQL built in a variable (not a heredoc) and echoed to the log with `CH_PASSWORD` redacted via `sed` (AC7 grep target), piped to `docker compose exec -T clickhouse clickhouse-client --multiquery`, `echo "user bootstrap ok"` (AC8), then migrations via the HTTP API (env `CH_HOST=localhost CH_HOST=8123 CH_USER=wikistream`, `MIGRATIONS_DIR=/opt/wikistream/migrations`); any non-zero aborts boot.
+
+**Evidence:** `bash -n` OK for startup.sh and boot.sh. VM-boot evidence (echoed bootstrap SQL, `user bootstrap ok`, ALTER USER, migration lines, consumer connected with the real secret) under 3.1.8.
 
 ### 3.1.5 — Retire initdb.d
 
+**Status:** DONE
+
+**2026-08-12:** `docker/clickhouse/initdb.d/001-init.sql` + directory deleted; `docker-compose.yml` initdb.d bind-mount removed. Nothing else references it outside `docs/`.
+
+**Evidence:** `git grep -ni initdb -- . ':(exclude)docs'` clean (sole remaining hit is a header comment in `migrations/001_raw_events.sql` explaining the migration). `docker compose config --quiet` OK.
+
 ### 3.1.6 — CI: analytics-tests entry, markers, smoke reorder
 
+**Status:** DONE
+
+**2026-08-12:** `pytest.ini` gains `markers = ch: requires ClickHouse (runs against localhost:8123)`. New `analytics-tests` matrix entry (boots only the clickhouse service, waits ready, bootstraps via `bootstrap-user.dev.sql`, runs `uv run --project consumer pytest -q --tb=short -m ch` with `CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password` — no explicit test paths, `testpaths=tests` collects future ch suites). Both `unit-tests` pytest invocations now `-m "not ch"`. `compose-smoke` gained the 3A pre-steps after `up -d --build`: wait CH ready, bootstrap user, `./migrations/apply.sh` (its own readiness wait absorbs first-boot lag; consumer WARNINGs in the gap remain the documented contract).
+
+**Evidence:** YAML parses; matrix = `ruff / unit-tests / analytics-tests / compose-smoke`. Full workflow run on the 3.1.8 PR is the CI-green evidence for the micro-gate.
+
 ### 3.1.7 — tests/migrations suite
+
+**Status:** DONE
+
+**2026-08-12:** `tests/migrations/test_migrations.py` — 6 `@pytest.mark.ch` tests against a real ClickHouse (env-driven `CH_HOST/CH_PORT/CH_USER/CH_PASSWORD`): `test_clean_db_apply` (all `[0-9]*.sql` recorded, status values valid, 8 typed columns present via `system.columns`), `test_re_run_idempotent`, `test_ttl_present`, `test_legacy_migration`, `test_materialized_compute`, `test_bootstrap_user`. Harness: subprocess `apply.sh`, curl-HTTP `query()`, `reset()` drops `raw_events`/`raw_events_v1`/`schema_migrations` (order-independence — the runner skips recorded versions).
+
+**Evidence:** Live run: **6 passed, 19 deselected, 3.17s** against throwaway `clickhouse-server:26.3.17.110` (port 18125), real `apply.sh` + real migration files + real `bootstrap-user.dev.sql`.
+
+### DEVIATIONS & FINDINGS (3A, so far)
+
+- **002 backfill: `LEFT JOIN ... WHERE r.event IS NULL` broken → `LEFT ANTI JOIN`.** On ClickHouse 26.3.17 with default `join_use_nulls=0`, unmatched right-side columns come back as type defaults (`''`), never NULL, so the planned anti-join predicate matches nothing and 002 would be a silent no-op (003 would then drop the legacy table losing its data). **Verified three times** (migrations agent's native-client + HTTP smokes, tests agent's legacy test, my own `t_a`/empty-`t_b` reproduction: plan-form count = 0, `LEFT ANTI JOIN` count = 3). `LEFT ANTI JOIN` is semantically identical and idempotent; documented in the 002 header.
+- **`system.tables.ttl_expression` absent on CH 26.3.17** → the plan's canonical AC3/check path fails (`UNKNOWN_IDENTIFIER`). `test_ttl_present` probes `hasColumnInTable('system','tables','ttl_expression')` and falls back to `SHOW CREATE TABLE` (which renders `TTL inserted_at + toIntervalDay(30)`). §4-checklist item logs "fallback used: SHOW CREATE" at 3.1.8.
+- **`CH_PASSWORD` was not exported in startup.sh §4** (the subagent implementing boot.sh flagged it; verified: non-exported shell vars don't reach `bash scripts/boot.sh`, so boot.sh's `:?` guard would have failed every VM boot). Fixed by me during orchestrator review: `export CH_PASSWORD=$(gcloud secrets versions access latest ...)`; `GF_PASSWORD` stays un-exported (only consumed by the same-script `.env` heredoc).
+- **Guard must be migration-file line 1** — a first draft put explanatory headers before `-- guard:`; the first smoke run applied every file unconditionally (then 002 404'd on the missing `raw_events_v1`). Caught in the migrations agent's smoke; all guards now sit on line 1.
+- **Docker daemon side-effect:** starting the daemon for smoke tests auto-restarted the repo's local compose stack (old config, old data on `ch-data` volume) — left running; local ClickHouse on `:8123` is the old shape until a fresh volume/compose up applies 3A.
+- **Cosmetic:** ci.yml line-32 comment "three independent checks" is stale (now four matrix entries).
 
 ### 3.1.8 — 3A PR → capture → deploy → import → micro-gate → log
 
