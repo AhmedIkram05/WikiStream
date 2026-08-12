@@ -44,6 +44,29 @@ resource "google_compute_instance" "wikistream_vm" {
   }
 }
 
+# Durable data disk: survives every startup.sh-driven instance recreate
+# (metadata_startup_script is ForceNew). protected like the tfstate bucket.
+resource "google_compute_disk" "ch_data" {
+  name    = "ch-data"
+  type    = "pd-standard"
+  size    = 30
+  zone    = var.zone
+  project = var.project_id
+  labels  = var.labels
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# device_name governs the guest path /dev/disk/by-id/google-ch-data
+resource "google_compute_attached_disk" "ch_data" {
+  instance    = google_compute_instance.wikistream_vm.name
+  disk        = google_compute_disk.ch_data.id
+  device_name = "ch-data"
+  zone        = var.zone
+}
+
 output "instance_name" {
   value = google_compute_instance.wikistream_vm.name
 }

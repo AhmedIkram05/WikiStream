@@ -29,8 +29,9 @@ env:
   BUSINESS_CRITICAL_MODULES: src.sse
 
 jobs:
-  # One matrix, three independent checks. compose-smoke runs on exactly one
-  # runner (single entry); ruff and unit-tests are the other two entries.
+  # One matrix, four independent checks. compose-smoke runs on exactly one
+  # runner (single entry); ruff, unit-tests, and analytics-tests are the
+  # other three entries.
   # fail-fast: false so one broken check doesn't cancel the others.
   checks:
     name: ${{ matrix.name }}
@@ -53,8 +54,35 @@ jobs:
               # -q: dot-per-test, no per-test lines. --tb=short: full assertion
               # context, only the frames that matter. Failures stay debuggable
               # without the wall of text.
-              uv run --project consumer pytest -q --tb=short
-              uv run --project consumer pytest -q --tb=short --cov="$BUSINESS_CRITICAL_MODULES" --cov-report=term-missing --cov-fail-under=100
+              uv run --project consumer pytest -q --tb=short -m "not ch"
+              uv run --project consumer pytest -q --tb=short -m "not ch" --cov="$BUSINESS_CRITICAL_MODULES" --cov-report=term-missing --cov-fail-under=100
+
+          # ClickHouse migration suite: boots a real CH and runs the
+          # @pytest.mark.ch tests (tests/migrations now, 3B/3C suites join
+          # later). testpaths=tests collects them — NO explicit paths here
+          # (a not-yet-existing dir would exit 4 and red the 3A CI).
+          # install-deps runs for this entry too: it is not compose-smoke
+          # (the step's `if: matrix.name != 'compose-smoke'` passes), so
+          # `uv sync --project consumer` is available for pytest.
+          - name: analytics-tests
+            command: |
+              set -euo pipefail
+              echo "== ch: start clickhouse =="
+              docker compose up -d clickhouse
+
+              echo "== ch: wait ready =="
+              ready=0
+              for i in $(seq 1 30); do
+                if docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; then ready=1; break; fi
+                sleep 2
+              done
+              [ "$ready" -eq 1 ] || { echo "error: ClickHouse not ready after 30 attempts (~60s)" >&2; exit 1; }
+
+              echo "== ch: bootstrap user =="
+              docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
+
+              echo "== ch: run @ch tests =="
+              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q --tb=short -m ch
 
           # Full walking-skeleton smoke: AC1-AC6 gates against the real stack.
           # `up -d --build` also validates the Dockerfile on every PR — image
@@ -64,6 +92,16 @@ jobs:
               set -euo pipefail
               echo "== AC1: stack up =="
               docker compose up -d --build
+
+              echo "== 3A: wait CH ready, bootstrap user, run migrations =="
+              ready=0
+              for i in $(seq 1 30); do
+                if docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; then ready=1; break; fi
+                sleep 2
+              done
+              [ "$ready" -eq 1 ] || { echo "error: ClickHouse not ready after 30 attempts (~60s)" >&2; exit 1; }
+              docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
+              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password ./migrations/apply.sh
 
               echo "== AC3: wait for first rows =="
               q="docker compose exec -T clickhouse clickhouse-client --user wikistream --password wikistream_dev_password --query"
