@@ -5,7 +5,7 @@
   "tags": ["wikistream"],
   "timezone": "utc",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": {
     "from": "now-1h",
@@ -349,6 +349,73 @@
           },
           "refId": "A",
           "rawSql": "SELECT bucket, sum(edits) AS edits FROM default.mv_edit_sizes_per_minute WHERE minute >= now() - INTERVAL ${window} GROUP BY bucket ORDER BY multiIf(bucket = '0', 0, bucket = '1-10', 1, bucket = '11-100', 2, bucket = '101-1000', 3, bucket = '1001-10000', 4, 5)",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Warehouse freshness",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "wikistream-bigquery"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 120
+              }
+            ]
+          },
+          "unit": "min"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "wikistream-bigquery"
+          },
+          "refId": "A",
+          "rawSql": "SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(exported_at), MINUTE) AS minutes_since FROM wikistream.export_runs",
           "format": 1
         }
       ]
