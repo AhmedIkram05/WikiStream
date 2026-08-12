@@ -9,8 +9,10 @@ services:
       - "8123:8123"   # HTTP — Grafana datasource + consumer + ad-hoc verification queries
       - "9000:9000"   # native — clickhouse-client only; the consumer never uses it
     volumes:
-      - ./docker/clickhouse/initdb.d:/docker-entrypoint-initdb.d:ro
-      - ch-data:/var/lib/clickhouse
+      # Phase 3A: CH_DATA_DIR is set on the VM (startup.sh mounts the durable
+      # ch-data disk at /mnt/ch-data/clickhouse); unset locally falls back to
+      # the named `ch-data` volume declared below.
+      - ${CH_DATA_DIR:-ch-data}:/var/lib/clickhouse
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
 
