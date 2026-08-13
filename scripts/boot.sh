@@ -58,3 +58,14 @@ cp /opt/wikistream/warehouse/wikistream-export.service /opt/wikistream/warehouse
    /opt/wikistream/gx/wikistream-gx.service /opt/wikistream/gx/wikistream-gx.timer /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now wikistream-export.timer wikistream-parity.timer wikistream-backup.timer wikistream-gx.timer
+
+# Phase 5: Slack webhook for Grafana alerting (non-fatal if unavailable)
+grep -q '^SLACK_WEBHOOK_URL=' /opt/wikistream/.env || {
+  SLACK_WEBHOOK_URL=$(gcloud secrets versions access latest --secret=slack-webhook-url 2>/dev/null) \
+    && echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> /opt/wikistream/.env \
+    || echo "[boot] slack-webhook-url unavailable — alerting works, Slack delivery missing" >&2
+}
+
+# Phase 5: recreate grafana to pick up SLACK_WEBHOOK_URL + alerting provisioning
+docker compose up -d grafana \
+  || echo "[boot] grafana recreate failed — alerting provisioning may be stale" >&2
