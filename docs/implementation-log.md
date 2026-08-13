@@ -1399,6 +1399,314 @@ begins.
 
 ## Phase 5 — Observability & Security Hardening
 
+Tasks defined in `docs/planning/phase-5-implementation.md` (LOCKED 2026-08-13,
+reviewed by a code-review subagent — 4 BLOCKER, 6 MAJOR, 7 MINOR findings, all
+fixed in-place before this section was opened). Status lines are filled as each
+task is worked, per the logging rules. Three PRs, each merge → gated apply → VM
+reset → its checkpoint before the next PR begins: 5A Grafana alerting
+(checkpoint 5A.6), 5B Cloud Monitoring (checkpoint 5B.4), 5C security
+(checkpoint 5C.3), then the DEMO chaos battery. Gate 2's GO-with-caveat is on
+record in §4.2.9 — 5C.3's Go/No-Go is the phase's final explicit step.
+
+### 5.0.1 — Ahmed: Slack workspace, incoming webhook, #wikistream + test message
+
+**Status:** DONE
+**2026-08-13:** Workspace + incoming webhook + `#wikistream` created; test message
+posted and confirmed the webhook delivers (webhook URL kept out of this repo —
+it loads into Secret Manager after the 5A.5 apply creates the secret).
+
+### 5A.1 — Migration 008: pipeline_health table
+
+**Status:** DONE (code + local ch verification)
+**2026-08-13:** `migrations/008_pipeline_health.sql` added — plain comment header
+(no `-- guard:` line, mirrors 007), exact plan DDL: source/metric
+LowCardinality(String), ts DateTime64(3,'UTC'), value Float64, detail String;
+MergeTree, PARTITION BY toYYYYMMDD(ts), ORDER BY (source, ts), TTL ts +
+INTERVAL 7 DAY. `tests/migrations/test_migrations.py`: `reset()` now also drops
+`default.pipeline_health` (prevents stale-table count drift); new
+`test_pipeline_health_migration` (ch): table exists via system.tables, SHOW
+CREATE contains `TOINTERVALDAY(7)`, schema columns via system.columns
+`FORMAT TSVRaw` (plain TSV escapes the type's single quotes — verified via
+`od -c`), live INSERT+SELECT roundtrip, trailing reset().
+**Evidence:** `uv run --project consumer pytest -m ch -q tests/migrations/` → 8
+passed (10.31s). SHOW CREATE default.pipeline_health matches the plan DDL
+byte-for-byte on CH 26.3.17 (TTL `TOINTERVALDAY(7)`).
+
+### 5A.2 — Consumer heartbeat: heartbeat.py + wiring in consumer.py
+
+**Status:** DONE (code + 100% coverage + live 15s cadence proven)
+**2026-08-13:** `consumer/src/heartbeat.py` — pure `build_row(counters,
+previous, ts)` → 5-tuple `(ts, "consumer", "heartbeat", 1.0,
+json.dumps(detail))`; detail carries `inserted_delta`/`dead_lettered_delta`/
+`insert_failed_delta`/`duplicates_skipped_delta` (vs previous tick; all 0 on
+first tick) + cumulative `total`/`dead_lettered`/`insert_failed`/
+`duplicates_skipped`/`resumed_from`. `heartbeat_loop(client, counters, stop,
+interval=15.0)` — async loop: sleep, build, insert
+(`async_insert: 1, wait_for_async_insert: 0`), `except Exception` → log
+`heartbeat_insert_failed` + swallow (alerting never takes the consumer down),
+final-flush on stop. consumer.py: import; `counters["resumed_from"] =
+resumed_from or "none"` seeded right after the dict init (before task creation
+— prevents KeyError killing the heartbeat); `heartbeat_task =
+asyncio.create_task(heartbeat_loop(client, counters, stop))` beside the
+consume task; shutdown awaits BOTH via
+`asyncio.wait_for(asyncio.gather(task, heartbeat_task), 10.0)` with the
+existing cancel+suppress fallback.
+**Tests:** `tests/src/consumer/test_heartbeat.py` — 8 unit tests (first-tick
+zeros, deltas, empty-prev→full-delta, 9-key JSON shape, resumed_from
+passthrough, single-quote-safe detail, exit-on-stop with RecordingClient
+asserting the final flush insert, RaisingClient → ≥2 insert attempts + caplog
+`heartbeat_insert_failed`) + 1 ch test (live insert, loop exits on stop).
+**Evidence:** unit 8 passed; ch 1 passed; line coverage of heartbeat.py **100%
+(24/24)**. Live: `docker compose up -d --build consumer` → heartbeats at
+22:47:11/27/42/57 → 22:48:12 = **15s cadence exact**; detail carries real
+cumulative counters + persisted resumed_from state.
+**Review fix (subagent round, 2026-08-13):** `await asyncio.sleep(interval)`
+was not stop-aware — stop mid-sleep could leave up to 15 s of sleep, blowing
+the consumer's ≤10 s shutdown join and skipping the final flush. Now
+`asyncio.wait_for(stop.wait(), timeout=interval)` (TimeoutError swallowed) +
+`if stop.is_set(): break` before the tick body; final flush lands promptly on
+stop. Re-verified: 75 consumer unit + ch live-insert pass; 15 s cadence
+flowing after the change (consumer-down inactive at 23:00 — heartbeats < 90 s
+old).
+
+### 5A.3 — Parity + GX status writers (parity.sh, gx/suite.py)
+
+**Status:** DONE (code + tests + both directions proven)
+**2026-08-13:** `warehouse/parity.sh` — block inserted after the final
+`emit_log`, before the trailing `if [ "$status" != "ok" ]; then exit 1; fi`:
+`_P5_VALUE=0.0` / `1.0` on ok; `_P5_DETAIL` built with
+`sed "s/'/\\\\'/g"` single-quote escaping; docker-exec INSERT into
+`default.pipeline_health` (source 'parity', metric 'result'); `|| { echo
+"...write failed" >&2; }` keeps it non-fatal under `set -euo pipefail`.
+Freshness-gate early exits untouched (absence semantics — R4 fires on missing
+parity rows). `gx/suite.py` — module-level pure `report_status(verdict,
+client=None)` → 5-tuple `(now, "gx", "result", 1.0|0.0, json.dumps({window_start,
+window_end, run_id, expectations_passed, expectations_failed, row_count}).
+replace("'", "\\'"))`; guards missing client/verdict (warn + return None —
+suite exit code never masked); insert errors logged + swallowed. `verdict`
+dict + `client = None` declared before `get_client(...)`;
+`atexit.register(lambda: report_status(verdict, client))` — closure over
+locals, single registration covers ALL current and future exit paths: (a)
+connection/query failure → value 0.0; (b) row_count==0 skip → value 1.0
+(skip = success, exits 0); (c) row-count guard → value 0.0 (this is DEMO #5's
+injection point, GX_ROW_MIN=999999999); (d) final → 1.0/0.0 from
+result.success. Printed JSON byte-identical to before (same keys, same order).
+**Tests:** `tests/gx/test_status_report.py` — 7 unit (row shape + tz-aware ts,
+1.0/0.0 values, 6-key detail parses, quote-escaping, missing-keys→0,
+client=None→None) + 2 ch (live insert with polling for async flush;
+raising-client swallow).
+**Evidence:** `uv run --project gx pytest` — unit 7 passed, ch 4 passed
+(incl. 2 status-report + 2 pre-existing suite tests). bash -n parity.sh clean.
+Live rows seen in pipeline_health: parity/result and gx/result rows with
+correct values (gx wrote 1.0 after a passing run and 0.0 after a failing run
+during the test battery — both visible in the table).
+**Review fixes (subagent round, 2026-08-13):** (1) a missing/renamed GX_TABLE
+previously fell into the `row_count == 0` skip path → wrote a healthy 1.0
+every run → R5 could never fire (pre-existing branch made active false-health
+by the atexit wiring). Now `missing` → verdict success: False,
+expectations_failed: 1, row_count: 0, error "table … missing" + return 1.
+Verified live: `GX_TABLE=default.no_such_table_gx_5a` → exit=1, printed
+`{"success": false, …, "error": "table … missing: … UNKNOWN_TABLE"}`, and a
+0.0 row landed in pipeline_health (R5 would fire). (2) `get_client()` itself
+now guarded — construction failure → failure verdict + return 1 (0.0 written)
+instead of the atexit guard silently skipping. (3) A fix-edit indentation slip
+caught and re-formatted (`ruff format gx/suite.py`); re-verified ruff check +
+format clean, gx unit 7 + ch 2 pass.
+
+### 5A.4 — Grafana alerting provisioning: alerts.yml (5 rules + contact point + policy)
+
+**Status:** DONE (provisioned + empirically fired + recovered)
+**2026-08-13:** `grafana/provisioning/alerting/alerts.yml` created. One Slack
+contact point (`slack-alerts`, receiver-level `uid` ACCEPTED by Grafana 13.1 —
+kept, per build-time check), one group `wikistream` (folder auto-created,
+interval 30s), FIVE rules, one policy. Local verification against live Grafana
+13.1.1: all 5 rules provisioned (uid/title: consumer-down "Consumer down",
+dlq-rate-high "Dead-letter rate high", ch-insert-failure "ClickHouse insert
+failures", parity-drift "Parity drift", gx-fail "GX suite failed"; folder
+dfv3lh9jx4o3kf); contact point `{uid: slack-alerts, type: slack, settings:
+{url: "[REDACTED]"}, provenance: "file"}`; rawSql round-trips byte-exact.
+Empirical firing test (TRUNCATE pipeline_health → rules → INSERT rows): after
+TRUNCATE, consumer-down **firing**, parity-drift + gx-fail **pending**; after
+re-inserting 3 rows, ALL FIVE **inactive** health=ok — both directions proven,
+`for` durations honored (45s/2m/1m/1m).
+**Live incident caught by R3:** during the local battery, the migration ch
+suite's reset() left local CH with raw_events dropped → the restarted consumer
+failed every batcher flush → R3 ch-insert-failure went **pending** on real
+insert_failed_delta>0 (and parity-drift went firing for absence) — the
+alerting stack detected a genuine failure. After re-applying migrations
+("6 applied, 3 skipped") the consumer recovered (ins 54000/fail 0 per 15s
+tick) and R3 cleared to inactive after its 2m `for`.
+**Deviations from plan (recorded):** (1) `object_matchers` map form in the plan
+is rejected by Grafana 13.1 (`cannot unmarshal object into
+Route.object_matchers`); file-provisioning requires a LIST OF 3-ELEMENT ARRAYS
+AND the root policy cannot carry matchers — final working shape is a nested
+`routes:` child under the root policy carrying `object_matchers:
+[['grafana_folder', '=', 'wikistream']]`. (2) The plan's `eval: [{model:
+{type: threshold, expression: 'A < 1'}}]` field is SILENTLY DROPPED by
+13.1 file-provisioning (rules stored with no condition node — would never
+fire; proven empirically). Fix per the documented schema: each rule now has TWO
+data nodes — node A (raw-SQL query, unchanged) + node B (datasourceUid
+`__expr__`, model {type: threshold, expression: 'A', intervalMs 1000,
+maxDataPoints 43200, conditions: [{evaluator: {params: [1|0.05|0], type:
+lt|gt}, type: threshold}]}) with `condition: B`. Scratch-rule API tests
+(zzz-*) proved shape 2 (`expression: 'A'` + conditions[]) evaluates correctly;
+`expression: 'A < 1'` + conditions[] fails eval (`missingDependentNode [A < 1]`).
+All 3 scratch rules deleted after testing.
+
+### 5A.5 — Slack secret + boot.sh wiring
+
+**Status:** DONE (code + validate; secret VALUE set by Ahmed post-PR)
+**2026-08-13:** `infra/main/secrets.tf` — new `google_secret_manager_secret
+slack_webhook_url` (secret_id "slack-webhook-url", project var.project_id,
+labels, replication auto; NO secret_version — Ahmed loads the value via
+`echo -n '<webhook>' | gcloud secrets versions add slack-webhook-url
+--data-file=-` after apply). `infra/main/main.tf` — `slack_webhook_url.secret_id`
+added to module "iam" `secret_ids` (modules/iam/iam.tf for_each covers it; no
+edit needed for 5A). `scripts/boot.sh` — appended after the systemd-unit step:
+Slack env wiring (`grep -q '^SLACK_WEBHOOK_URL=' ... || { gcloud secrets
+versions access latest --secret=slack-webhook-url ... && echo "SLACK_WEBHOOK_URL=
+..." >> .env || echo "[boot] slack-webhook-url unavailable — alerting works,
+Slack delivery missing" >&2 }`) + `docker compose up -d grafana` (recreates
+container with new env + bind-mounted provisioning; NOT restart — restart
+ignores new env vars). Both additions non-fatal under set -e. docker-compose.yml:
+grafana `environment:` += `SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}`.
+**Evidence:** bash -n boot.sh clean; `terraform init -backend=false` +
+`terraform validate` → "Success! The configuration is valid"; `terraform fmt
+-check` clean. Locally proven the compose wiring: with a dummy
+SLACK_WEBHOOK_URL the grafana container provisions the Slack contact point;
+without it the receiver fails validation ("recipient must be specified when
+using the Slack chat API").
+**2026-08-13 (pre-merge):** REAL webhook loaded into Secret Manager by the
+orchestrator, ahead of the PR (per Ahmed's request): `gcloud secrets create
+slack-webhook-url --replication-policy=automatic` + `echo -n '<webhook>' |
+gcloud secrets versions add slack-webhook-url --data-file=-` → version 1
+enabled, value verified byte-exact against the webhook (81 bytes, not
+echoed here). **Consequence for the post-merge TF apply:** the
+`google_secret_manager_secret.slack_webhook_url` resource already exists →
+`terraform apply` on `infra/main` returns 409 unless run AFTER:
+`terraform import google_secret_manager_secret.slack_webhook_url
+projects/wikistream-505003/secrets/slack-webhook-url` (one-time; the IAM
+`secret_accessor` member resource is unaffected — it grants, not creates).
+Delivery channel: alerts.yml sets only `url:` (no `recipient:` override), so
+the webhook posts to the channel configured on Slack's side for this incoming
+webhook — `#wikistream` (5.0.1).
+**Review fix (subagent round, 2026-08-13):** the `docker compose up -d
+grafana` step was not non-fatal under `set -euo pipefail` — a transient
+failure would abort VM startup with stale provisioning. Now `docker compose up
+-d grafana \\\n  || echo "[boot] grafana recreate failed — alerting
+provisioning may be stale" >&2` (bash -n re-verified).
+
+### 5A.6 — 5A PR → deploy → VM checkpoint → log
+
+**Status:** IN PROGRESS (code + review + tests complete; PR + deploy + VM
+checkpoint pending Ahmed's commits/PR/merge)
+**2026-08-13:** All 5A.1–5A.5 code written by implementation subagents and
+reviewed in full by the orchestrator; one defect found in review (alerts.yml
+object_matchers — fixed, then the `eval:` drop discovered at provisioning time
+and fixed with __expr__ condition nodes — see 5A.4 deviations). Full local
+test battery green: consumer unit 75 passed, consumer ch (migrations +
+heartbeat) 9 passed, gx unit 7 passed + ch 4 passed, heartbeat 100% line
+coverage, ruff check + format clean, terraform validate clean. Consumer live
+with 15s heartbeats; all 5 rules provisioned and empirically validated in both
+firing directions. **Subagent code review round: 2 MAJOR + 3 MINOR findings,
+all accepted and fixed** (boot.sh grafana-recreate non-fatal; gx missing-table
+now writes 0.0; heartbeat stop-aware final flush; coverage-boundary.md entry;
+get_client guarded) — fixes re-verified: ruff/format clean, 75 consumer unit +
+ch, 7 gx unit + ch, missing-table live run exits 1 + 0.0 row, 15s cadence
+flowing, all rules in expected state (R1/R2/R3/R5 inactive, R4 parity-drift
+firing on genuine local absence of a parity producer).
+**Rule state at 23:00 local:** consumer-down inactive, dead-letter-rate-high
+inactive, ch-insert-failure inactive (recovered after the raw_events incident
+— its 2m `for` window of clean data elapsed), parity-drift firing (no parity
+rows since the migration suite's reset() dropped pipeline_health; absence
+semantics per plan §9 — expected locally, no parity producer outside the VM),
+gx-fail inactive.
+**VM checkpoint (after Ahmed merges):** startup done, all healthy, ≥4
+rows/min in pipeline_health, 5 rules + contact point in the provisioning API,
+test notification in Slack, full pytest green.
+**Deviations:** branch is `feature/Observability-&-Security-Hardening` (plan
+said `feature/Observability-&-Security`); alerting-model deviations recorded
+in 5A.4; local consumer stopped during ch suites and restarted after (3.3.8
+precedent), leaving local CH table state requiring a migrations re-apply
+(6 applied, 3 skipped) — CI's isolated compose-smoke is unaffected; gx
+`report_status` detail omits the error string (plan-specified 6-key detail;
+error text stays in the printed verdict).
+
+#### 5A acceptance criteria — verification (local, pre-PR)
+
+**AC1 — migration 008 + suite green + SHOW CREATE schema:** PASS.
+`uv run --project consumer pytest -m ch -q tests/migrations/` → 8 passed
+(incl. `test_pipeline_health_migration`); SHOW CREATE on CH 26.3.17 matches
+the plan DDL byte-for-byte (TOINTERVALDAY(7), ORDER BY (source, ts),
+PARTITION BY toYYYYMMDD(ts)); `reset()` drops pipeline_health (no stale-table
+drift across the suite).
+
+**AC2 — heartbeat ~15s cadence + unit tests green:** PASS. Unit: 8 passed;
+coverage 100% (24/24). Live: rebuilt consumer heartbeats at
+22:47:11 → :27 → :42 → :57 → 22:48:12 = 15s gaps exactly; detail carries
+cumulative counters + resumed_from. (VM count()≥15 rows/5min is part of the
+post-merge checkpoint.)
+
+**AC3 — parity verdict value=1:** PASS (code + mechanics). Block verified in
+file (after final emit_log, before the exit guard); `_P5_VALUE` 1.0 on ok;
+sed single-quote escaping verified byte-level. Full end-to-end is a VM
+checkpoint item (local has no bq/parity producer; absence semantics proven
+instead — R4 parity-drift fired on missing rows).
+
+**AC4 — gx status at every exit path + never masks:** PASS, proven live.
+`report_status` via atexit closure covers all 4 plan exit paths (+ the
+review-fix missing-table path). Forced run:
+`GX_TABLE=default.no_such_table_gx_5a … suite.py` → exit 1 AND a value=0 row
+landed in pipeline_health (R5 would fire). Existing tests: row_count==0 skip
+writes 1.0 (skip = success); passing run writes 1.0; failing validation run
+writes 0.0 (all three observed as real rows during the battery). Write
+failures are logged + swallowed — the GX exit code is never masked.
+
+**AC5 — slack-alerts contact point provisioned + test notification:** PASS
+(provisioning half). Contact point `{uid: slack-alerts, type: slack, settings:
+{url: "[REDACTED]"}, provenance: "file"}` live in
+/api/v1/provisioning/contact-points. Empty URL correctly fails validation
+("recipient must be specified when using the Slack chat API") — the real
+webhook arrives via Secret Manager → boot.sh → compose env on the VM. The
+actual Slack test message is a VM checkpoint item (Ahmed).
+
+**AC6 — exactly 5 rules, folder wikistream:** PASS.
+/api/v1/provisioning/alert-rules → length 5 (consumer-down, dlq-rate-high,
+ch-insert-failure, parity-drift, gx-fail), folder dfv3lh9jx4o3kf (wikistream,
+auto-created), all with condition B + working __expr__ threshold nodes.
+
+### 5B.1 — Ops Agent install via boot.sh
+
+**Status:** ☐ to do
+
+### 5B.2 — VM SA monitoring.metricWriter + TF modules/monitoring (channel + 2 policies)
+
+**Status:** ☐ to do
+
+### 5B.3 — Metrics-flow verification (disk/percent_used visible in Cloud Monitoring)
+
+**Status:** ☐ to do
+
+### 5B.4 — 5B PR → deploy → checkpoint
+
+**Status:** ☐ to do
+
+### 5C.1 — IAM review doc (iam-review.md): enumerate, justify, tighten
+
+**Status:** ☐ to do
+
+### 5C.2 — Firewall lockdown: delete default-allow-* (TF null_resource)
+
+**Status:** ☐ to do
+
+### 5C.3 — 5C PR → deploy → gcloud rule-state verification → Go/No-Go
+
+**Status:** ☐ to do
+
+### DEMO — Chaos battery (one ~90 min window, runs immediately after 5C — no separate booking, Ahmed 2026-08-13)
+
+**Status:** ☐ to do
+
 ## Phase 6 — Coverage Bar Enforcement
 
 ## Phase 7 — Performance & Cost Validation

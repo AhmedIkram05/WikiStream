@@ -36,6 +36,21 @@ the process exits non-zero) as its spot-check guarantee. `warehouse/backup.sh`
 follows the export/parity wrapper convention: **outside the pytest-cov gate**,
 verified by the production timer runs and the executed restore spot-check.
 
+**2026-08-13 (Phase 5 correction):** `consumer/src/heartbeat.py` is now a REAL
+path, with `tests/src/consumer/test_heartbeat.py` (8 pure unit tests covering
+`build_row` deltas/first-tick zeros/resumed_from/quote-safety, loop
+exit-on-stop with a final flush, and the insert-error-swallowed branch via a
+raising fake client + 1 ch live-insert test) as its spot-check guarantee —
+verified at **100% line coverage (24/24)**. `gx/suite.py`'s
+`report_status(verdict, client)` (the Phase 5 pipeline_health status writer)
+is now REAL too, with `tests/gx/test_status_report.py` (7 pure unit tests:
+row shape/values/escaping/missing-client + 2 ch: live insert, raising-client
+swallow) as its spot-check guarantee. `warehouse/parity.sh`'s Phase 5
+pipeline_health write follows the wrapper convention: **outside the
+pytest-cov gate**, verified by the production timer runs + the pipeline_health
+rows it produces (R4 parity-drift absence semantics in the Phase 5 alert
+rules).
+
 **2026-08-12 (Phase 3C correction, AC21 phase-final wording):**
 `warehouse/sql/` and the new `tests/warehouse/` suite are now REAL paths.
 The Phase 3 CQL story is complete: **`migrations/` + `warehouse/sql/` + the
