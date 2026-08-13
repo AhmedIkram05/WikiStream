@@ -906,10 +906,380 @@ referenced via `file()` in the compute module, so the added
 `google_project_iam_member.vm_job_user` (bigquery.jobUser) was created
 successfully in that same run.
 
-**VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go: pending — filled
-after the merge + apply + VM battery below.**
+**VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go:**
 
-## Phase 4 — Data Quality & Resilience
+**AC14 — BigQuery API enabled:** `gcloud services list --enabled
+--filter=config.name:bigquery.googleapis.com` → `bigquery.googleapis.com`.
+Bootstrap applies recorded above (3.3.1 API enable + 3.3.8 deploy-role
+extension), both manual with local state.
+
+**AC15 — BQ dataset + 5 tables + staging bucket + IAM:** `bq ls
+--project_id=wikistream-505003 wikistream` shows all 5 tables
+(`export_runs`, `kpi_edit_sizes_hourly`, `kpi_edits_hourly`,
+`kpi_top_pages_hourly`, `raw_events_sample`). `kpi_edits_hourly` is
+DAY-partitioned on `hour` with `clustering: ["wiki"]`. Dataset IAM
+(`bq show wikistream` prettyjson): `WRITER wikistream-vm@…`
+(roles/bigquery.dataEditor — ADR-010), plus project-scoped
+`roles/bigquery.jobUser` for the VM SA (jobs are project-scoped; recorded
+deviation above). `gcloud storage ls gs://wikistream-505003-bq-staging`
+reachable, holds RUN_ID-unique per-table objects. STAGING BUCKET WRITE —
+see AC20.
+
+**AC16 — Export timer produces data:** scheduled unit fired 18:00:19 and
+completed 18:03:33 with `[export] success window=2026-08-12T17:00:00Z..
+2026-08-12T18:00:00Z rows_edits=272 rows_top_pages=40870 rows_sizes=6
+rows_raw_sample=10516`; `systemctl is-active wikistream-export.timer` →
+active; `ExecMainStatus=0`. `bq query` export_runs: `status=n
+success,1` for the 17:00 window (exported_at 18:03:09). All four KPI/raw
+tables hold the last-completed-hour rows (272 / 40870 / 6 / 10516).
+
+**AC17 — Parity green on schedule:** scheduled parity unit fired
+18:05:18 → finished 18:07:28, `ExecMainStatus=0`, journal `Finished
+wikistream-parity.service`. `/var/log/wikistream/wikistream-parity.log`:
+17:05:30 error line (boot-time `Persistent=true` catch-up for 16–17Z,
+which predates the fixed exports — correct error path) then
+**18:07:28 green**: `{"freshness":"ok","status":"ok","tables":
+{"edits":"ok","raw_sample":"ok","sizes":"ok","top_pages":"ok"},
+"window_start":"2026-08-12T17:00:00Z","window_end":
+"2026-08-12T18:00:00Z"}`. **Two consecutive green runs (`≥2`) confirmed on
+the live schedule: 18:07:28 and 19:07:10 UTC, both `"status":"ok"` with
+all four tables ok and `ExecMainStatus=0`** — closing AC17 end-to-end.
+
+**AC18 — BQ matches CH for a real window:** parity compares BQ vs CH on
+identical windowed-SUM SQL for all four tables → all ok. Independent BQ
+probe of `kpi_edits_hourly` for the 17–18Z window:
+`hour=2026-08-12 17:00:00, n_rows=272, edits=48833,
+bytes_delta=43943656`, matching CH at 18:07. (An earlier 17:26 probe
+showed CH=1946/23345/20765963 — a mid-open-hour snapshot predating the
+18:00 reload; scheduled-run numbers are the record.)
+
+**AC19 — Freshness panel renders:** `POST /api/ds/query` (uid
+`wikistream-bigquery`) with
+`SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(exported_at), MINUTE) AS
+minutes_since FROM wikistream.export_runs` → 200, `minutes_since = 14`
+(< 120). `/api/datasources` lists BigQuery (uid `wikistream-bigquery`,
+GCE auth, isDefault false) + ClickHouse (isDefault true). Panel visible
+on the wikiStream Live Analytics dashboard.
+
+**AC20 — Staging lifecycle enforced:** `lifecycle_rule` (Delete, age 7
+days) on `wikistream-505003-bq-staging` in TF; listing shows only fresh
+objects; trivially nothing older than 7 days.
+
+**AC21 — Coverage boundary + log consistent:** `docs/planning/
+coverage-boundary.md` corrected (Phase 3 story = `migrations/` +
+`warehouse/sql/` + the three suites `tests/migrations`, `tests/mv`,
+`tests/warehouse` as business-critical 100%; `export.sh`/`parity.sh`
+stayed outside the pytest-cov gate — thin wrappers whose exit codes are
+verified by the timer runs + `bash -n`; the SQL they execute IS in the
+100% story). This log now carries: bootstrap records, CI URLs, the
+scheduled-run evidence above, and every deviation/bug caught.
+
+**CI / build evidence:** PR #19 (`feature/Data-Model-Depth` → main,
+merged 2026-08-12) and PR #20 (post-merge deploy-role fix, merged).
+Initial PR #19 apply failed on the two deploy-SA 403s (recorded above);
+after the bootstrap role extension the gated apply completed and created
+dataset + bucket. Lint/unit-tests/analytics-tests/compose-smoke all
+green on the final commits.
+
+**Gate 1 — Go/No-Go for Phase 4:** **GO on record** (same
+precedent as the Phase-2 gate). All AC14–AC21 self-checked with evidence
+above; the two consecutive green parity runs (18:07:28 + 19:07:10 UTC)
+close AC17 with no open items. Phase 4 planning may proceed in parallel
+per master plan §8.
+
+**Phase 3 exit = AC1–AC21 executed with recorded evidence; Gate 1
+GO-with-caveat recorded. Phase 3 is COMPLETE.**
+
+## Phase 4 — Data Quality & Resilience (4A Consumer Resilience / 4B GX + Hardening + Backup)
+
+Tasks defined in `docs/planning/phase-4-implementation.md` (LOCKED 2026-08-12).
+Task headings pre-populated per plan §6; Status lines are filled as each task
+is worked, per the logging rules. Two PRs, each merge → gated apply → VM
+reset → its gate before the next PR begins: 4A consumer resilience (micro-gate,
+task 4.1.7), 4B GX + healthchecks + backup/restore (phase-final battery + Gate 2,
+task 4.2.9). Gate 1's GO-with-caveat is already on record in §3 — task 4.2.9
+cross-references it, it is NOT re-recorded.
+
+### 4.1.1 — models.py: slim Pydantic model + timestamp policy (Q1/Q2)
+
+**Status:** DONE
+
+**2026-08-13:** `consumer/src/models.py` landed per Q1/Q2: `WikiEvent`
+(wiki/title/user/event_type via `Field(validation_alias="type")`, bot,
+`length: EventLength | None`, `timestamp: datetime`,
+`ConfigDict(extra="ignore")`), `EventLength(new: int = 0, old: int = 0)`,
+`validate_timestamp(ts, now=None) -> str | None` with the exact reason
+strings (`timestamp_missing` / `timestamp_unparseable` / `timestamp_future`),
+naive→UTC fix and 5-minute future tolerance, `now` injectable for tests.
+
+**§4 build-time checklist outcome — REAL SHAPE FINDING (FAILED → FIXED):**
+the checklist item "verify pydantic v2 parses trailing-Z timestamps against a
+captured real event" surfaced a live-stream reality the fixtures could not
+have caught: the real Wikimedia recentchange stream sends **integer epoch
+seconds** as `data: {"timestamp": 1786626323, ...}` (not an ISO string) and
+the SSE `id:` line is a **JSON array**
+(`id: [{"topic":...,"partition":0,"timestamp":...},{"topic":...,"offset":-1}]`),
+not a plain number. First live boot hit
+`WARNING reconnect reason=AttributeError: 'int' object has no attribute 'strip'`
+every ~1s (never-crash contract held — zero Tracebacks) and inserted nothing.
+Fixed by (a) `validate_timestamp` accepting `int | float` →
+`datetime.fromtimestamp(ts, tz=utc)` and (b) a
+`@field_validator("timestamp", mode="before")` epoch→datetime coercion on
+`WikiEvent.timestamp` (str stays on the fromisoformat path; junk still yields
+`validation:datetime_type`). The two real captured payloads (ruwiki
+categorize — no `length`/`minor`; hywiki edit — `length.old/new`) are now
+permanent test fixtures (4 tests in test_validation.py, see 4.1.6).
+
+**ADR-005 amendment (Q2, timestamp policy split):** per-event rejection is
+now only parse/empty/future (`timestamp_*` reasons); **staleness** (median
+event_timestamp↔inserted_at lag, max future skew) is a GX expectation
+(4B), NOT a per-event rejection — reconnect re-delivers minutes-old buffered
+events and strict stale-reject would flood the DLQ. Bot-coercion matrix
+empirically verified on pydantic 2.13.4: lax-mode `bool` coerces everything
+tested (true/false/1/0/yes/no + on/off/t/f/y/n, any case); `str` does NOT
+coerce ints (`title=123` → `string_type`).
+
+**Post-review hardening (subagent review round):** `validate_timestamp` made
+total — `bool` rejected up front (`isinstance(ts, bool)` → unparseable;
+bool is an int subclass, so `"timestamp": true` would otherwise parse as
+epoch 1) and the int/float branch guards `datetime.fromtimestamp` with
+`except (OverflowError, ValueError, OSError)` → `timestamp_unparseable`.
+Without this, a `{"timestamp": NaN}`-class event (json.loads accepts
+NaN/Infinity; `10**18` even raises OSError) escaped step 2, was treated as a
+connection failure, and replayed forever against `Last-Event-ID=durable` —
+an invisible ~1s reconnect livelock (CI greps can't see it). Covered by
+`test_timestamp_total_no_escape` + `test_timestamp_bool_rejected`.
+
+**Evidence:** `consumer/src/models.py`; 21-test validation suite green;
+live run (post-fix) inserts real events with zero dead-lettering
+(`dead_lettered=0`, see 4.1.5).
+
+### 4.1.2 — dead_letter: migration 007 + sync router (Q3)
+
+**Status:** DONE
+
+**2026-08-13:** `migrations/007_dead_letter.sql` (no guard line — idempotent
+`CREATE TABLE IF NOT EXISTS`; `TTL inserted_at + INTERVAL 90 DAY` spelled out
+per CH 26.3 rejecting the `90d` shorthand) + `consumer/src/dead_letter.py`
+(`async write_dead_letter(client, *, reason, wiki, title, event)`). Applied
+locally: "APPLY 007_dead_letter / migrations complete: 1 applied, 7 skipped".
+
+**Interpretation note (recorded per plan):** "sync single-row insert" =
+durable-synchronous insert (`settings={"async_insert": 0}`) awaited through
+the ONE async client — no second connection, matching the never-crash
+contract. On any exception: `WARNING dead_letter_write_failed reason=%s` and
+drop; never retried, never crashes.
+
+**AC3 semantics confirmed by code + tests:** the router is called **only**
+from the validation branch (invalid JSON / timestamp reasons /
+`validation:{pydantic_error_type}`). Transport failures (flush exception)
+never write dead_letter — `insert_failed` counter advances instead (unit
+test asserts this; keeps the Phase 5 DLQ-rate panel semantically honest).
+
+**Post-review hardening (subagent review round):** `write_dead_letter` now
+returns `bool` (True only on a landed row) and the consumer gates BOTH the
+`dead_lettered` counter and the durable-cursor advance on it. Previously a
+failed DL insert (CH down) still advanced the cursor past an event stored
+nowhere — on recovery it was never re-delivered and the DL row was lost
+forever. Now a failed DL write re-runs after reconnect (at-least-once DL,
+same replay semantics as the flush path).
+
+**Evidence:** migration test `test_dead_letter_migration` green (table
+exists, `TOINTERVALDAY(90)` via SHOW CREATE — `system.tables.ttl_expression`
+is ABSENT on CH 26.3, SHOW CREATE fallback per existing pattern); ch test
+`test_malformed_to_dead_letter.py` green (exactly ONE DL row, reason +
+raw event, see 4.1.6).
+
+### 4.1.3 — restart-resume: /state mount + atomic consumer_state.json + durable-id invariant + flush-on-exit (Q4)
+
+**Status:** DONE
+
+**2026-08-13:** compose consumer volume
+`${STATE_DIR:-${CH_DATA_DIR:-./ch-data}/../state}:/state` lands `/state` on
+the ch-data disk (VM: `/mnt/ch-data/state`, sibling of `clickhouse/`; local:
+`./state`, gitignored via new `state/` entry). `load_state()`/`save_state()`
+in consumer.py: atomic tmp+os.replace, never crash on read failure
+(`WARNING state_load_failed` → fresh start), `total` coerced to int on load,
+makedirs on save. Debounced save (~2s monotonic or durable-id change, never
+per event). **Durable-id invariant:** persisted `last_event_id` advances
+ONLY on successful batch flush or dead-letter insert — an id held only in an
+unflushed batch is never persisted (flush returns max-id; consumer applies
+`_max_id`). **Flush-on-exit:** stop check at the top of the parse loop
+(moved from the inner event loop — original placement made graceful exit
+unreachable on a live stream), final flush + unconditional save after the
+loop; `main()` awaits the task up to 10s before force-cancel.
+
+**Empirical replay outcome (§4 checklist):** raw curl against
+stream.wikimedia.org with the captured JSON-array id in `Last-Event-ID` —
+server ACCEPTS it (no 400) and resumes at the FIRST event strictly after it
+(captured frame not re-delivered). Sending `ev.id` verbatim is correct;
+dedup-on-replay assumption holds.
+
+**Live proof (local container, real stream):** after `docker restart
+wikistream-consumer` → `connected url=... last_event_id=[{...JSON...}]`,
+`inserted events=0 total=2094 ... resumed_from=[{...JSON...}]` — resumed
+from persisted state, `total` NOT reset; replay dupes counted
+(`duplicates_skipped=2`); zero Tracebacks; state file id advancing
+(1786626531954 → 1786626562343, total 719 → 1865 at ~37 ev/s).
+
+**Evidence:** `tests/src/consumer/test_resume_dedup.py` (8 unit tests incl.
+kill-mid-batch invariant: persisted == last durable, never last seen);
+`tests/src/consumer/test_kill_resume_zero_loss.py` (ch, see 4.1.6); live
+docker logs + `./state/consumer_state.json`.
+
+### 4.1.4 — batcher.py: 1000-rows/5s flush, integrated into the consumer pipeline (Q7)
+
+**Status:** DONE
+
+**2026-08-13:** `EventBatcher(max_rows=1000, max_age_s=5.0,
+dedup_capacity=50_000, now=time.monotonic)` per ADR-004/Q7: `add(row, id)`
+appends `(inserted_at, event_json)` and reports flush-due at `len >= 1000`
+OR age from the FIRST row `>= 5s` (not page-aligned); `flush(client)` issues
+one `client.insert(..., settings={"async_insert": 1,
+"wait_for_async_insert": 0})`, returns `(max_event_id, rows_flushed)`; on
+exception rows are DROPPED (at-most-once, counted). Consumer pipeline:
+validate → dedup → batch → flush with `insert_failed += flushed` +
+`WARNING insert_failed events=%d reason=batch dropped` on failure. Time
+source injected for tests. Per-event insert path retained ONLY for
+dead_letter.
+
+**Deviations (recorded):** (1) compose volume local default gained a `./`
+prefix (`./ch-data`) — compose v5.3.1 rejects `ch-data/../state` as an
+undefined named volume; VM resolution identical (`/mnt/ch-data/state`) since
+`STATE_DIR` is always set there. (2) The `insert_failed` WARNING carries
+`reason=batch dropped` instead of an exception object — `flush()` swallows
+exceptions internally per contract; line format
+`insert_failed events=%d reason=%s` preserved (substring greps safe). (3)
+Batcher logs its own `WARNING flush_failed reason=%s` (added in review — the
+exception was otherwise silent).
+
+**Evidence:** `tests/src/consumer/test_batcher.py` (8 unit tests: both
+triggers via fake clock, flush shape, max-id math, at-most-once drop);
+live run shows 1000-row/5s flushes on the real stream.
+
+### 4.1.5 — dedup ring (Q5) + extended stats log line
+
+**Status:** DONE
+
+**2026-08-13:** bounded in-memory ring (`deque(maxlen=50_000)` + set mirror,
+≈20 min at ~44 ev/s, oldest evicted) inside EventBatcher — mark at enqueue,
+skip at insert (`duplicates_skipped += 1`). Memory-only; after a kill the
+server's replay refills it. Ceiling documented in-code: "zero duplicates
+across observed reconnect/kill windows; BQ parity is the long-tail safety
+net". Event ids are treated as OPAQUE strings (JSON-array ids are
+non-numeric → `_max_id` falls back to string compare; JSON ids share a
+prefix so ordering ≈ embedded epoch-ms — acceptable, documented ceiling).
+
+**Stats line (AC7, prefix STABLE):**
+`INFO inserted events=%d total=%d dead_lettered=%d insert_failed=%d
+duplicates_skipped=%d resumed_from=%s` — fires on every flush and on a 60s
+heartbeat (`inserted events=0 ...`); `resumed_from` = persisted id or
+`none`. Existing ci.yml greps (`connected url=`, `Traceback`) are substring
+matches — unaffected (verified: compose-smoke pattern still matches).
+
+**Live evidence:** real-stream run logged
+`inserted events=164 total=164 ... duplicates_skipped=3 resumed_from=none`
+then 194/358/7, 170/528/10 — dedup ring catching native server replays,
+flushes at the 1000/5s cadence, `dead_lettered=0`, no reconnect WARNING, no
+Traceback.
+
+**Evidence:** `test_batcher.py` ring-bounded test (60k ids → 50k kept);
+`test_resume_dedup.py` duplicate-skip+count tests; live docker logs.
+
+### 4.1.6 — tests: unit (validation/batcher/resume-dedup) + ch-marked integration (malformed→DL, kill/resume) + sse_fixture (Q1–Q5, Q7)
+
+**Status:** DONE
+
+**2026-08-13:** `tests/sse_fixture.py` — stdlib-only asyncio SSE server
+(CRLF frames, `id:`/`retry:` lines, `: ` comment heartbeats, malformed-event
+option, `disconnect_after` abrupt drop, Last-Event-ID replay from the first
+id strictly greater than the header, `pause()/resume()` gate,
+`event_interval_s` pacing). `tests/conftest.py` added so `import sse_fixture`
+resolves from `tests/src/consumer/`.
+
+Test suites (all green locally):
+- **Unit (`-m "not ch"`) — 58 passed, 24 deselected, 0.43s:** validation
+  (21 tests: real captured categorize + edit payloads, all reason strings,
+  bot matrix, epoch-int timestamps), batcher (8), dead_letter (2), resume/
+  dedup (8: atomic write no-partial, load-missing/corrupt → None, round-trip,
+  resume-id drives initial header, kill-mid-batch invariant, AC3 no-DL-on-
+  transport-failure), sse (19 pre-existing).
+- **CH (`-m ch`) — 24 passed, 58 deselected, 48.05s:** malformed→DL (exactly
+  one DL row `validation:invalid_json` + raw `{broken json`, wiki/title '',
+  5 valid rows inserted, consumer alive, dead_lettered==1), kill/resume
+  zero-loss (ids 1..200, disconnect_after=100: leg-1 replay dupes counted;
+  hard task.cancel() kill-sim; new loop resumes from persisted durable →
+  final count == 200 == total emitted, zero loss, zero dupes), migration 007
+  test, plus 6 migrations + 7 MV + 8 warehouse pre-existing.
+
+**Deviations (all test-side, recorded):** fixture `stop()` initially
+deadlocked with held-open connections (writers now closed before
+`server.wait_closed()`); `hold_open=True` unusable for graceful-exit tests
+(the consumer's stop check fires only per parsed event; comment heartbeats
+never dispatch) — graceful-exit tests use `hold_open=False` so the stream
+end drains the final flush; durable id advances only on flush/DL and
+`total` only moves at flush (asserts after graceful exit); ch tests filter
+queries to synthetic titles because a live consumer container feeds the
+same tables (~40 rows/s — container stopped during ch runs, restarted
+after; documented env race). First migration-suite run failed 2 tests from
+that live-insert race — no test change needed, environment only.
+
+**Evidence:** 82/82 tests green post-format (`ruff format consumer tests`,
+9 files; `ruff check` clean); commands: `uv run --project consumer pytest
+-m "not ch" -q` / `-m ch`.
+
+### 4.1.7 — 4A PR → gated deploy → VM checkpoint → log (malformed + kill proofs live)
+
+**Status:** IN PROGRESS — blocked on Ahmed's PR/merge (orchestrator does not
+commit/push per AGENTS.md).
+
+**2026-08-13:** Code, tests, log (4.1.1–4.1.6), coverage boundary all
+complete and verified locally (82/82 green; live-container proof against the
+real Wikimedia stream incl. restart-resume, see 4.1.3/4.1.5). Handoff to
+Ahmed: **PR on carrier branch `feature/Data-Quality-&-Resistance`** (Phase 4
+rides this branch per user convention) — files: consumer/src/{models,
+batcher,dead_letter}.py (new), consumer/src/consumer.py (rewrite),
+consumer/pyproject.toml + uv.lock (pydantic>=2,<3), migrations/007_
+dead_letter.sql (new), docker-compose.yml (consumer /state mount),
+.gitignore (state/), tests/sse_fixture.py + tests/conftest.py (new),
+tests/src/consumer/{test_validation,test_batcher,test_dead_letter,
+test_resume_dedup}.py (new unit), tests/src/consumer/{test_malformed_to_
+dead_letter,test_kill_resume_zero_loss}.py (new ch), tests/migrations/
+test_migrations.py (007 case). NO startup.sh/Dockerfile/ci.yml changes.
+
+**Post-merge VM checkpoint (micro-gate before 4B — run by orchestrator
+after Ahmed merges):** (1) gated apply — job1 build-push consumer image; VM
+reset WITHOUT ForceNew (no startup.sh edit; VM pulls new compose + code at
+boot; `startup done` in /var/log/wikistream-startup.log — never the Actions
+badge). (2) MALFORMED proof live: run `tests/sse_fixture.py` on the VM or a
+transient container on the compose network (networking: consumer is
+container-isolated — run the fixture on the compose network or use the VM
+host IP; revert one-off compose edits before next boot since startup.sh's
+`git pull --ff-only || true` silently discards local changes) → exactly one
+`default.dead_letter` row with reason + raw event, consumer alive. (3) KILL
+proof live: `sudo docker kill wikistream-consumer` mid-stream → auto-restart
+→ `resumed_from=<id>` in logs → count() grows → killed-window events present
+exactly once (MV-vs-raw window sums + `duplicates_skipped` in stats line) —
+zero dropped/duplicated (AC4). Record evidence + numbers here; only then 4B
+begins.
+
+### 4.2.1 — gx/ scaffolding: pyproject, Dockerfile, compose service (Q8)
+
+### 4.2.2 — gx/suite.py: 6 expectations + failing-path test + log line/non-zero exit (Q10)
+
+### 4.2.3 — systemd wikistream-gx.service/timer + boot.sh install step (Q9)
+
+### 4.2.4 — CI: build-push gx image + ch-marked GX tests wired into analytics-tests
+
+### 4.2.5 — 4B PR → gated deploy → scheduled green run + log/exit hook visible (plus one failing-path demo)
+
+### 4.2.6 — healthchecks on 3 services + consumer freshness probe + HEALTH_STALE_SECONDS (Q12)
+
+### 4.2.7 — backup: config.d/backups.xml, backup.sh, TF backups module, systemd timer, grants (Q11)
+
+### 4.2.8 — restore + spot-check procedure executed once for the record
+
+### 4.2.9 — 4B PR → deploy → verification battery → Gate 2 record → log + coverage boundary
 
 ## Phase 5 — Observability & Security Hardening
 

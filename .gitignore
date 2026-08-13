@@ -235,3 +235,6 @@ override.tf.json
 
 # Phase 3A pre-merge TSV capture (raw_events on the live VM)
 legacy-raw-events.tsv.gz
+
+# Consumer runtime state (Phase 4A): Last-Event-ID cursor + totals
+state/

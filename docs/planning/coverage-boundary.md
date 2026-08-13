@@ -18,6 +18,14 @@ definitions (`004/005/006_mv_*.sql`, ADR-006) are now REAL paths, with
 asserted equal to the equivalent raw GROUP BY, synthetically in CI and again on
 live stream data at the 3B deploy spot-check.
 
+**2026-08-13 (Phase 4A correction):** `consumer/src/models.py`,
+`consumer/src/batcher.py` and `consumer/src/dead_letter.py` are now REAL
+paths, with `tests/src/consumer/test_validation.py` (21 tests incl. two
+real captured Wikimedia payloads), `test_batcher.py` (8), `test_dead_letter.py`
+(2) and the ch suites `test_malformed_to_dead_letter.py` + `test_kill_resume_
+zero_loss.py` as their spot-check guarantee. `gx/suite.py` stays predicted
+until 4B lands it (4.2.2).
+
 **2026-08-12 (Phase 3C correction, AC21 phase-final wording):**
 `warehouse/sql/` and the new `tests/warehouse/` suite are now REAL paths.
 The Phase 3 CQL story is complete: **`migrations/` + `warehouse/sql/` + the

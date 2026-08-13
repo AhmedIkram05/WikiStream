@@ -92,6 +92,7 @@ def reset():
         "mv_edit_sizes_per_minute",
     ):
         query(f"DROP TABLE IF EXISTS default.{t}")
+    query("DROP TABLE IF EXISTS default.dead_letter")
     query("DROP TABLE IF EXISTS default.raw_events")
     query("DROP TABLE IF EXISTS default.raw_events_v1")
     query("DROP TABLE IF EXISTS default.schema_migrations")
@@ -262,6 +263,37 @@ def test_materialized_compute():
         "SELECT is_bot, length_new, length_old FROM default.raw_events FORMAT TSV"
     )
     assert row.split("\t") == ["1", "500", "450"], row
+
+
+@pytest.mark.ch
+def test_dead_letter_migration():
+    reset()
+    apply_ok()
+
+    exists = scalar(
+        "SELECT count() FROM system.tables"
+        " WHERE database = 'default' AND name = 'dead_letter'"
+    )
+    assert exists == "1", "dead_letter table not created"
+
+    show = scalar("SHOW CREATE TABLE default.dead_letter")
+    assert "TOINTERVALDAY(90)" in show.upper(), f"TTL missing from DDL: {show}"
+
+    query(
+        "INSERT INTO default.dead_letter (inserted_at, reason, wiki, title, event)"
+        " VALUES (now(), 'test_reason', 'enwiki', 'Test Page', '{\"raw\":true}')"
+    )
+    row = scalar(
+        "SELECT reason, wiki, title, event FROM default.dead_letter FORMAT TSV"
+    )
+    assert row.split("\t") == [
+        "test_reason",
+        "enwiki",
+        "Test Page",
+        '{"raw":true}',
+    ], row
+
+    reset()
 
 
 @pytest.mark.ch
