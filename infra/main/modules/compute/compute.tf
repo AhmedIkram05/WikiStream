@@ -38,6 +38,16 @@ resource "google_compute_instance" "wikistream_vm" {
     "enable-oslogin" = "TRUE"
   }
 
+  # The ch-data attachment is owned by google_compute_attached_disk.ch_data
+  # below. The instance's state still reflects it as an inline attached_disk
+  # block (from the first apply of that resource), so ANY in-place update (e.g.
+  # a label change) would otherwise show a spurious "remove attached_disk"
+  # diff. Pin it off — the standalone resource is the single owner of the
+  # attachment. (Known google provider artifact, ignored deliberately.)
+  lifecycle {
+    ignore_changes = [attached_disk]
+  }
+
   service_account {
     email  = var.service_account_email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
