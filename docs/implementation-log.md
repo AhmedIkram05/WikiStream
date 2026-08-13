@@ -1230,8 +1230,9 @@ that live-insert race — no test change needed, environment only.
 
 ### 4.1.7 — 4A PR → gated deploy → VM checkpoint → log (malformed + kill proofs live)
 
-**Status:** IN PROGRESS — blocked on Ahmed's PR/merge (orchestrator does not
-commit/push per AGENTS.md).
+**Status:** DONE (2026-08-13) — PR #22 merged 13:23:24Z; both VM proofs
+captured live; evidence below. (Orchestrator does not commit/push per
+AGENTS.md — Ahmed handles git ops.)
 
 **2026-08-13:** Code, tests, log (4.1.1–4.1.6), coverage boundary all
 complete and verified locally (82/82 green; live-container proof against the
@@ -1262,6 +1263,56 @@ proof live: `sudo docker kill wikistream-consumer` mid-stream → auto-restart
 exactly once (MV-vs-raw window sums + `duplicates_skipped` in stats line) —
 zero dropped/duplicated (AC4). Record evidence + numbers here; only then 4B
 begins.
+
+**2026-08-13 — VM checkpoint executed (both proofs live):**
+
+- **Deploy:** PR #22 merged 13:23:24Z; job1 build-push → VM boot pulled
+  repo (fix: VM was 11 commits behind — startup.sh `git pull --ff-only ||
+  true` was silently failing on a stale local `warehouse/export.sh` edit;
+  stashed the local edit, pulled to 8670f8f) + recreated consumer with the
+  `/state` mount; migrations re-run (`APPLY 007_dead_letter`, 1 applied, 7
+  skipped — dead_letter table had been missing on the VM). Pre-existing CH
+  attach failure (133 zero-byte parts in `mv_edits_per_minute` inner table,
+  > default max_suspicious_broken_parts=100, leftover from the Phase 2-3
+  disk saga) was diagnosed and repaired: 1020 zero-byte parts quarantined to
+  `detached/` across all tables (raw_events count 314,899 intact); CH
+  recovered (175 tables), consumer resumed flushing (insert_failed frozen at
+  52,576 — at-most-once held throughout; no crashes).
+- **KILL proof (AC4):** state file
+  `{"last_event_id":"[{\"topic\":\"eqiad.mediawiki.recentchange\",\"partition\":0,
+  \"timestamp\":1786629538451},{\"topic\":\"codfw.mediawiki.recentchange\",
+  \"partition\":0,\"offset\":-1}]","total":1370,...}` (JSON-array id from the
+  real stream). `sudo docker kill wikistream-consumer` → exit 137 (SIGKILL,
+  no graceful path). NOTE: docker 26.x treated the kill as an explicit stop
+  — restart policy did NOT auto-fire (restarts=0, unless-stopped); manual
+  `sudo docker start` required (flagged for 4B Q12 healthchecks). After
+  restart: `resumed_from=[{"topic":"eqiad.mediawiki.recentchange",...},
+  {"topic":"codfw.mediawiki.recentchange",...}]` — byte-identical to the
+  persisted id; `inserted events=1000 total=4370 insert_failed=0
+  duplicates_skipped=85→150`; container Up; zero loss, kill-window
+  redeliveries deduped (duplicates_skipped only).
+- **MALFORMED proof (AC2):** transient `sse-fixture` container on the
+  compose network (tests/sse_fixture.py mounted read-only + a 10-line
+  driver monkeypatching `asyncio.start_server` → 0.0.0.0; events: 3 good +
+  `this-is-not-json{{{` + `timestamp:"bogus"`), one-off compose override
+  `STREAM_URL=http://sse-fixture:8787` (file outside repo dir so startup.sh
+  pull can't clobber it). Consumer connected 14:04 UTC
+  (`connected url=http://sse-fixture:8787 last_event_id=<persisted kill-proof
+  id>` — reconnect loop carried the durable id live). Verified on disk after
+  an instance reset (durable): `SELECT count(), reason FROM
+  default.dead_letter GROUP BY reason` → 4× timestamp_missing, 1×
+  validation:invalid_json (the fixture's bad-JSON event — real stream events
+  are always valid JSON), 4× timestamp_unparseable (incl. the fixture's
+  bogus-timestamp event). Both fixture-bad events landed in dead_letter with
+  reasons populated; consumer stayed alive (dead_lettered=4, insert_failed=0,
+  resumed_from=<persisted id> on production URL
+  https://stream.wikimedia.org/v2/stream/recentchange post-reset).
+- **Outage note:** mid-proof, ssh to the VM died (user VPN active — scoped
+  allow-* rules point at the non-VPN IP); VM reset via `gcloud compute
+  instances reset` restored service; ssh restored once VPN off. Not a
+  product issue.
+
+4A phase complete: 4.1.1–4.1.7 DONE. 4B begins at 4.2.1.
 
 ### 4.2.1 — gx/ scaffolding: pyproject, Dockerfile, compose service (Q8)
 
