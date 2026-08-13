@@ -84,6 +84,7 @@ def _run_suite(table: str) -> tuple[int, dict]:
         "GX_WINDOW_HOURS": "1",
         "GX_ROW_MIN": "1",
         "GX_ROW_MAX": "500000",
+        "GX_SAMPLE_RATE": "1.0",  # no sampling in tests — full deterministic batches
     }
     proc = subprocess.run(
         _suite_command(),
@@ -96,7 +97,8 @@ def _run_suite(table: str) -> tuple[int, dict]:
     lines = proc.stdout.strip().splitlines()
     if not lines:
         raise AssertionError(
-            f"suite produced no stdout; rc={proc.returncode} stderr={proc.stderr[-2000:]}"
+            "suite produced no stdout; "
+            f"rc={proc.returncode} stderr={proc.stderr[-2000:]}"
         )
     return proc.returncode, json.loads(lines[-1])
 

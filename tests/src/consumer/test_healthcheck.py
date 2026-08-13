@@ -102,13 +102,13 @@ def probe_table(monkeypatch, env: dict, stale_seconds: int) -> str:
 def insert_marker(env: dict, table: str, expr: str, marker: str) -> None:
     query(f"DELETE FROM {table} WHERE event = '{marker}'", env)
     query(
-        f"INSERT INTO {table} (inserted_at, event) VALUES "
-        f"({expr}, '{marker}')",
+        f"INSERT INTO {table} (inserted_at, event) VALUES ({expr}, '{marker}')",
         env,
     )
 
 
 # ---- unit: is_fresh matrix (at-threshold = fresh, docstring'd) ----
+
 
 def test_is_fresh_no_rows():
     assert healthcheck.is_fresh(None, NOW, 300)
@@ -141,6 +141,7 @@ def test_is_fresh_future_max_inserted():
 
 
 # ---- ch-marked: main() against live ClickHouse ----
+
 
 @pytest.mark.ch
 def test_stale_row_kills_pid1(monkeypatch):
