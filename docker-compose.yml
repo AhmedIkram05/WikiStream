@@ -28,6 +28,10 @@ services:
       CLICKHOUSE_USER: wikistream
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-wikistream_dev_password}
       STREAM_URL: https://stream.wikimedia.org/v2/stream/recentchange
+    volumes:
+      # Phase 4A: consumer runtime state (Last-Event-ID cursor + totals). On
+      # the VM STATE_DIR resolves to the durable disk (/mnt/ch-data/state).
+      - ${STATE_DIR:-${CH_DATA_DIR:-./ch-data}/../state}:/state
 
   grafana:
     image: grafana/grafana:13.1.1
