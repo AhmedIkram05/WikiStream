@@ -1,0 +1,9 @@
+[Unit]
+Description=WikiStream hourly ClickHouse backup timer
+
+[Timer]
+OnCalendar=*-*-* *:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
