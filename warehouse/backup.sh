@@ -7,9 +7,10 @@
 # default user, since wikistream has ON default.* only.
 #
 # Depends on: docker (container $CLICKHOUSE_CONTAINER), gcloud storage.
-# CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env when
-# present, else the environment). CH_DATA_DIR is the host path of the ch-data
-# bind mount (the backups disk lives at $CH_DATA_DIR/backups/).
+# CLICKHOUSE_PASSWORD is required; CH_DATA_DIR is the host path of the ch-data
+# bind mount (the backups disk lives at $CH_DATA_DIR/backups/). Both are taken
+# from /opt/wikistream/.env when present (else the environment), matching the
+# compose interpolation so the lift/prune target the real bind path.
 #
 # Ordering is deliberate: the GCS lift must succeed BEFORE local prune, so a
 # failed lift aborts (set -e) and the local backup survives for the next hour.
@@ -19,10 +20,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 if [ -f /opt/wikistream/.env ]; then
-  # Extract only the secret — sourcing a rotated .env as shell code would let
-  # a value containing quotes/semicolons mangle the variable (compose parses
+  # Extract only what we need — sourcing a rotated .env as shell code would let
+  # a value containing quotes/semicolons mangle the variables (compose parses
   # the same file safely; shell source does not).
   CLICKHOUSE_PASSWORD="$(grep -E '^CLICKHOUSE_PASSWORD=' /opt/wikistream/.env | tail -n1 | cut -d= -f2-)"
+  CH_DATA_DIR="${CH_DATA_DIR:-$(grep -E '^CH_DATA_DIR=' /opt/wikistream/.env | tail -n1 | cut -d= -f2-)}"
 fi
 
 if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then
@@ -46,7 +48,12 @@ case "$BACKUP_OUT" in
 esac
 echo "[backup] created $BACKUP_OUT"
 
-gcloud storage cp -r "${CH_DATA_DIR}/backups/$NAME" "$BACKUP_BUCKET/$NAME" >/dev/null
+# Lift via gsutil in serial mode (parallel_composite_upload_threshold=0):
+# gcloud storage cp stages temp parts under gcloud/tmp/... and its cleanup
+# pass deletes them, which needs storage.objects.delete — the VM SA only has
+# objectCreator (single PUTs). gsutil serial mode creates no temp objects.
+gsutil -q -o GSUtil:parallel_composite_upload_threshold=0 cp -r \
+  "${CH_DATA_DIR}/backups/$NAME" "$BACKUP_BUCKET/$NAME"
 echo "[backup] lifted $CH_DATA_DIR/backups/$NAME -> $BACKUP_BUCKET/$NAME"
 
 # Prune local: keep the last 2 (names are UTC-sortable, so sort = chronological).

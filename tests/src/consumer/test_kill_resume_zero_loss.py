@@ -158,6 +158,12 @@ def test_kill_resume_zero_loss(monkeypatch, tmp_path):
         monkeypatch.setattr("src.consumer.STATE_DIR", str(tmp_path))
         state_file = tmp_path / "consumer_state.json"
         monkeypatch.setattr("src.consumer.STATE_FILE", str(state_file))
+        # Test-only: make CH inserts synchronous so "flush returned" means
+        # "rows visible". Default SETTINGS are fire-and-forget (async_insert +
+        # wait_for_async_insert=0) — fine in prod, a 15s wall-clock race here.
+        monkeypatch.setattr(
+            "src.batcher.SETTINGS", {"async_insert": 1, "wait_for_async_insert": 1}
+        )
         client = await get_async_client(
             host=env["CH_HOST"],
             port=int(env["CH_PORT"]),
