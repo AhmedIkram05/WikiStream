@@ -32,6 +32,18 @@ resource "google_secret_manager_secret" "grafana_admin_password" {
   }
 }
 
+# Phase 5A Slack webhook for Grafana alerting. No secret_version: the value is
+# set manually via gcloud by the operator (boot.sh fetches it at first boot).
+resource "google_secret_manager_secret" "slack_webhook_url" {
+  secret_id = "slack-webhook-url"
+  project   = var.project_id
+  labels    = local.labels
+
+  replication {
+    auto {}
+  }
+}
+
 resource "google_secret_manager_secret_version" "clickhouse_password_v1" {
   secret      = google_secret_manager_secret.clickhouse_password.id
   secret_data = random_password.ch_password.result

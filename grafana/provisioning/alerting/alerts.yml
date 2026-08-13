@@ -1,0 +1,253 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: slack-alerts
+    receivers:
+      - uid: slack-alerts
+        type: slack
+        settings:
+          url: '${SLACK_WEBHOOK_URL}'
+
+groups:
+  - orgId: 1
+    name: wikistream
+    folder: wikistream
+    interval: 30s
+    rules:
+      - uid: consumer-down
+        title: Consumer down
+        condition: 'B'
+        for: 45s
+        noDataState: Alerting
+        execErrState: Alerting
+        isPaused: false
+        isOrgDefault: false
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            datasourceUid: wikistream-clickhouse
+            model:
+              refId: A
+              datasource:
+                type: grafana-clickhouse-datasource
+                uid: wikistream-clickhouse
+              rawSql: 'SELECT count() FROM default.pipeline_health WHERE source=''consumer'' AND ts > now() - INTERVAL 90 SECOND'
+              format: 0
+              interval: 60s
+              maxDataPoints: 43200
+            queryType: ''
+            relativeTimeRange:
+              from: 900
+              to: 0
+          - refId: B
+            datasourceUid: __expr__
+            queryType: ''
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: 'A'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  type: threshold
+
+      - uid: dlq-rate-high
+        title: Dead-letter rate high
+        condition: 'B'
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        isOrgDefault: false
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: wikistream-clickhouse
+            model:
+              refId: A
+              datasource:
+                type: grafana-clickhouse-datasource
+                uid: wikistream-clickhouse
+              rawSql: 'SELECT sum(JSONExtractFloat(detail,''dead_lettered_delta'')) / (sum(JSONExtractFloat(detail,''inserted_delta'')) + sum(JSONExtractFloat(detail,''dead_lettered_delta''))) FROM default.pipeline_health WHERE source=''consumer'' AND ts > now() - INTERVAL 5 MINUTE'
+              format: 0
+              interval: 60s
+              maxDataPoints: 43200
+            queryType: ''
+            relativeTimeRange:
+              from: 900
+              to: 0
+          - refId: B
+            datasourceUid: __expr__
+            queryType: ''
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: 'A'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.05
+                    type: gt
+                  type: threshold
+
+      - uid: ch-insert-failure
+        title: ClickHouse insert failures
+        condition: 'B'
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        isPaused: false
+        isOrgDefault: false
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: wikistream-clickhouse
+            model:
+              refId: A
+              datasource:
+                type: grafana-clickhouse-datasource
+                uid: wikistream-clickhouse
+              rawSql: 'SELECT sum(JSONExtractFloat(detail,''insert_failed_delta'')) FROM default.pipeline_health WHERE source=''consumer'' AND ts > now() - INTERVAL 5 MINUTE'
+              format: 0
+              interval: 60s
+              maxDataPoints: 43200
+            queryType: ''
+            relativeTimeRange:
+              from: 900
+              to: 0
+          - refId: B
+            datasourceUid: __expr__
+            queryType: ''
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: 'A'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+                  type: threshold
+
+      - uid: parity-drift
+        title: Parity drift
+        condition: 'B'
+        for: 1m
+        noDataState: Alerting
+        execErrState: Error
+        isPaused: false
+        isOrgDefault: false
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: wikistream-clickhouse
+            model:
+              refId: A
+              datasource:
+                type: grafana-clickhouse-datasource
+                uid: wikistream-clickhouse
+              rawSql: 'SELECT if(count()=0, 0, argMax(value, ts)) FROM default.pipeline_health WHERE source=''parity'' AND ts > now() - INTERVAL 150 MINUTE'
+              format: 0
+              interval: 60s
+              maxDataPoints: 43200
+            queryType: ''
+            relativeTimeRange:
+              from: 900
+              to: 0
+          - refId: B
+            datasourceUid: __expr__
+            queryType: ''
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: 'A'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  type: threshold
+
+      - uid: gx-fail
+        title: GX suite failed
+        condition: 'B'
+        for: 1m
+        noDataState: Alerting
+        execErrState: Error
+        isPaused: false
+        isOrgDefault: false
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: wikistream-clickhouse
+            model:
+              refId: A
+              datasource:
+                type: grafana-clickhouse-datasource
+                uid: wikistream-clickhouse
+              rawSql: 'SELECT if(count()=0, 0, argMax(value, ts)) FROM default.pipeline_health WHERE source=''gx'' AND ts > now() - INTERVAL 90 MINUTE'
+              format: 0
+              interval: 60s
+              maxDataPoints: 43200
+            queryType: ''
+            relativeTimeRange:
+              from: 900
+              to: 0
+          - refId: B
+            datasourceUid: __expr__
+            queryType: ''
+            model:
+              refId: B
+              datasource:
+                type: __expr__
+                uid: __expr__
+              type: threshold
+              expression: 'A'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+                  type: threshold
+
+policies:
+  - receiver: slack-alerts
+    group_by:
+      - grafana_folder
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      - receiver: slack-alerts
+        object_matchers:
+          - ['grafana_folder', '=', 'wikistream']

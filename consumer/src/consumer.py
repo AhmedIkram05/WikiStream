@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from src.batcher import EventBatcher
 from src.dead_letter import write_dead_letter
+from src.heartbeat import heartbeat_loop
 from src.models import WikiEvent, validate_timestamp
 from src.sse import SSEParser
 
@@ -348,12 +349,13 @@ async def main() -> None:
     resumed_from = state.get("last_event_id") if state else None
     if resumed_from is not None:
         logger.info("resumed_from=%s", resumed_from)
-    counters = {
+    counters: dict = {
         "total": int(state.get("total", 0)) if state else 0,
         "dead_lettered": 0,
         "insert_failed": 0,
         "duplicates_skipped": 0,
     }
+    counters["resumed_from"] = resumed_from or "none"
 
     # get_async_client eagerly probes CH (SELECT version()) — during cold
     # start that raises OperationalError; retry so cold-start surfaces as a
@@ -375,15 +377,17 @@ async def main() -> None:
         task = asyncio.create_task(
             consume_forever(client, stop, resumed_from, counters)
         )
+        heartbeat_task = asyncio.create_task(heartbeat_loop(client, counters, stop))
         await stop.wait()
         # Graceful: up to 10s for the final flush + state save (SIGTERM path
         # must flush), then force-cancel if the stream read blocks.
         try:
-            await asyncio.wait_for(task, 10.0)
+            await asyncio.wait_for(asyncio.gather(task, heartbeat_task), 10.0)
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            for t in (task, heartbeat_task):
+                t.cancel()
+                with suppress(asyncio.CancelledError):
+                    await t
 
 
 if __name__ == "__main__":

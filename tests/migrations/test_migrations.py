@@ -93,6 +93,7 @@ def reset():
     ):
         query(f"DROP TABLE IF EXISTS default.{t}")
     query("DROP TABLE IF EXISTS default.dead_letter")
+    query("DROP TABLE IF EXISTS default.pipeline_health")
     query("DROP TABLE IF EXISTS default.raw_events")
     query("DROP TABLE IF EXISTS default.raw_events_v1")
     query("DROP TABLE IF EXISTS default.schema_migrations")
@@ -292,6 +293,51 @@ def test_dead_letter_migration():
         "Test Page",
         '{"raw":true}',
     ], row
+
+    reset()
+
+
+@pytest.mark.ch
+def test_pipeline_health_migration():
+    reset()
+    apply_ok()
+
+    exists = scalar(
+        "SELECT count() FROM system.tables"
+        " WHERE database = 'default' AND name = 'pipeline_health'"
+    )
+    assert exists == "1", "pipeline_health table not created"
+
+    show = scalar("SHOW CREATE TABLE default.pipeline_health")
+    assert "TOINTERVALDAY(7)" in show.upper(), f"TTL missing from DDL: {show}"
+
+    types = {}
+    for line in (
+        query(
+            "SELECT name, type FROM system.columns"
+            " WHERE database = 'default' AND table = 'pipeline_health' FORMAT TSVRaw"
+        )
+        .strip()
+        .splitlines()
+    ):
+        name, type_ = line.split("\t", 1)
+        types[name] = type_
+    assert types == {
+        "source": "LowCardinality(String)",
+        "metric": "LowCardinality(String)",
+        "ts": "DateTime64(3, 'UTC')",
+        "value": "Float64",
+        "detail": "String",
+    }, types
+
+    query(
+        "INSERT INTO default.pipeline_health (source, metric, ts, value, detail)"
+        " VALUES ('consumer', 'heartbeat', now(), 1.0, '{\"total\":1}')"
+    )
+    row = scalar(
+        "SELECT source, metric, value, detail FROM default.pipeline_health FORMAT TSV"
+    )
+    assert row.split("\t") == ["consumer", "heartbeat", "1", '{"total":1}'], row
 
     reset()
 
