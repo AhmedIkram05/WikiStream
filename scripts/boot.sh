@@ -59,6 +59,18 @@ cp /opt/wikistream/warehouse/wikistream-export.service /opt/wikistream/warehouse
 systemctl daemon-reload
 systemctl enable --now wikistream-export.timer wikistream-parity.timer wikistream-backup.timer wikistream-gx.timer
 
+# Phase 5 (5B.1): Ops Agent — disk/memory metrics (agentless CM cannot see them).
+# Non-fatal by design (boot.sh is set -e): a transient network failure must not
+# abort the boot — the pipeline keeps running, disk alerting is delayed.
+# Guard keyed on the unit, not a binary: the 2.x agent installs no
+# google-ops-agent command (review-corrected 2026-08-14).
+if ! systemctl is-active --quiet google-cloud-ops-agent.service; then
+  curl -fsSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh \
+    && sudo bash add-google-cloud-ops-agent-repo.sh --also-install \
+    && rm -f add-google-cloud-ops-agent-repo.sh \
+    || { rm -f add-google-cloud-ops-agent-repo.sh; echo "[boot] Ops Agent install failed — boot continues, no disk/VM-metrics alerting" >&2; }
+fi
+
 # Phase 5: Slack webhook for Grafana alerting (non-fatal if unavailable)
 grep -q '^SLACK_WEBHOOK_URL=' /opt/wikistream/.env || {
   SLACK_WEBHOOK_URL=$(gcloud secrets versions access latest --secret=slack-webhook-url 2>/dev/null) \

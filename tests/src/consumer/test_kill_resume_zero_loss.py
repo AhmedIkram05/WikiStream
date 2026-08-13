@@ -245,12 +245,17 @@ def test_kill_resume_zero_loss(monkeypatch, tmp_path):
 
             stop2.set()
             await asyncio.wait_for(task2, TASK2_STOP_S)
+            # Deadline is checked BEFORE the query: a slow count (cold CH,
+            # reconnect-storm aftermath) must not trip the assert mid-window —
+            # the loop waits out the full budget, then one confirming query
+            # settles the verdict (correctness is still enforced by the
+            # counters/total asserts below).
             deadline = time.monotonic() + FINAL_DEADLINE_S
-            while zkill_count(env) != 200:
-                assert time.monotonic() < deadline, (
-                    "final flush never drained the tail batch"
-                )
+            while time.monotonic() < deadline:
+                if zkill_count(env) == 200:
+                    break
                 await asyncio.sleep(POLL_S)
+            assert zkill_count(env) == 200, "final flush never drained the tail batch"
 
             # FINAL: zero loss (200 of 200 emitted) AND zero duplication
             # (count == 200 == total; total counts inserts only).

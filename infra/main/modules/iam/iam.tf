@@ -13,6 +13,15 @@ resource "google_project_iam_member" "oslogin_human" {
   member  = var.oslogin_human_member
 }
 
+# Phase 5 (5B.2): Ops Agent write path — least privilege: metricWriter, not
+# monitoring.admin. Writer is exactly what the agent needs to push disk/memory
+# series; admin would also grant alerting rights.
+resource "google_project_iam_member" "vm_monitoring_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.wikistream_vm.email}"
+}
+
 # Scoped per secret: this SA can only read the two Phase 2 secrets, nothing
 # else in the project.
 resource "google_secret_manager_secret_iam_member" "secret_accessor" {

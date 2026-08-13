@@ -24,8 +24,16 @@ systemctl enable --now docker
 
 # 2. Repo = single source of truth; pull-or-clone so a GitHub outage during a
 #    reset can't take the stack down.
+#    NOTE: previously `git pull --ff-only || true` — the `|| true` silently
+#    swallowed pull failures, leaving the VM N commits behind while reporting
+#    "startup done" (hit twice: 4A and 5A checkpoints, both blocked by a stale
+#    local edit). The repo on this box is pure code (runtime state lives
+#    outside git: .env untracked, ch-data on the durable disk), so reset is
+#    deterministic and safe — tracked drift is discarded, untracked/ignored
+#    files are untouched. Under `set -euo pipefail` a failure here now aborts
+#    the boot loudly instead of silently drifting.
 if [ -d /opt/wikistream/.git ]; then
-  git -C /opt/wikistream pull --ff-only || true
+  git -C /opt/wikistream fetch origin && git -C /opt/wikistream reset --hard origin/HEAD
 else
   git clone --depth 1 https://github.com/AhmedIkram05/WikiStream /opt/wikistream
 fi

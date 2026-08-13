@@ -18,6 +18,12 @@ import pytest
 # lives at repo root, so insert it explicitly (mirrors tests/conftest.py).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+# gx.suite imports great_expectations at module level, which only the gx venv
+# has. The unit-tests CI job collects this file under the *consumer* venv, so
+# skip the module there instead of failing collection (the gx venv runs the
+# unit half in CI via its own `-m "not ch" tests/gx` step).
+pytest.importorskip("great_expectations")
+
 from gx.suite import report_status
 
 HOST = "localhost"

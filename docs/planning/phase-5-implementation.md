@@ -323,7 +323,7 @@ Branch `feature/Observability-&-Security`. PR contains: migration 008 (+ `tests/
 # Phase 5: Ops Agent (disk/memory metrics — agentless CM cannot see them)
 # Non-fatal by design (boot.sh is set -e): a transient network failure must
 # not abort the boot — the pipeline keeps running, disk alerting is delayed.
-if ! command -v google-ops-agent >/dev/null 2>&1; then
+if ! systemctl is-active --quiet google-cloud-ops-agent.service; then
   curl -fsSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh \
     && sudo bash add-google-cloud-ops-agent-repo.sh --also-install \
     && rm -f add-google-cloud-ops-agent-repo.sh \
@@ -333,7 +333,7 @@ fi
 
 Rationale (Q4): `boot.sh` is the repo-managed extension point — the install survives VM recreates via git pull, and startup.sh stays frozen (zero ForceNew). No VM replacement; the superseded grilling decision is recorded at §3 Q4.
 
-**Verify:** on VM: `command -v google-ops-agent` resolves; `systemctl is-active google-cloud-ops-agent*` active; Cloud Monitoring → Metrics Explorer shows `agent.googleapis.com/disk/percent_used` for the instance (5B.3).
+**Verify:** on VM: `systemctl is-active google-cloud-ops-agent.service` → `active` (the 2.x agent ships no `google-ops-agent` binary, so the guard and this check key on the unit — review-corrected 2026-08-14); Cloud Monitoring → Metrics Explorer shows `agent.googleapis.com/disk/percent_used` for the instance (5B.3).
 
 **5B.2 — VM SA `monitoring.metricWriter` + `modules/monitoring`**
 

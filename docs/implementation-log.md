@@ -1598,8 +1598,8 @@ provisioning may be stale" >&2` (bash -n re-verified).
 
 ### 5A.6 — 5A PR → deploy → VM checkpoint → log
 
-**Status:** IN PROGRESS (code + review + tests complete; PR + deploy + VM
-checkpoint pending Ahmed's commits/PR/merge)
+**Status:** DONE (PR merged, deployed, VM checkpoint executed, Slack delivery
+proven end-to-end)
 **2026-08-13:** All 5A.1–5A.5 code written by implementation subagents and
 reviewed in full by the orchestrator; one defect found in review (alerts.yml
 object_matchers — fixed, then the `eval:` drop discovered at provisioning time
@@ -1621,9 +1621,78 @@ inactive, ch-insert-failure inactive (recovered after the raw_events incident
 rows since the migration suite's reset() dropped pipeline_health; absence
 semantics per plan §9 — expected locally, no parity producer outside the VM),
 gx-fail inactive.
-**VM checkpoint (after Ahmed merges):** startup done, all healthy, ≥4
-rows/min in pipeline_health, 5 rules + contact point in the provisioning API,
-test notification in Slack, full pytest green.
+**VM checkpoint (executed 2026-08-13, post-merge):** Ahmed merged PR #26
+(f835a08) and reported deployed; orchestrator executed the 5A.6 checkpoint
+against wikistream-vm (34.148.138.220):
+- **Deploy footgun recurred (deviation):** the VM was 3 commits behind
+  (HEAD 54e48d7 = PR #24) because startup.sh's `git pull --ff-only || true`
+  silently failed on a stale local `warehouse/backup.sh` edit. The stale edit
+  was upstream-identical (diff vs PR #26 empty) — stashed, pulled
+  fast-forward to f835a08, stash dropped (reflog-recoverable). Per 4A
+  precedent (the same failure mode), the checkpoint includes repairing the
+  VM repo state.
+- **boot.sh re-run as root** (CH_PASSWORD from .env CLICKHOUSE_PASSWORD):
+  clickhouse ready 1/30, user bootstrap ok (idempotent), SKIP 000-007,
+  **APPLY 008_pipeline_health** ("migrations complete: 1 applied, 8
+  skipped"), grafana Recreated/Started (picks up SLACK_WEBHOOK_URL env +
+  alerting provisioning).
+- **CH:** `pipeline_health` present in system.tables; **consumer heartbeats
+  6 rows in last 5 min** (~15-17s cadence) — the running consumer was the
+  CI-built 5A image, heartbeating since the 23:12 startup with no restart.
+  parity/gx rows 0 at checkpoint time (timers not yet fired post-creation).
+- **Grafana API:** all **5 rules** provisioned (folder wikistream
+  ffv3p9v6m7ncwb), each condition B + 2 data nodes (raw-SQL + __expr__
+  threshold; params/type/noDataState/execErrState/for per plan), rawSql
+  byte-identical; **contact point slack-alerts** (type slack, prov file,
+  url set — real webhook from Secret Manager).
+- **Rules evaluated → fired:** parity-drift and gx-fail went **FIRING**
+  (activeAt 2026-08-13T23:19:40Z) on absence semantics (no parity/gx rows
+  yet); consumer/dq/ch rules inactive (heartbeats flowing). Grafana logs
+  show repeated `Sending alerts to local notifier count=1` for both rules.
+- **Slack delivery PROVEN end-to-end:** Ahmed received the alert in
+  #wikistream ("i received a slack message / GX Suite Failed"). Pipeline:
+  pipeline_health → rule → folder route → slack-alerts → webhook → Slack.
+  (The provisioning contact-point test endpoints
+  `/api/v1/provisioning/contact-points/{uid}/test` return 404 on Grafana
+  13.1 — real firing used as the stronger proof.)
+- **Self-healing expectation:** parity-drift/gx-fail keep firing (repeat
+  interval 4h) until the hourly gx/parity timers write their first rows;
+  gx-fail clears when a passing run writes value=1.0.
+- **pytest:** VM verification is non-ch-only by convention (ch suites'
+  reset() would drop raw_events on the prod CH); the full battery (75
+  consumer unit + ch suites + heartbeat 100%) was green locally pre-PR.
+**2026-08-13 follow-up — deploy footgun ROOT CAUSE fixed (was worked around
+twice, 4A + 5A):** `infra/main/templates/startup.sh` previously ran
+`git -C /opt/wikistream pull --ff-only || true` — the `|| true` silently
+swallowed pull failures, so any stale local edit left the VM N commits
+behind while reporting "startup done" (exactly what blocked the 5A deploy).
+Replaced with `git fetch origin && git reset --hard origin/HEAD` — safe on
+this box because the repo is pure code (.env untracked, ch-data on the
+durable disk); under startup.sh's `set -euo pipefail` a git failure now
+aborts the boot loudly instead of drifting. **Caveat: `metadata_startup_script`
+is ForceNew** — the next `terraform apply` of infra/main recreates the
+instance (safe by design: durable disk survives, code re-pulled, .env
+re-rendered from Secret Manager). Suggest bundling that apply with 5B/5C's
+natural window to avoid a standalone recreate.
+**2026-08-13 CI re-run follow-up — two post-merge CI failures fixed:** (1)
+`lint` end-of-file-fixer: `migrations/008_pipeline_health.sql` and
+`grafana/provisioning/alerting/alerts.yml` were committed without a trailing
+newline — hook re-added it (files now newline-terminated; `pre-commit run
+--all-files` green). (2) `unit-tests` collection error (exit 2):
+`tests/gx/test_status_report.py` imports `gx.suite` at module level →
+`great_expectations` (gx/ dependency) missing in the consumer venv →
+`ModuleNotFoundError` under `-m "not ch"`. Fixed with
+`pytest.importorskip("great_expectations")` before the import (consumer venv
+skips the module; no collection error), plus a new unit-tests step
+`uv run --project gx pytest -q --tb=short -m "not ch" tests/gx` so the 7
+report_status unit tests still execute in CI under the gx venv (mirrors the
+analytics-tests two-venv pattern). Verified locally: consumer non-ch **75
+passed, 1 skipped, 31 deselected**; gx non-ch **7 passed**; `pre-commit run
+--all-files --show-diff-on-failure` **all 8 hooks Passed**.
+**Checkpoint items from the plan:** startup done ✅; all healthy ✅; ≥4
+rows/min in pipeline_health ✅ (6/5min); 5 rules + contact point in API ✅;
+test notification in Slack ✅ (real alert received); full pytest green ✅
+(local battery; VM non-ch per convention).
 **Deviations:** branch is `feature/Observability-&-Security-Hardening` (plan
 said `feature/Observability-&-Security`); alerting-model deviations recorded
 in 5A.4; local consumer stopped during ch suites and restarted after (3.3.8
@@ -1677,11 +1746,92 @@ auto-created), all with condition B + working __expr__ threshold nodes.
 
 ### 5B.1 — Ops Agent install via boot.sh
 
-**Status:** ☐ to do
+**Status:** DONE (code; VM runtime verification is the 5B.4 checkpoint)
+
+**2026-08-14:** Idempotent Ops Agent install block added to scripts/boot.sh,
+placed between the systemd-unit step and the Slack-env block (the plan's
+"after the existing systemd-unit step" position). Verbatim from the locked
+plan: `command -v google-ops-agent` guard → curl the Google agent repo script
+→ `sudo bash ... --also-install` → `rm -f`, with the whole chain non-fatal
+(`|| { echo ... >&2; }`) so a transient network failure never aborts boot (set
+-e). Installed by implementation subagent, re-verified byte-for-byte by the
+orchestrator; `bash -n` clean. No deviation. The install actually runs at the
+VM's next boot (startup.sh → boot.sh), which is the same apply that installs
+the metricWriter grant — the agent will land with its write path already in
+place.
+
+**Subagent code review (2026-08-14):** MAJOR finding — the guard
+`command -v google-ops-agent` can never match: the 2.x agent (package
+file-list verified by the reviewer) installs no such binary, so the block
+would have re-run the apt install every boot and the plan's Verify step was
+un-passable as written. Fixed in boot.sh + plan (guard and Verify now key on
+`systemctl is-active --quiet google-cloud-ops-agent.service`). MINOR — the
+downloaded repo script could linger on install failure; `rm -f` added to the
+failure branch. MINOR (no change): the disk policy's `device="ch-data"` clause
+will likely never match (the agent emits kernel device names) — correctness
+rests on the `mount_point="/mnt/ch-data"` clause; the 5B.3 time-series list
+will surface the real label so the filter can be aligned there if needed.
+**Deviation recorded:** the guard is `systemctl is-active`, not the locked
+plan's `command -v` — the plan doc was updated in place; this entry is the
+record.
+**Evidence:** scripts/boot.sh lines 62-71; bash -n clean; subagent review
+2026-08-14: 1 MAJOR fixed, 2 MINOR (1 fixed, 1 5B.3-verification item).
 
 ### 5B.2 — VM SA monitoring.metricWriter + TF modules/monitoring (channel + 2 policies)
 
-**Status:** ☐ to do
+**Status:** DONE (code; apply green is Ahmed's, verified live-plan here)
+
+**2026-08-14:** Two parts, both written by an implementation subagent and
+re-verified by the orchestrator against the real state via `terraform plan`
+(read-only, backend wikistream-505003-terraform-state/prefix main).
+(a) modules/iam/iam.tf += google_project_iam_member.vm_monitoring_metric_writer
+(roles/monitoring.metricWriter on the wikistream-vm SA — Ops Agent's write
+path, least-privilege writer-not-admin). (b) NEW modules/monitoring/: email
+notification channel (ahmedikram30@gmail.com) + 2 alert policies —
+disk-almost-full (condition_threshold, agent disk/percent_used, device=ch-data
+OR mount_point=/mnt/ch-data, >80 for 300s, ALIGN_MEAN, doc notes ch-data is
+the durability surface per vision §7) and vm-unreachable (condition_absent on
+compute instance/uptime, 120s — agentless path). Root wiring: main.tf module
+call, alert_email variable, terraform.tfvars
+`alert_email = "ahmedikram30@gmail.com"` (the 2026-08-13 prerequisite was
+recorded as done but was NOT in the file — added now).
+
+**Deviation 1 (provider schema):** the plan's `condition { condition_missing }`
+block shape is pre-v6 provider. google provider 7.43 (locked) uses
+`conditions { }` (plural) and the missing-series block is `condition_absent`
+(not condition_missing). Semantics unchanged — condition_absent fires exactly
+when the uptime series stops being reported. Confirmed by the provider's own
+plan output (would not have validated otherwise); validated + planned clean.
+
+**Deviation 2 (labels.phase):** bumped local.labels.phase "4" → "5" and wired
+labels into the monitoring module (user_labels on both policies), matching the
+established every-new-module-bumps-phase precedent (3.3.2, 4.2.7). Cost: 12
+in-place label-only updates (3 secrets, bigquery dataset + 4 tables, bq
+staging bucket, static IP, ch-data disk) on the same apply — harmless, they
+were going to move anyway when the instance rebuilds.
+
+**Planned instance replacement (NOT a deviation):** the live plan shows
+google_compute_instance.wikistream_vm **must be replaced** — metadata_startup_script
+is ForceNew and the state still carries the pre-5A.6 startup.sh (the `git pull
+--ff-only || true` → `git fetch origin && git reset --hard origin/HEAD`
+deploy-footgun fix from 5A.6 was merged to the branch but never applied to the
+VM). This is the natural window 5A.6's entry predicted ("bundle with 5B/5C's
+apply"). Consequences for the apply: static IP and the durable ch-data disk
+survive (separate resources); the fresh instance re-runs the fixed startup.sh,
+re-pulls code, re-renders .env, and boot.sh installs the Ops Agent — so the
+5B.1 install and the 5B.2 metricWriter grant land in the same boot. Nothing to
+do on the orchestrator's side beyond recording it here.
+
+**Subagent code review (2026-08-14):** TF side reviewed as-is — verdict
+approve-as-is; the only findings landed on the boot.sh guard (fixed, see 5B.1
+entry) plus one 5B.3-verification note on the disk filter's `device` clause.
+No TF changes required. The condition_absent deviation was reconfirmed
+correct: the provider's canonical uptime-absence example is identical in shape
+to this policy.
+**Evidence:** terraform plan (live backend): 5 to add, 12 to change, 1 to
+destroy (destroy = instance replace only; adds = 1 IAM binding + 1 channel + 2
+policies; changes = 12 label phase bumps). terraform fmt -check clean;
+terraform validate clean; bash -n clean.
 
 ### 5B.3 — Metrics-flow verification (disk/percent_used visible in Cloud Monitoring)
 

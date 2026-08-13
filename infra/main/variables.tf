@@ -13,6 +13,11 @@ variable "zone" {
   type        = string
 }
 
+variable "alert_email" {
+  description = "Email address receiving Cloud Monitoring alert notifications"
+  type        = string
+}
+
 variable "allowed_ips" {
   description = "CIDRs allowed to reach SSH (22), Grafana (3000) and ClickHouse (8123)"
   type        = list(string)
