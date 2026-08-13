@@ -59,6 +59,12 @@ jobs:
               # without the wall of text.
               uv run --project consumer pytest -q --tb=short -m "not ch"
               uv run --project consumer pytest -q --tb=short -m "not ch" --cov="$BUSINESS_CRITICAL_MODULES" --cov-report=term-missing --cov-fail-under=100
+              # tests/gx/test_status_report.py's unit half imports gx.suite →
+              # great_expectations (gx/ dependency only). The consumer venv
+              # skips it via pytest.importorskip; run the gx unit half here so
+              # every non-ch test still executes in CI (mirrors analytics-tests
+              # two-venv pattern).
+              uv run --project gx pytest -q --tb=short -m "not ch" tests/gx
 
           # ClickHouse migration suite: boots a real CH and runs the
           # @pytest.mark.ch tests (tests/migrations now, 3B/3C suites join
@@ -99,7 +105,15 @@ jobs:
             command: |
               set -euo pipefail
               echo "== AC1: stack up =="
-              docker compose up -d --build
+              # Phase 5: alerts.yml's Slack contact point requires a non-empty
+              # SLACK_WEBHOOK_URL (Grafana provisioning has no :-default
+              # interpolation); the VM gets the real webhook via boot.sh →
+              # Secret Manager, CI just needs a syntactically valid URL so the
+              # grafana container provisions and passes the healthcheck.
+              # NB: deliberately not a real webhook-format string — GitHub
+              # push protection pattern-matches that shape and blocks the
+              # push even for a placeholder.
+              SLACK_WEBHOOK_URL=https://example.invalid/slack-webhook-placeholder docker compose up -d --build
 
               echo "== 3A: wait CH ready, bootstrap user, run migrations =="
               ready=0
