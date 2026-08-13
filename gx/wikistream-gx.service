@@ -1,0 +1,11 @@
+[Unit]
+Description=WikiStream hourly Great Expectations data-quality check
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=1800
+ExecStart=/usr/bin/docker compose -f /opt/wikistream/docker-compose.yml run --rm gx
+StandardOutput=append:/var/log/wikistream-gx.log
+StandardError=append:/var/log/wikistream-gx.log

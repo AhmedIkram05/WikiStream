@@ -1,0 +1,14 @@
+[Unit]
+Description=WikiStream hourly ClickHouse backup
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# BACKUP + GCS lift exceeds systemd's 90s default once raw_events grows; a
+# mid-upload SIGTERM would leave a partial GCS object (silent data-integrity
+# gap in the backup-of-a-backup).
+TimeoutStartSec=1800
+ExecStart=/opt/wikistream/warehouse/backup.sh
+StandardOutput=journal
+StandardError=journal

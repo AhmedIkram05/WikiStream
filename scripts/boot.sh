@@ -37,7 +37,7 @@ docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/nul
 #    never re-applied. Default user is localhost-only, hence the docker exec
 #    path (host curl is for migrations, where the wikistream user hits HTTP).
 BOOTSTRAP_SQL="CREATE USER IF NOT EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;
-GRANT SELECT, INSERT, CREATE, ALTER, DROP, TRUNCATE, OPTIMIZE ON default.* TO wikistream;
+GRANT SELECT, INSERT, CREATE, ALTER, DROP, TRUNCATE, OPTIMIZE, BACKUP ON *.* TO wikistream;
 ALTER USER IF EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;"
 
 # Log the SQL with the password redacted (/var/log/wikistream-startup.log is
@@ -51,8 +51,10 @@ echo "user bootstrap ok"
 #    lines; any non-zero exit aborts boot.sh via set -e).
 CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream CH_PASSWORD=${CH_PASSWORD} MIGRATIONS_DIR=/opt/wikistream/migrations bash /opt/wikistream/migrations/apply.sh
 
-# Phase 3C: install BigQuery export + parity systemd units/timers (3.3.5)
+# Phase 3C/4B: install BigQuery export + parity + backup + GX systemd units/timers
 cp /opt/wikistream/warehouse/wikistream-export.service /opt/wikistream/warehouse/wikistream-export.timer \
-   /opt/wikistream/warehouse/wikistream-parity.service /opt/wikistream/warehouse/wikistream-parity.timer /etc/systemd/system/
+   /opt/wikistream/warehouse/wikistream-parity.service /opt/wikistream/warehouse/wikistream-parity.timer \
+   /opt/wikistream/warehouse/wikistream-backup.service /opt/wikistream/warehouse/wikistream-backup.timer \
+   /opt/wikistream/gx/wikistream-gx.service /opt/wikistream/gx/wikistream-gx.timer /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now wikistream-export.timer wikistream-parity.timer
+systemctl enable --now wikistream-export.timer wikistream-parity.timer wikistream-backup.timer wikistream-gx.timer

@@ -13,6 +13,17 @@ services:
       # ch-data disk at /mnt/ch-data/clickhouse); unset locally falls back to
       # the named `ch-data` volume declared below.
       - ${CH_DATA_DIR:-ch-data}:/var/lib/clickhouse
+      # Phase 4B: local backup disk + Disk-backup-engine allow-list. Single-file
+      # mount only — a directory bind over config.d would shadow the image's
+      # docker_related_config.xml (listen_host :: / 0.0.0.0) and silently leave
+      # ClickHouse listening on loopback alone.
+      - ./config/clickhouse/config.d/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
 
@@ -28,10 +39,22 @@ services:
       CLICKHOUSE_USER: wikistream
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-wikistream_dev_password}
       STREAM_URL: https://stream.wikimedia.org/v2/stream/recentchange
+      # Phase 4B: staleness threshold for the healthcheck probe (see healthcheck.py).
+      HEALTH_STALE_SECONDS: "${HEALTH_STALE_SECONDS:-300}"
     volumes:
       # Phase 4A: consumer runtime state (Last-Event-ID cursor + totals). On
       # the VM STATE_DIR resolves to the durable disk (/mnt/ch-data/state).
       - ${STATE_DIR:-${CH_DATA_DIR:-./ch-data}/../state}:/state
+    # Phase 4B: freshness probe. `uv run` (not bare python) — the image's
+    # deps live in .venv; system python has no clickhouse_connect. On stale
+    # data healthcheck.py SIGTERMs PID 1 (uv), the container exits and
+    # restart: unless-stopped resumes it (ADR-004 wedge detector).
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-m", "src.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 2
+      start_period: 60s
 
   grafana:
     image: grafana/grafana:13.1.1
@@ -46,6 +69,36 @@ services:
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Phase 4B (Q8/Q10): periodic data-quality gate. NOT a long-running service —
+  # boot-time `up -d` runs suite.py once (harmless, usually exits non-zero
+  # before boot.sh bootstraps the user) and the hourly systemd timer drives it
+  # via `docker compose run --rm gx`. Image is HARDCODED: nothing on the VM
+  # sets GX_IMAGE and startup.sh is frozen, so boot's `docker compose pull`
+  # must resolve the manifest. Local dev builds the same ref via `docker
+  # compose build gx`.
+  gx:
+    platform: linux/amd64  # zstd (via asynch) has no arm64 wheel; prod is amd64
+    build:
+      context: .
+      dockerfile: gx/Dockerfile
+    image: us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/gx:latest
+    container_name: wikistream-gx
+    restart: "no"
+    depends_on: [clickhouse]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_USER: wikistream
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-wikistream_dev_password}
+      GX_TABLE: default.raw_events
+      GX_WINDOW_HOURS: "1"
 
 volumes:
   ch-data:

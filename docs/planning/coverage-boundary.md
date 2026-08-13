@@ -26,6 +26,16 @@ real captured Wikimedia payloads), `test_batcher.py` (8), `test_dead_letter.py`
 zero_loss.py` as their spot-check guarantee. `gx/suite.py` stays predicted
 until 4B lands it (4.2.2).
 
+**2026-08-13 (Phase 4B correction):** `consumer/src/healthcheck.py` is now a
+REAL path, with `tests/src/consumer/test_healthcheck.py` (7 pure unit tests
+covering the `is_fresh` boundary matrix + 3 ch tests asserting the stale→SIGTERM
+branch, fresh pass, and connection-failure exit) as its spot-check guarantee.
+`gx/suite.py` is now a REAL path, with `tests/gx/test_gx_suite.py` (2 ch tests:
+valid fixture → all six expectations pass, bad fixture → at least one fails and
+the process exits non-zero) as its spot-check guarantee. `warehouse/backup.sh`
+follows the export/parity wrapper convention: **outside the pytest-cov gate**,
+verified by the production timer runs and the executed restore spot-check.
+
 **2026-08-12 (Phase 3C correction, AC21 phase-final wording):**
 `warehouse/sql/` and the new `tests/warehouse/` suite are now REAL paths.
 The Phase 3 CQL story is complete: **`migrations/` + `warehouse/sql/` + the
