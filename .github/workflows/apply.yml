@@ -48,7 +48,7 @@ jobs:
         run: echo "sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./consumer
           push: true
@@ -61,7 +61,7 @@ jobs:
       # Context is the repo root (Dockerfile COPYs are repo-root-relative,
       # mirroring docker-compose.yml's `build: {context: ., dockerfile: gx/Dockerfile}`).
       - name: Build and push (gx)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: gx/Dockerfile
