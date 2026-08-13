@@ -906,10 +906,131 @@ referenced via `file()` in the compute module, so the added
 `google_project_iam_member.vm_job_user` (bigquery.jobUser) was created
 successfully in that same run.
 
-**VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go: pending — filled
-after the merge + apply + VM battery below.**
+**VM evidence (AC15–AC20) + CI URLs + Gate 1 record + Go/No-Go:**
 
-## Phase 4 — Data Quality & Resilience
+**AC14 — BigQuery API enabled:** `gcloud services list --enabled
+--filter=config.name:bigquery.googleapis.com` → `bigquery.googleapis.com`.
+Bootstrap applies recorded above (3.3.1 API enable + 3.3.8 deploy-role
+extension), both manual with local state.
+
+**AC15 — BQ dataset + 5 tables + staging bucket + IAM:** `bq ls
+--project_id=wikistream-505003 wikistream` shows all 5 tables
+(`export_runs`, `kpi_edit_sizes_hourly`, `kpi_edits_hourly`,
+`kpi_top_pages_hourly`, `raw_events_sample`). `kpi_edits_hourly` is
+DAY-partitioned on `hour` with `clustering: ["wiki"]`. Dataset IAM
+(`bq show wikistream` prettyjson): `WRITER wikistream-vm@…`
+(roles/bigquery.dataEditor — ADR-010), plus project-scoped
+`roles/bigquery.jobUser` for the VM SA (jobs are project-scoped; recorded
+deviation above). `gcloud storage ls gs://wikistream-505003-bq-staging`
+reachable, holds RUN_ID-unique per-table objects. STAGING BUCKET WRITE —
+see AC20.
+
+**AC16 — Export timer produces data:** scheduled unit fired 18:00:19 and
+completed 18:03:33 with `[export] success window=2026-08-12T17:00:00Z..
+2026-08-12T18:00:00Z rows_edits=272 rows_top_pages=40870 rows_sizes=6
+rows_raw_sample=10516`; `systemctl is-active wikistream-export.timer` →
+active; `ExecMainStatus=0`. `bq query` export_runs: `status=n
+success,1` for the 17:00 window (exported_at 18:03:09). All four KPI/raw
+tables hold the last-completed-hour rows (272 / 40870 / 6 / 10516).
+
+**AC17 — Parity green on schedule:** scheduled parity unit fired
+18:05:18 → finished 18:07:28, `ExecMainStatus=0`, journal `Finished
+wikistream-parity.service`. `/var/log/wikistream/wikistream-parity.log`:
+17:05:30 error line (boot-time `Persistent=true` catch-up for 16–17Z,
+which predates the fixed exports — correct error path) then
+**18:07:28 green**: `{"freshness":"ok","status":"ok","tables":
+{"edits":"ok","raw_sample":"ok","sizes":"ok","top_pages":"ok"},
+"window_start":"2026-08-12T17:00:00Z","window_end":
+"2026-08-12T18:00:00Z"}`. **Two consecutive green runs (`≥2`) confirmed on
+the live schedule: 18:07:28 and 19:07:10 UTC, both `"status":"ok"` with
+all four tables ok and `ExecMainStatus=0`** — closing AC17 end-to-end.
+
+**AC18 — BQ matches CH for a real window:** parity compares BQ vs CH on
+identical windowed-SUM SQL for all four tables → all ok. Independent BQ
+probe of `kpi_edits_hourly` for the 17–18Z window:
+`hour=2026-08-12 17:00:00, n_rows=272, edits=48833,
+bytes_delta=43943656`, matching CH at 18:07. (An earlier 17:26 probe
+showed CH=1946/23345/20765963 — a mid-open-hour snapshot predating the
+18:00 reload; scheduled-run numbers are the record.)
+
+**AC19 — Freshness panel renders:** `POST /api/ds/query` (uid
+`wikistream-bigquery`) with
+`SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(exported_at), MINUTE) AS
+minutes_since FROM wikistream.export_runs` → 200, `minutes_since = 14`
+(< 120). `/api/datasources` lists BigQuery (uid `wikistream-bigquery`,
+GCE auth, isDefault false) + ClickHouse (isDefault true). Panel visible
+on the wikiStream Live Analytics dashboard.
+
+**AC20 — Staging lifecycle enforced:** `lifecycle_rule` (Delete, age 7
+days) on `wikistream-505003-bq-staging` in TF; listing shows only fresh
+objects; trivially nothing older than 7 days.
+
+**AC21 — Coverage boundary + log consistent:** `docs/planning/
+coverage-boundary.md` corrected (Phase 3 story = `migrations/` +
+`warehouse/sql/` + the three suites `tests/migrations`, `tests/mv`,
+`tests/warehouse` as business-critical 100%; `export.sh`/`parity.sh`
+stayed outside the pytest-cov gate — thin wrappers whose exit codes are
+verified by the timer runs + `bash -n`; the SQL they execute IS in the
+100% story). This log now carries: bootstrap records, CI URLs, the
+scheduled-run evidence above, and every deviation/bug caught.
+
+**CI / build evidence:** PR #19 (`feature/Data-Model-Depth` → main,
+merged 2026-08-12) and PR #20 (post-merge deploy-role fix, merged).
+Initial PR #19 apply failed on the two deploy-SA 403s (recorded above);
+after the bootstrap role extension the gated apply completed and created
+dataset + bucket. Lint/unit-tests/analytics-tests/compose-smoke all
+green on the final commits.
+
+**Gate 1 — Go/No-Go for Phase 4:** **GO on record** (same
+precedent as the Phase-2 gate). All AC14–AC21 self-checked with evidence
+above; the two consecutive green parity runs (18:07:28 + 19:07:10 UTC)
+close AC17 with no open items. Phase 4 planning may proceed in parallel
+per master plan §8.
+
+**Phase 3 exit = AC1–AC21 executed with recorded evidence; Gate 1
+GO-with-caveat recorded. Phase 3 is COMPLETE.**
+
+## Phase 4 — Data Quality & Resilience (4A Consumer Resilience / 4B GX + Hardening + Backup)
+
+Tasks defined in `docs/planning/phase-4-implementation.md` (LOCKED 2026-08-12).
+Task headings pre-populated per plan §6; Status lines are filled as each task
+is worked, per the logging rules. Two PRs, each merge → gated apply → VM
+reset → its gate before the next PR begins: 4A consumer resilience (micro-gate,
+task 4.1.7), 4B GX + healthchecks + backup/restore (phase-final battery + Gate 2,
+task 4.2.9). Gate 1's GO-with-caveat is already on record in §3 — task 4.2.9
+cross-references it, it is NOT re-recorded.
+
+### 4.1.1 — models.py: slim Pydantic model + timestamp policy (Q1/Q2)
+
+### 4.1.2 — dead_letter: migration 007 + sync router (Q3)
+
+### 4.1.3 — restart-resume: /state mount + atomic consumer_state.json + durable-id invariant + flush-on-exit (Q4)
+
+### 4.1.4 — batcher.py: 1000-rows/5s flush, integrated into the consumer pipeline (Q7)
+
+### 4.1.5 — dedup ring (Q5) + extended stats log line
+
+### 4.1.6 — tests: unit (validation/batcher/resume-dedup) + ch-marked integration (malformed→DL, kill/resume) + sse_fixture (Q1–Q5, Q7)
+
+### 4.1.7 — 4A PR → gated deploy → VM checkpoint → log (malformed + kill proofs live)
+
+### 4.2.1 — gx/ scaffolding: pyproject, Dockerfile, compose service (Q8)
+
+### 4.2.2 — gx/suite.py: 6 expectations + failing-path test + log line/non-zero exit (Q10)
+
+### 4.2.3 — systemd wikistream-gx.service/timer + boot.sh install step (Q9)
+
+### 4.2.4 — CI: build-push gx image + ch-marked GX tests wired into analytics-tests
+
+### 4.2.5 — 4B PR → gated deploy → scheduled green run + log/exit hook visible (plus one failing-path demo)
+
+### 4.2.6 — healthchecks on 3 services + consumer freshness probe + HEALTH_STALE_SECONDS (Q12)
+
+### 4.2.7 — backup: config.d/backups.xml, backup.sh, TF backups module, systemd timer, grants (Q11)
+
+### 4.2.8 — restore + spot-check procedure executed once for the record
+
+### 4.2.9 — 4B PR → deploy → verification battery → Gate 2 record → log + coverage boundary
 
 ## Phase 5 — Observability & Security Hardening
 
