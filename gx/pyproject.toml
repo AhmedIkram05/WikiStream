@@ -1,0 +1,23 @@
+[project]
+name = "wikistream-gx"
+version = "0.1.0"
+description = "Great Expectations data-quality suite for WikiStream raw_events"
+# GX 0.18.x pins pandas<2.2.0 / numpy<2.0.0 which have no cp313 wheels — the
+# image and CI venv MUST resolve on CPython 3.12. The upper bound forces uv
+# to fetch managed CPython 3.12 on runners that default to 3.13.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "great-expectations[clickhouse]==0.18.22",
+    "clickhouse-sqlalchemy==0.2.9",
+    "clickhouse-driver==0.2.11",
+    "SQLAlchemy==1.4.54",
+    "clickhouse-connect==1.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "FLY"]
