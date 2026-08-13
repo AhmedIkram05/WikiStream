@@ -56,6 +56,20 @@ jobs:
             us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/consumer:sha-${{ steps.meta.outputs.sha }}
             us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/consumer:latest
 
+      # Phase 4B (Q8): GX image to the SAME Artifact Registry repo — no new
+      # TF resource, build-push is already gated by the apply job's review.
+      # Context is the repo root (Dockerfile COPYs are repo-root-relative,
+      # mirroring docker-compose.yml's `build: {context: ., dockerfile: gx/Dockerfile}`).
+      - name: Build and push (gx)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gx/Dockerfile
+          push: true
+          tags: |
+            us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/gx:sha-${{ steps.meta.outputs.sha }}
+            us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/gx:latest
+
   # Gated: the production environment's required reviewer pauses this job
   # here until approved (self-review allowed). Plan-then-apply stays INSIDE
   # the gated job — approval must cover the apply decision itself, so the

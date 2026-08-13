@@ -85,7 +85,12 @@ jobs:
               docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
 
               echo "== ch: run @ch tests =="
-              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q --tb=short -m ch
+              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q --tb=short -m ch --ignore=tests/gx
+
+              # Phase 4B: GX suite ch tests (tests/gx) run under the gx venv —
+              # great_expectations is a gx/ dependency, not a consumer one.
+              echo "== ch: run gx suite @ch tests =="
+              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project gx pytest -q --tb=short -m ch tests/gx
 
           # Full walking-skeleton smoke: AC1-AC6 gates against the real stack.
           # `up -d --build` also validates the Dockerfile on every PR — image
@@ -187,6 +192,7 @@ jobs:
         if: matrix.name != 'compose-smoke'
         run: |
           uv sync --project consumer --frozen
+          uv sync --project gx --frozen
           uv tool install pre-commit
 
       - name: ${{ matrix.name }}
