@@ -26,7 +26,7 @@ locals {
   labels = {
     project    = "wikistream"
     managed-by = "terraform"
-    phase      = "4"
+    phase      = "5"
   }
 }
 
@@ -77,6 +77,13 @@ module "backups" {
   source                = "./modules/backups"
   project_id            = var.project_id
   service_account_email = module.iam.service_account_email
+}
+
+module "monitoring" {
+  source      = "./modules/monitoring"
+  project_id  = var.project_id
+  alert_email = var.alert_email
+  labels      = local.labels
 }
 
 output "vm_static_ip" {
