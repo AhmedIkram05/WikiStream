@@ -1,0 +1,16 @@
+<!-- Phase 4B: local backup disk + Disk backup engine allow-list.
+     Path lives INSIDE the ch-data bind (var/lib/clickhouse/backups/) so backups
+     survive container recreates and ride the ch-data disk. -->
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <backups>
+                <type>local</type>
+                <path>/var/lib/clickhouse/backups/</path>
+            </backups>
+        </disks>
+    </storage_configuration>
+    <backups>
+        <allowed_disk>backups</allowed_disk>
+    </backups>
+</clickhouse>
