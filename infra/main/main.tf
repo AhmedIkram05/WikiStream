@@ -26,7 +26,7 @@ locals {
   labels = {
     project    = "wikistream"
     managed-by = "terraform"
-    phase      = "3"
+    phase      = "4"
   }
 }
 
@@ -70,6 +70,12 @@ module "bigquery" {
   project_id            = var.project_id
   service_account_email = module.iam.service_account_email
   labels                = local.labels
+}
+
+module "backups" {
+  source                = "./modules/backups"
+  project_id            = var.project_id
+  service_account_email = module.iam.service_account_email
 }
 
 output "vm_static_ip" {
