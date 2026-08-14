@@ -69,6 +69,12 @@ resource "google_monitoring_alert_policy" "vm_unreachable" {
     condition_absent {
       filter   = "metric.type=\"compute.googleapis.com/instance/uptime\" AND resource.type=\"gce_instance\""
       duration = "120s"
+      # instance/uptime is a DELTA-kind metric — the API rejects an absence
+      # condition without a perSeriesAligner (400 on first apply, 2026-08-14).
+      aggregations {
+        alignment_period   = "120s"
+        per_series_aligner = "ALIGN_MEAN"
+      }
       trigger {
         count = 1
       }
