@@ -1845,6 +1845,21 @@ policies (instance replace and label bumps already landed in the failed run).
 Reading for a future phase: ANY new lateral GCP resource type (monitoring,
 cloud run, etc.) needs its role added to the same bootstrap list before the
 apply can create it.
+**Deviation 3 (DELTA-kind absence — found by the live apply):** vm-unreachable
+failed on its first real create — `Error creating AlertPolicy: 400: Request
+was missing field aggregation.perSeriesAligner: An aggregation with a
+perSeriesAligner is required when the metric kind is DELTA`.
+`compute.googleapis.com/instance/uptime` is DELTA-kind; the API requires an
+aggregations block with per_series_aligner even on an absence condition, which
+neither the locked spec nor the pre-apply validation surfaced (validate only
+checks HCL shape; the requirement is API-side). Fixed: aggregations
+{alignment_period 120s, per_series_aligner ALIGN_MEAN} added to
+condition_absent — semantics unchanged (absence still fires when the series
+stops reporting); plan now "1 to add" (vm_unreachable only; channel, disk
+policy, instance and disk attach already in state from the two partial
+applies). Plan doc 5B.2 block updated in place with the deviation note.
+Reading for future phases: absence conditions on DELTA-kind metrics need the
+aligner; only a real apply surfaces it.
 **Evidence:** terraform plan (live backend): 5 to add, 12 to change, 1 to
 destroy (destroy = instance replace only; adds = 1 IAM binding + 1 channel + 2
 policies; changes = 12 label phase bumps). terraform fmt -check clean;
