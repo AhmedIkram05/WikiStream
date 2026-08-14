@@ -102,6 +102,11 @@ resource "google_project_iam_member" "deploy_project_roles" {
     # primitives that dataset/bucket-scoped roles cannot grant.
     "roles/bigquery.admin",
     "roles/storage.admin",
+    # 5B: Cloud Monitoring alert policies + notification channels. The first
+    # apply that created a channel 403'd without this (2026-08-14); granted
+    # out-of-band same day, declared here so bootstrap stays the source of
+    # truth for the deploy SA's project roles.
+    "roles/monitoring.editor",
   ])
   project = var.project_id
   role    = each.key
