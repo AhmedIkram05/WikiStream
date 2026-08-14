@@ -22,14 +22,11 @@ import base64
 import json
 import os
 import random
-import signal
-import statistics
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,8 +39,8 @@ CH_PASSWORD = os.environ.get("CH_PASSWORD", "")
 CH_DB = os.environ.get("CH_DB", "default")
 
 # Malformed-injection ratios (must sum to <= 1.0).
-INVALID_JSON_P = 0.004   # -> validation:invalid_json
-BAD_TS_P = 0.003         # -> timestamp_unparseable
+INVALID_JSON_P = 0.004  # -> validation:invalid_json
+BAD_TS_P = 0.003  # -> timestamp_unparseable
 MISSING_FIELD_P = 0.003  # -> validation:missing
 
 # Malformed variant name -> expected dead-letter reason.
@@ -78,7 +75,9 @@ def ch_counts() -> dict[str, int]:
     """raw_events count + dead_letter count grouped by reason."""
     raw = int(ch_query(f"SELECT count() FROM {CH_DB}.raw_events")[0][0])
     dl: dict[str, int] = {}
-    for row in ch_query(f"SELECT reason, count() FROM {CH_DB}.dead_letter GROUP BY reason"):
+    for row in ch_query(
+        f"SELECT reason, count() FROM {CH_DB}.dead_letter GROUP BY reason"
+    ):
         dl[row[0]] = int(row[1])
     return {"raw": raw, **{f"dl:{k}": v for k, v in dl.items()}}
 
@@ -87,22 +86,46 @@ def make_event(n: int, malformed: str | None) -> str:
     """One recentchange-shaped JSON event (or a malformed variant)."""
     now_epoch = int(time.time())
     if malformed == "invalid_json":
-        return f'{{"type": "edit", "wiki": "enwiki", "title": "Page {n}", "user": "U{n}", "bot": false, "length": {{"new": 100, "old": 90}}, "timestamp": {now_epoch}'
+        return (
+            f'{{"type": "edit", "wiki": "enwiki", "title": "Page {n}", '
+            f'"user": "U{n}", "bot": false, "length": {{"new": 100, "old": 90}}, '
+            f'"timestamp": {now_epoch}'
+        )
     if malformed == "bad_ts":
-        return json.dumps({
-            "type": "edit", "wiki": "enwiki", "title": f"Page {n}", "user": f"U{n}",
-            "bot": False, "length": {"new": 100, "old": 90}, "timestamp": "not-a-date",
-        })
+        return json.dumps(
+            {
+                "type": "edit",
+                "wiki": "enwiki",
+                "title": f"Page {n}",
+                "user": f"U{n}",
+                "bot": False,
+                "length": {"new": 100, "old": 90},
+                "timestamp": "not-a-date",
+            }
+        )
     if malformed == "missing_field":
-        return json.dumps({
-            "type": "edit", "wiki": "enwiki", "user": f"U{n}",
-            "bot": False, "length": {"new": 100, "old": 90}, "timestamp": now_epoch,
-        })
+        return json.dumps(
+            {
+                "type": "edit",
+                "wiki": "enwiki",
+                "user": f"U{n}",
+                "bot": False,
+                "length": {"new": 100, "old": 90},
+                "timestamp": now_epoch,
+            }
+        )
     ev_type = "new" if n % 10 == 0 else "edit"
-    return json.dumps({
-        "type": ev_type, "wiki": "enwiki", "title": f"Page {n}", "user": f"U{n}",
-        "bot": n % 7 == 0, "length": {"new": 100 + n % 500, "old": 90}, "timestamp": now_epoch,
-    })
+    return json.dumps(
+        {
+            "type": ev_type,
+            "wiki": "enwiki",
+            "title": f"Page {n}",
+            "user": f"U{n}",
+            "bot": n % 7 == 0,
+            "length": {"new": 100 + n % 500, "old": 90},
+            "timestamp": now_epoch,
+        }
+    )
 
 
 class BurstOrigin:
@@ -221,7 +244,9 @@ class BurstOrigin:
         self.feed_done.set()
 
 
-async def run_level(level: int, rate: float, duration_s: float, keep_state: bool) -> dict:
+async def run_level(
+    level: int, rate: float, duration_s: float, keep_state: bool
+) -> dict:
     seed = level
     origin = BurstOrigin(rate, duration_s, seed)
     server = await asyncio.start_server(origin.handle, "127.0.0.1", 0)
@@ -231,18 +256,28 @@ async def run_level(level: int, rate: float, duration_s: float, keep_state: bool
     before = ch_counts()
 
     env = dict(os.environ)
-    env.update({
-        "STREAM_URL": f"http://127.0.0.1:{port}/",
-        "CLICKHOUSE_HOST": CH_HOST,
-        "CLICKHOUSE_PORT": CH_PORT,
-        "CLICKHOUSE_USER": CH_USER,
-        "CLICKHOUSE_PASSWORD": CH_PASSWORD,
-        "STATE_DIR": state_dir,
-    })
+    env.update(
+        {
+            "STREAM_URL": f"http://127.0.0.1:{port}/",
+            "CLICKHOUSE_HOST": CH_HOST,
+            "CLICKHOUSE_PORT": CH_PORT,
+            "CLICKHOUSE_USER": CH_USER,
+            "CLICKHOUSE_PASSWORD": CH_PASSWORD,
+            "STATE_DIR": state_dir,
+        }
+    )
     proc = await asyncio.create_subprocess_exec(
-        "uv", "run", "--project", str(CONSUMER_DIR), "python", "-m", "src.consumer",
-        cwd=str(CONSUMER_DIR), env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        "uv",
+        "run",
+        "--project",
+        str(CONSUMER_DIR),
+        "python",
+        "-m",
+        "src.consumer",
+        cwd=str(CONSUMER_DIR),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
     try:
         await asyncio.wait_for(origin.connected.wait(), timeout=20)
@@ -302,20 +337,31 @@ async def run_level(level: int, rate: float, duration_s: float, keep_state: bool
         for k in (after or {})
         if k.startswith("dl:")
     }
-    for reason in ("validation:invalid_json", "timestamp_unparseable", "validation:missing"):
+    for reason in (
+        "validation:invalid_json",
+        "timestamp_unparseable",
+        "validation:missing",
+    ):
         dl_by_reason.setdefault(reason, 0)
 
     results = {
-        "level": level, "target_rate": rate, "duration_s": duration_s,
-        "sent": sent, "valid_sent": valid_sent, "injected": injected,
-        "achieved_rate": round(achieved, 1), "rc": rc,
-        "raw_delta": raw_delta, "dl_delta": dl_delta, "dl_by_reason": dl_by_reason,
-        "state_total": state_total, "state_path": state_path if keep_state else "",
+        "level": level,
+        "target_rate": rate,
+        "duration_s": duration_s,
+        "sent": sent,
+        "valid_sent": valid_sent,
+        "injected": injected,
+        "achieved_rate": round(achieved, 1),
+        "rc": rc,
+        "raw_delta": raw_delta,
+        "dl_delta": dl_delta,
+        "dl_by_reason": dl_by_reason,
+        "state_total": state_total,
+        "state_path": state_path if keep_state else "",
         "consumer_log": consumer_log,
         "drop_ok": raw_delta + dl_delta == sent,
         "dl_ok": all(
-            dl_by_reason.get(VARIANT_REASON.get(r, r)) == c
-            for r, c in injected.items()
+            dl_by_reason.get(VARIANT_REASON.get(r, r)) == c for r, c in injected.items()
         ),
         "state_ok": state_total == valid_sent,
         "rate_ok": achieved >= 0.95 * rate,
@@ -329,10 +375,14 @@ async def run_level(level: int, rate: float, duration_s: float, keep_state: bool
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--baseline", type=float, default=565.5, help="observed baseline ev/s")
+    ap.add_argument(
+        "--baseline", type=float, default=565.5, help="observed baseline ev/s"
+    )
     ap.add_argument("--multiples", default="2,5,10", help="burst multiples of baseline")
     ap.add_argument("--duration", type=float, default=60.0, help="seconds per level")
-    ap.add_argument("--keep-state", action="store_true", help="keep per-level state dirs")
+    ap.add_argument(
+        "--keep-state", action="store_true", help="keep per-level state dirs"
+    )
     args = ap.parse_args()
 
     if not CH_PASSWORD:
@@ -340,41 +390,64 @@ def main() -> int:
         return 2
 
     levels = [float(m) * args.baseline for m in args.multiples.split(",")]
-    print(f"baseline {args.baseline:.1f} ev/s | levels: "
-          + ", ".join(f"{m}x={r:.0f}/s" for m, r in zip(args.multiples.split(","), levels))
-          + f" | {args.duration:.0f}s each | injection: "
-          + f"invalid_json {INVALID_JSON_P:.1%} bad_ts {BAD_TS_P:.1%} missing_field {MISSING_FIELD_P:.1%}")
+    print(
+        f"baseline {args.baseline:.1f} ev/s | levels: "
+        + ", ".join(
+            f"{m}x={r:.0f}/s" for m, r in zip(args.multiples.split(","), levels)
+        )
+        + f" | {args.duration:.0f}s each | injection: "
+        + f"invalid_json {INVALID_JSON_P:.1%} bad_ts {BAD_TS_P:.1%} "
+        + f"missing_field {MISSING_FIELD_P:.1%}"
+    )
 
     all_results = []
     for mult, rate in zip(args.multiples.split(","), levels):
         try:
-            res = asyncio.run(run_level(int(mult), rate, args.duration, args.keep_state))
+            res = asyncio.run(
+                run_level(int(mult), rate, args.duration, args.keep_state)
+            )
         except Exception as e:  # noqa: BLE001 — harness must report and continue
             print(f"level {mult}x: ERROR {e}")
             all_results.append({"level": mult, "pass": False, "error": str(e)})
             continue
         all_results.append(res)
         verdict = "PASS" if res["pass"] else "FAIL"
-        print(f"level {mult}x ({res['target_rate']:.0f} ev/s, {res['duration_s']:.0f}s): "
-              f"{verdict} | sent {res['sent']} (valid {res['valid_sent']}) "
-              f"| achieved {res['achieved_rate']:.0f} ev/s | rc {res['rc']} "
-              f"| raw_delta {res['raw_delta']} dl_delta {res['dl_delta']} "
-              f"| state {res['state_total']} | drops {(res['sent'] - res['raw_delta'] - res['dl_delta']) if res['drop_ok'] else 'MISMATCH'} "
-              f"| dl {res['dl_by_reason']}")
+        drops = (
+            res["sent"] - res["raw_delta"] - res["dl_delta"]
+            if res["drop_ok"]
+            else "MISMATCH"
+        )
+        print(
+            f"level {mult}x ({res['target_rate']:.0f} ev/s, {res['duration_s']:.0f}s): "
+            f"{verdict} | sent {res['sent']} (valid {res['valid_sent']}) "
+            f"| achieved {res['achieved_rate']:.0f} ev/s | rc {res['rc']} "
+            f"| raw_delta {res['raw_delta']} dl_delta {res['dl_delta']} "
+            f"| state {res['state_total']} | drops {drops} "
+            f"| dl {res['dl_by_reason']}"
+        )
         if not res["pass"] and res.get("consumer_log"):
             print("  consumer log tail:")
             for line in res["consumer_log"].strip().splitlines()[-12:]:
                 print(f"    {line}")
 
     print("\nsummary:")
-    print(f"{'level':>6} {'target/s':>9} {'achieved/s':>10} {'sent':>8} {'raw_delta':>9} {'dl_delta':>8} {'state':>7}  verdict")
+    print(
+        f"{'level':>6} {'target/s':>9} {'achieved/s':>10} {'sent':>8} "
+        f"{'raw_delta':>9} {'dl_delta':>8} {'state':>7}  verdict"
+    )
     for r in all_results:
         if "error" in r:
-            print(f"{r['level']:>6} {'-':>9} {'-':>10} {'-':>8} {'-':>9} {'-':>8} {'-':>7}  ERROR {r['error']}")
+            print(
+                f"{r['level']:>6} {'-':>9} {'-':>10} {'-':>8} "
+                f"{'-':>9} {'-':>8} {'-':>7}  ERROR {r['error']}"
+            )
         else:
-            print(f"{r['level']:>6} {r['target_rate']:>9.0f} {r['achieved_rate']:>10.0f} {r['sent']:>8} "
-                  f"{r['raw_delta']:>9} {r['dl_delta']:>8} {r['state_total']:>7}  "
-                  f"{'PASS' if r['pass'] else 'FAIL'}")
+            print(
+                f"{r['level']:>6} {r['target_rate']:>9.0f} "
+                f"{r['achieved_rate']:>10.0f} {r['sent']:>8} "
+                f"{r['raw_delta']:>9} {r['dl_delta']:>8} {r['state_total']:>7}  "
+                f"{'PASS' if r['pass'] else 'FAIL'}"
+            )
 
     return 0 if all(r.get("pass", False) for r in all_results) else 1
 

@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import runpy
-import signal
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -130,6 +129,7 @@ def fake_dl(monkeypatch):
 
 def patch_sleep(monkeypatch):
     """Break the reconnect wait: loop exits after the first reconnect."""
+
     async def no_wait(stop_ev, seconds):
         return True
 
@@ -137,7 +137,9 @@ def patch_sleep(monkeypatch):
 
 
 def patch_http(monkeypatch, responses):
-    monkeypatch.setattr(consumer.httpx2, "AsyncClient", lambda **kw: FakeHTTP(responses))
+    monkeypatch.setattr(
+        consumer.httpx2, "AsyncClient", lambda **kw: FakeHTTP(responses)
+    )
 
 
 def patch_state(monkeypatch, tmp_path):
@@ -162,10 +164,17 @@ def test_wait_seconds():
 
 
 def test_parse_retry_after():
-    assert consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "5"})) == 5
+    assert (
+        consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "5"})) == 5
+    )
     assert consumer._parse_retry_after(SimpleNamespace(headers={})) is None
-    assert consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "abc"})) is None
-    assert consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "-3"})) == 0
+    assert (
+        consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "abc"}))
+        is None
+    )
+    assert (
+        consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "-3"})) == 0
+    )
 
 
 def test_sleep_or_stop_real():
@@ -193,7 +202,10 @@ def test_max_id_edges_consumer_copy():
     assert consumer._max_id("5", "10") == "10"
     assert consumer._max_id("10", "10") == "10"
     assert consumer._max_id("[", "[x") == "["
-    assert consumer._max_id('[{"offset": -1}]', '[{"timestamp": 7}]') == '[{"timestamp": 7}]'
+    assert (
+        consumer._max_id('[{"offset": -1}]', '[{"timestamp": 7}]')
+        == '[{"timestamp": 7}]'
+    )
 
 
 def test_dl_fields():
@@ -226,9 +238,7 @@ def test_load_state_bad_json_and_non_dict(monkeypatch, tmp_path, caplog):
 def test_load_state_type_coercion(monkeypatch, tmp_path):
     patch_state(monkeypatch, tmp_path)
     path = Path(consumer.STATE_FILE)
-    path.write_text(
-        json.dumps({"last_event_id": 42, "total": "many"})
-    )
+    path.write_text(json.dumps({"last_event_id": 42, "total": "many"}))
     state = consumer.load_state()
     assert state["last_event_id"] is None
     assert state["total"] == 0
@@ -266,9 +276,14 @@ def test_consume_happy_path_flush_and_state(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [FakeResponse(chunks=[b"".join(
-        frame(str(i), payload()) for i in range(1, 1002)
-    )])])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[b"".join(frame(str(i), payload()) for i in range(1, 1002))]
+            )
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -306,20 +321,30 @@ def test_consume_bad_ts_and_non_dict_go_dead_letter(
     monkeypatch, tmp_path, counters, stop, fake_dl
 ):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [FakeResponse(chunks=[
-        frame("8", payload(timestamp=None)),
-        # valid JSON but an array: ts lookup falls back to None
-        frame("9", '["no", "dict", "here"]'),
-    ])])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[
+                    frame("8", payload(timestamp=None)),
+                    # valid JSON but an array: ts lookup falls back to None
+                    frame("9", '["no", "dict", "here"]'),
+                ]
+            )
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
     run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["dead_lettered"] == 2
-    assert fake_dl.calls[0] == ("timestamp_missing", "enwiki", "Test page", json.dumps(
-        dict(VALID, timestamp=None)
-    ))
+    assert fake_dl.calls[0] == (
+        "timestamp_missing",
+        "enwiki",
+        "Test page",
+        json.dumps(dict(VALID, timestamp=None)),
+    )
     assert fake_dl.calls[1][0] == "timestamp_missing"
     assert fake_dl.calls[1][1:3] == ("", "")  # _dl_fields non-dict branch
 
@@ -332,9 +357,7 @@ def test_consume_validation_error_goes_dead_letter(
     # genuinely absent required key — None yields "string_type".
     bad = dict(VALID)
     bad.pop("title")
-    patch_http(monkeypatch, [FakeResponse(chunks=[
-        frame("10", json.dumps(bad))
-    ])])
+    patch_http(monkeypatch, [FakeResponse(chunks=[frame("10", json.dumps(bad))])])
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -362,11 +385,18 @@ def test_consume_dl_write_failure_keeps_cursor(
 
 def test_consume_duplicate_ids_skipped(monkeypatch, tmp_path, counters, stop, fake_dl):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [FakeResponse(chunks=[
-        frame("5", payload()),
-        frame("5", payload()),
-        frame("6", payload()),
-    ])])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[
+                    frame("5", payload()),
+                    frame("5", payload()),
+                    frame("6", payload()),
+                ]
+            )
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -381,9 +411,14 @@ def test_consume_flush_failure_counts_insert_failed(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [FakeResponse(chunks=[b"".join(
-        frame(str(i), payload()) for i in range(1, 1001)
-    )])])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[b"".join(frame(str(i), payload()) for i in range(1, 1001))]
+            )
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh(fail=True)
 
@@ -400,10 +435,13 @@ def test_consume_non_200_retry_after_reconnect(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [
-        FakeResponse(status_code=503, headers={"Retry-After": "7"}),
-        FakeResponse(chunks=[]),
-    ])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(status_code=503, headers={"Retry-After": "7"}),
+            FakeResponse(chunks=[]),
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -417,10 +455,15 @@ def test_consume_transport_exception_reconnects(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [FakeResponse(
-        chunks=[frame("1", payload()), b""],
-        exc_after_n=2,
-    )])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[frame("1", payload()), b""],
+                exc_after_n=2,
+            )
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -443,9 +486,10 @@ def test_consume_stop_at_chunk_boundary_final_flush(
                 stop.set()  # stop observed at the next chunk boundary
                 break
 
-    patch_http(monkeypatch, [StopAfterFirst(
-        chunks=[frame("1", payload()), frame("2", payload())]
-    )])
+    patch_http(
+        monkeypatch,
+        [StopAfterFirst(chunks=[frame("1", payload()), frame("2", payload())])],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -459,10 +503,17 @@ def test_consume_retry_frame_sets_retry_ms(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):
     patch_sleep(monkeypatch)
-    patch_http(monkeypatch, [FakeResponse(chunks=[
-        b"retry: 500\nid: 2\ndata: " + payload().encode() + b"\n\n",
-        frame("3", payload()),
-    ])])
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[
+                    b"retry: 500\nid: 2\ndata: " + payload().encode() + b"\n\n",
+                    frame("3", payload()),
+                ]
+            )
+        ],
+    )
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
@@ -473,7 +524,9 @@ def test_consume_retry_frame_sets_retry_ms(
     assert "reconnect reason=stream ended" in caplog.text
 
 
-def test_consume_60s_idle_stats_line(monkeypatch, tmp_path, counters, stop, fake_dl, caplog):
+def test_consume_60s_idle_stats_line(
+    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+):
     patch_sleep(monkeypatch)
     patch_http(monkeypatch, [FakeResponse(chunks=[frame("1", payload())])])
     patch_state(monkeypatch, tmp_path)

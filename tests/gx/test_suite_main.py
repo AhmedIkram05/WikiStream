@@ -51,13 +51,13 @@ class _FakeClient:
 
 def _patch_client(monkeypatch, client=None, error=None):
     if error is not None:
+
         def boom(**kw):
             raise error
+
         monkeypatch.setattr(clickhouse_connect, "get_client", boom)
     else:
-        monkeypatch.setattr(
-            clickhouse_connect, "get_client", lambda **kw: client
-        )
+        monkeypatch.setattr(clickhouse_connect, "get_client", lambda **kw: client)
 
 
 def _verdict(capsys):
@@ -82,7 +82,8 @@ def test_connect_failure_prints_failure_verdict(capsys, monkeypatch):
 def test_missing_table_fails_with_missing_error(capsys, monkeypatch):
     monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
     _patch_client(
-        monkeypatch, client=_FakeClient(error=RuntimeError("Unknown table default.nope"))
+        monkeypatch,
+        client=_FakeClient(error=RuntimeError("Unknown table default.nope")),
     )
     assert main() == 1
     v = _verdict(capsys)
