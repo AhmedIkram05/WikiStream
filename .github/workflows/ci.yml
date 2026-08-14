@@ -4,210 +4,198 @@ on:
   push:
     branches: [main]
   pull_request:
-  # ADR-008 fallback seam (Phase 2): if GitHub Environments required-reviewers
-  # is unavailable, the gated apply runs via workflow_dispatch.
   workflow_dispatch:
 
-# Cancel superseded runs on the same branch — free now, matters once GX,
-# migration tests and the burst test ride this workflow.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Least-privilege baseline (ADR-010 posture). Phase 2's registry push and
-# gated apply get scoped permissions in their own workflows (apply.yml, task 2.4).
 permissions:
   contents: read
 
 env:
-  # ADR-009 / coverage-boundary.md: 100% line bar on business-critical modules.
-  # Phase 6 extends this list (src.models, src.batcher, src.dead_letter,
-  # migrations/** , gx/suite.py) and adds the ~90% overall gate
-  # (--cov=src --cov-fail-under=90). Extend as comma-separated values —
-  # pytest-cov accepts --cov=pkg1,pkg2. Referenced via shell syntax below —
-  # the `env` context is unavailable inside strategy.matrix.
-  BUSINESS_CRITICAL_MODULES: src.sse
+  # pytest-cov 7.1.0 dropped comma-lists — --cov=a,b matches nothing.
+  # unit-tests expands this space-separated list into repeated --cov= flags.
+  BUSINESS_CRITICAL_MODULES: src.sse src.models src.batcher src.dead_letter src.heartbeat src.healthcheck
 
 jobs:
-  # One matrix, four independent checks. compose-smoke runs on exactly one
-  # runner (single entry); ruff, unit-tests, and analytics-tests are the
-  # other three entries.
-  # fail-fast: false so one broken check doesn't cancel the others.
-  checks:
-    name: ${{ matrix.name }}
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Lint gate = the SAME pre-commit hooks devs run locally
-          # (.pre-commit-config.yaml, ruff@v0.16.2 + pre-commit-hooks).
-          # --all-files pre-empts the "worked on my machine / staged-only"
-          # gap; --show-diff-on-failure surfaces hook fixes in CI output.
-          - name: lint
-            command: |
-              pre-commit run --all-files --show-diff-on-failure
-
-          # Runs EVERYTHING pytest.ini collects (testpaths=tests today).
-          # New test trees are added in pytest.ini — this command follows
-          # automatically, no CI edit needed.
-          - name: unit-tests
-            command: |
-              # -q: dot-per-test, no per-test lines. --tb=short: full assertion
-              # context, only the frames that matter. Failures stay debuggable
-              # without the wall of text.
-              uv run --project consumer pytest -q --tb=short -m "not ch"
-              uv run --project consumer pytest -q --tb=short -m "not ch" --cov="$BUSINESS_CRITICAL_MODULES" --cov-report=term-missing --cov-fail-under=100
-              # tests/gx/test_status_report.py's unit half imports gx.suite →
-              # great_expectations (gx/ dependency only). The consumer venv
-              # skips it via pytest.importorskip; run the gx unit half here so
-              # every non-ch test still executes in CI (mirrors analytics-tests
-              # two-venv pattern).
-              uv run --project gx pytest -q --tb=short -m "not ch" tests/gx
-
-          # ClickHouse migration suite: boots a real CH and runs the
-          # @pytest.mark.ch tests (tests/migrations now, 3B/3C suites join
-          # later). testpaths=tests collects them — NO explicit paths here
-          # (a not-yet-existing dir would exit 4 and red the 3A CI).
-          # install-deps runs for this entry too: it is not compose-smoke
-          # (the step's `if: matrix.name != 'compose-smoke'` passes), so
-          # `uv sync --project consumer` is available for pytest.
-          - name: analytics-tests
-            command: |
-              set -euo pipefail
-              echo "== ch: start clickhouse =="
-              docker compose up -d clickhouse
-
-              echo "== ch: wait ready =="
-              ready=0
-              for i in $(seq 1 30); do
-                if docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; then ready=1; break; fi
-                sleep 2
-              done
-              [ "$ready" -eq 1 ] || { echo "error: ClickHouse not ready after 30 attempts (~60s)" >&2; exit 1; }
-
-              echo "== ch: bootstrap user =="
-              docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
-
-              echo "== ch: run @ch tests =="
-              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q --tb=short -m ch --ignore=tests/gx
-
-              # Phase 4B: GX suite ch tests (tests/gx) run under the gx venv —
-              # great_expectations is a gx/ dependency, not a consumer one.
-              echo "== ch: run gx suite @ch tests =="
-              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project gx pytest -q --tb=short -m ch tests/gx
-
-          # Full walking-skeleton smoke: AC1-AC6 gates against the real stack.
-          # `up -d --build` also validates the Dockerfile on every PR — image
-          # build+push to Artifact Registry is apply.yml's job (Phase 2, Q7).
-          - name: compose-smoke
-            command: |
-              set -euo pipefail
-              echo "== AC1: stack up =="
-              # Phase 5: alerts.yml's Slack contact point requires a non-empty
-              # SLACK_WEBHOOK_URL (Grafana provisioning has no :-default
-              # interpolation); the VM gets the real webhook via boot.sh →
-              # Secret Manager, CI just needs a syntactically valid URL so the
-              # grafana container provisions and passes the healthcheck.
-              # NB: deliberately not a real webhook-format string — GitHub
-              # push protection pattern-matches that shape and blocks the
-              # push even for a placeholder.
-              SLACK_WEBHOOK_URL=https://example.invalid/slack-webhook-placeholder docker compose up -d --build
-
-              echo "== 3A: wait CH ready, bootstrap user, run migrations =="
-              ready=0
-              for i in $(seq 1 30); do
-                if docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; then ready=1; break; fi
-                sleep 2
-              done
-              [ "$ready" -eq 1 ] || { echo "error: ClickHouse not ready after 30 attempts (~60s)" >&2; exit 1; }
-              docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
-              CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password ./migrations/apply.sh
-
-              echo "== AC3: wait for first rows =="
-              q="docker compose exec -T clickhouse clickhouse-client --user wikistream --password wikistream_dev_password --query"
-              c=0
-              for i in $(seq 1 90); do
-                c=$($q "SELECT count() FROM default.raw_events" 2>/dev/null || true)
-                if [ "${c:-0}" -ge 1 ] 2>/dev/null; then
-                  echo "rows landed: count()=${c} after ~$((i * 10))s"
-                  break
-                fi
-                sleep 10
-              done
-              [ "${c:-0}" -ge 1 ] 2>/dev/null || { echo "::error::no rows in default.raw_events within 900s"; exit 1; }
-
-              echo "== AC4: count() strictly increases over >= 1 min =="
-              c1=$c
-              sleep 60
-              c2=$($q "SELECT count() FROM default.raw_events")
-              echo "count() ${c1} -> ${c2}"
-              [ "$c2" -gt "$c1" ] || { echo "::error::count() did not strictly increase (${c1} -> ${c2})"; exit 1; }
-
-              echo "== AC2: consumer connected, no tracebacks =="
-              connected=$(docker compose logs consumer | grep -c "connected url=" || true)
-              tracebacks=$(docker compose logs consumer | grep -c "Traceback" || true)
-              echo "connected lines: ${connected}, tracebacks: ${tracebacks}"
-              [ "${connected}" -ge 1 ] || { echo "::error::consumer never connected"; exit 1; }
-              [ "${tracebacks}" -eq 0 ] || { echo "::error::tracebacks in consumer logs"; exit 1; }
-
-              echo "== AC5: Grafana up + dashboard provisioned =="
-              code=000
-              for i in $(seq 1 30); do
-                code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health || true)
-                [ "$code" = "200" ] && break
-                sleep 5
-              done
-              [ "$code" = "200" ] || { echo "::error::grafana not healthy after 150s"; exit 1; }
-              curl -sf -u admin:admin "http://localhost:3000/api/search" | grep -q "WikiStream Live Analytics" \
-                || { echo "::error::dashboard not provisioned"; exit 1; }
-
-              echo "== AC6: panel query returns rows through Grafana =="
-              # DEVATION (Phase 2, recorded in implementation-log.md): the
-              # `format` field was dropped from this ds/query payload —
-              # grafana-clickhouse-datasource 4.20.0 rejects "time_series"
-              # here with `invalid format value` (500). Omitting it returns
-              # 200 with rows; verified live against the pinned plugin.
-              curl -s -u admin:admin -H "Content-Type: application/json" \
-                -d '{"from":"now-6h","to":"now","queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t"}]}' \
-                -o /tmp/dsquery.json http://localhost:3000/api/ds/query
-              python3 - <<'EOF'
-              import json
-              r = json.load(open("/tmp/dsquery.json"))
-              res = r["results"]
-              assert all(v.get("status") == 200 for v in res.values()), f"non-200 in ds/query: {res}"
-              has_rows = any(
-                  (f.get("data") or {}).get("values") and len(f["data"]["values"][0]) > 0
-                  for v in res.values() for f in v.get("frames", [])
-              )
-              assert has_rows, "no rows returned through Grafana"
-              print("ds/query: 200, rows present")
-              EOF
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13" # pinned per plan (GX caps <3.14); do not float
-
-      # uv caching is automatic on PRs/push (enable-cache: auto) and keyed on
-      # pyproject.toml + uv.lock, so dependency installs stay ~seconds.
       - uses: astral-sh/setup-uv@v6
+      - name: Install pre-commit
+        run: uv tool install pre-commit
+      - name: Lint
+        run: pre-commit run --all-files --show-diff-on-failure
 
-      # Extension seam: when a new python package lands (Phase 3A migrations
-      # runner, Phase 4 gx/), add its own `uv sync --project <pkg> --frozen`
-      # line here — its tests then run in the matrix with no other change.
-      # Skipped for compose-smoke — it only needs docker.
-      # The lint job needs `pre-commit` (it provisions ruff@v0.16.2 itself
-      # from .pre-commit-config.yaml); pytest entries need consumer synced.
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
       - name: Install dependencies
-        if: matrix.name != 'compose-smoke'
         run: |
           uv sync --project consumer --frozen
           uv sync --project gx --frozen
-          uv tool install pre-commit
+      - name: Unit tests
+        run: |
+          uv run --project consumer pytest -q --tb=short -m "not ch"
+          # 100% line bar on the six business-critical modules.
+          COV_ARGS=$(printf ' --cov=%s' $BUSINESS_CRITICAL_MODULES)
+          uv run --project consumer pytest -q --tb=short -m "not ch" --cov-report=term-missing --cov-fail-under=100 $COV_ARGS
+          # Overall pipeline bar: everything in src/ >= 90%. --cov-report=xml feeds Codecov.
+          uv run --project consumer pytest -q --tb=short -m "not ch" --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=90
+          uv run --project gx pytest -q --tb=short -m "not ch" tests/gx
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: false
 
-      - name: ${{ matrix.name }}
-        run: ${{ matrix.command }}
+  analytics-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install dependencies
+        run: |
+          uv sync --project consumer --frozen
+          uv sync --project gx --frozen
+      - name: Live-ClickHouse suites
+        run: |
+          set -euo pipefail
+          echo "== ch: start clickhouse =="
+          docker compose up -d clickhouse
+
+          echo "== ch: wait ready =="
+          ready=0
+          for i in $(seq 1 30); do
+            if docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" -eq 1 ] || { echo "error: ClickHouse not ready after 30 attempts (~60s)" >&2; exit 1; }
+
+          echo "== ch: bootstrap user =="
+          docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
+
+          echo "== ch: run @ch tests =="
+          CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project consumer pytest -q --tb=short -m ch --ignore=tests/gx --cov=src --cov-report=term-missing --cov-report=xml:ch-coverage.xml
+
+          echo "== ch: run gx suite @ch tests =="
+          CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project gx pytest -q --tb=short -m ch tests/gx
+
+          # gx/suite.py 100% combined gate. COVERAGE_PROCESS_START measures every
+          # process (incl. the gx.suite subprocess test_gx_suite.py spawns), so no
+          # coverage-run wrapper. Two plain runs (--append is rejected in parallel
+          # mode), then combine merges the per-process data files.
+          echo "== gx: coverage gate (suite.py 100%) =="
+          printf '[run]\nparallel = true\ndata_file = %s/gx.coverage\n' "$RUNNER_TEMP" > "$RUNNER_TEMP/gx.coveragerc"
+          export COVERAGE_PROCESS_START="$RUNNER_TEMP/gx.coveragerc"
+          uv run --project gx coverage run --rcfile="$RUNNER_TEMP/gx.coveragerc" -m pytest -q --tb=short -m "not ch" tests/gx
+          CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password uv run --project gx coverage run --rcfile="$RUNNER_TEMP/gx.coveragerc" -m pytest -q --tb=short -m ch tests/gx
+          uv run --project gx coverage combine --rcfile="$RUNNER_TEMP/gx.coveragerc"
+          uv run --project gx coverage report --rcfile="$RUNNER_TEMP/gx.coveragerc" -m --include='*/gx/suite.py' --fail-under=100
+          uv run --project gx coverage xml --rcfile="$RUNNER_TEMP/gx.coveragerc" --include='*/gx/suite.py' -o gx-coverage.xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ch-coverage.xml,gx-coverage.xml
+          fail_ci_if_error: false
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Stack smoke
+        run: |
+          set -euo pipefail
+          echo "== AC1: stack up =="
+          # Must be a valid URL for Grafana provisioning; deliberately NOT a real
+          # webhook shape — push protection blocks that string even as a placeholder.
+          SLACK_WEBHOOK_URL=https://example.invalid/slack-webhook-placeholder docker compose up -d --build
+
+          echo "== 3A: wait CH ready, bootstrap user, run migrations =="
+          ready=0
+          for i in $(seq 1 30); do
+            if docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" -eq 1 ] || { echo "error: ClickHouse not ready after 30 attempts (~60s)" >&2; exit 1; }
+          docker compose exec -T clickhouse clickhouse-client --multiquery < migrations/bootstrap-user.dev.sql
+          CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password ./migrations/apply.sh
+
+          echo "== AC3: wait for first rows =="
+          q="docker compose exec -T clickhouse clickhouse-client --user wikistream --password wikistream_dev_password --query"
+          c=0
+          for i in $(seq 1 90); do
+            c=$($q "SELECT count() FROM default.raw_events" 2>/dev/null || true)
+            if [ "${c:-0}" -ge 1 ] 2>/dev/null; then
+              echo "rows landed: count()=${c} after ~$((i * 10))s"
+              break
+            fi
+            sleep 10
+          done
+          [ "${c:-0}" -ge 1 ] 2>/dev/null || { echo "::error::no rows in default.raw_events within 900s"; exit 1; }
+
+          echo "== AC4: count() strictly increases over >= 1 min =="
+          c1=$c
+          sleep 60
+          c2=$($q "SELECT count() FROM default.raw_events")
+          echo "count() ${c1} -> ${c2}"
+          [ "$c2" -gt "$c1" ] || { echo "::error::count() did not strictly increase (${c1} -> ${c2})"; exit 1; }
+
+          echo "== AC2: consumer connected, no tracebacks =="
+          connected=$(docker compose logs consumer | grep -c "connected url=" || true)
+          tracebacks=$(docker compose logs consumer | grep -c "Traceback" || true)
+          echo "connected lines: ${connected}, tracebacks: ${tracebacks}"
+          [ "${connected}" -ge 1 ] || { echo "::error::consumer never connected"; exit 1; }
+          [ "${tracebacks}" -eq 0 ] || { echo "::error::tracebacks in consumer logs"; exit 1; }
+
+          echo "== AC5: Grafana up + dashboard provisioned =="
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health || true)
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          [ "$code" = "200" ] || { echo "::error::grafana not healthy after 150s"; exit 1; }
+          curl -sf -u admin:admin "http://localhost:3000/api/search" | grep -q "WikiStream Live Analytics" \
+            || { echo "::error::dashboard not provisioned"; exit 1; }
+
+          echo "== AC6: panel query returns rows through Grafana =="
+          # DEVIATION: `format` omitted from ds/query — grafana-clickhouse-datasource
+          # 4.20.0 rejects "time_series" here with invalid format value (500).
+          curl -s -u admin:admin -H "Content-Type: application/json" \
+            -d '{"from":"now-6h","to":"now","queries":[{"datasource":{"type":"grafana-clickhouse-datasource","uid":"wikistream-clickhouse"},"rawSql":"SELECT toStartOfMinute(inserted_at) AS t, count() AS events FROM default.raw_events WHERE inserted_at >= now() - INTERVAL 6 HOUR GROUP BY t ORDER BY t"}]}' \
+            -o /tmp/dsquery.json http://localhost:3000/api/ds/query
+          python3 - <<'EOF'
+          import json
+          r = json.load(open("/tmp/dsquery.json"))
+          res = r["results"]
+          assert all(v.get("status") == 200 for v in res.values()), f"non-200 in ds/query: {res}"
+          has_rows = any(
+              (f.get("data") or {}).get("values") and len(f["data"]["values"][0]) > 0
+              for v in res.values() for f in v.get("frames", [])
+          )
+          assert has_rows, "no rows returned through Grafana"
+          print("ds/query: 200, rows present")
+          EOF

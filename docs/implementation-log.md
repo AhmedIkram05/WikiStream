@@ -1962,6 +1962,88 @@ Checkpoint verified against the live project:
 
 ## Phase 6 — Coverage Bar Enforcement
 
+### 6.1 — Mock-driven consumer loop tests (tests/src/consumer/test_consume_loop.py, NEW)
+
+**Status:** DONE — 2026-08-14
+
+1. New file, 27 tests: `_parse_retry_after` (valid/invalid/missing), `_cursor_ts`/`_max_id` edge semantics, `load_state` (missing file, bad JSON, non-dict, wrong-typed fields, roundtrip), `save_state` failure path, full `consume_forever` flow (valid events → flush + state save; bad JSON → DL `validation:invalid_json`; bad ts → DL with reason; ValidationError → DL `validation:missing`; flush exception → `insert_failed`, batch dropped, cursor kept; non-200 → Retry-After → reconnect; transport exception → reconnect; stop at chunk boundary + final flush; 60 s idle stats line; duplicate IDs skipped), `_dl_fields` dict branch, `main()` (cold-start failure via `_sleep_or_stop → True`; happy path with stop set by fake task; `wait_for` TimeoutError → tasks cancelled).
+2. Two test-suite hangs root-caused and fixed (both test bugs, not production): (a) fake `get_async_client` must be an `async def` returning a FakeCh — `main()` awaits it inside the cold-start retry loop, a plain lambda raised TypeError → infinite reconnect loop; (b) `main()` blocks on `await stop.wait()` *before* `wait_for(gather, 10.0)` — the timeout-path fake must set the stop event then hang (mirrors SIGTERM-while-stream-blocked), otherwise the test can never reach the timeout.
+3. Clock discipline: idle-stats test zeroes a new module constant `IDLE_STATS_INTERVAL = 60.0` (added to consumer.py) instead of faking `time.monotonic` — asyncio loop internals and the batcher read the real clock, so clock patching is nondeterministic.
+4. `__main__` guard tested in-process via `runpy.run_module` with a stubbed `asyncio.run` and `sys.modules["__main__"]` save/restore; two benign RuntimeWarnings silenced via `pytest.ini` `filterwarnings`.
+
+**Evidence:** `uv run --project consumer pytest -q -m "not ch" tests/src/consumer` → 112 passed, 6 deselected, 0.76 s (was 27-test file alone: 0.26 s). AC1 ✓.
+
+### 6.2 — Batcher cursor/max-id edge lines (test_batcher.py, EDIT)
+
+**Status:** DONE — 2026-08-14
+
+1. `_cursor_ts` except branch: invalid JSON id → 0, list-of-non-dicts entries → 0, mixed offsets, ValueError/TypeError → 0 (5 asserts).
+2. `_max_id` garbage-JSON fall-back-to-left-id semantics (2 asserts); covers the diverged consumer.py/batcher.py copies (6bd859e).
+
+**Evidence:** `test_batcher.py` 11 passed, 0.05 s. Batcher 97% → 100% (262/262 total across the six modules). AC1 ✓.
+
+### 6.3 — validate_timestamp else branch (test_validation.py, EDIT)
+
+**Status:** DONE — 2026-08-14
+
+1. models.py line-80 else branch: ts as dict / list / datetime → `timestamp_unparseable` (3 cases).
+2. Naive ISO-format string → coerced to UTC (no longer an error).
+
+**Evidence:** test_validation.py green within the 112-pass unit suite. Models 97% → 100%. AC1 ✓.
+
+### 6.4 — healthcheck main() unit tests (test_healthcheck.py, EDIT)
+
+**Status:** DONE — 2026-08-14
+
+1. `main()` unit tests with monkeypatched `get_client` + recorder'd `os.kill`: stale heartbeat → SIGTERM captured; fresh heartbeat → no kill; `get_client` raises → exit 1; bad `CLICKHOUSE_PORT` → exit 1.
+
+**Evidence:** green within the 112-pass unit suite. Healthcheck 55% → 100%. AC1 ✓.
+
+### 6.5 — gx/suite.py 100% combined gate (gx dev deps + tests/gx/test_suite_main.py + gate mechanics)
+
+**Status:** DONE — 2026-08-14
+
+1. `gx/pyproject.toml` dev deps += `coverage>=7` (installed 7.15.4).
+2. `tests/gx/test_suite_main.py` (NEW, 6 tests, in-process `main()`, no CH): password missing → rc 1 + stderr; connect failure → rc 1 + verdict error; count-query "Unknown table" → rc 1 + error "missing"; other query error → rc 1; row_count 0 → rc 0 + `skipped: True`; row bounds out → rc 1.
+3. **DEVIATION (subprocess wrapper):** plan §6.5/§9 prescribed `coverage run --append -m gx.suite` in test_gx_suite.py — reverted to plain `python -m gx.suite`. A nested `coverage run` inside an already-traced process double-starts tracing; instead `COVERAGE_PROCESS_START` (parallel=true, `data_file` under `$RUNNER_TEMP`) measures every spawned process automatically, gx.suite subprocess included.
+4. **DEVIATION (--append):** coverage rejects `--append` in parallel mode ("Can't append to data files in parallel mode") — the gate runs two plain `coverage run` passes (non-ch, then ch) and lets `coverage combine` merge the per-process files.
+5. Gate command sequence (all RC 0): non-ch `coverage run --rcfile=… -m pytest -m "not ch" tests/gx` (13 passed) → ch `coverage run --rcfile=… -m pytest -m ch tests/gx` (4 passed, 16.77 s) → `coverage combine` → `coverage report --rcfile=… --include='*/gx/suite.py' --fail-under=100` → **89/89 = 100%**. Consumer-venv collection of the new file: 2 skipped via `pytest.importorskip("great_expectations")` (intended).
+
+**Evidence:** gate RC 0, 89/89 suite.py statements. AC4 ✓.
+
+### 6.6 — ci.yml gate extension
+
+**Status:** DONE — 2026-08-14
+
+1. `BUSINESS_CRITICAL_MODULES: src.sse src.models src.batcher src.dead_letter src.heartbeat src.healthcheck` (space-separated — see deviation) + env comment rewritten present-tense.
+2. unit-tests job: 100% gate via `COV_ARGS=$(printf ' --cov=%s' $BUSINESS_CRITICAL_MODULES)` expansion + `--cov-report=term-missing --cov-fail-under=100`; new overall gate `--cov=src --cov-report=term-missing --cov-fail-under=90`.
+3. analytics-tests job: gx coverage gate appended (printf-built rcfile in `$RUNNER_TEMP` — a YAML heredoc body at column 0 breaks the block scalar; `--rcfile` flag spelled out since coverage has no `-c`; `COVERAGE_PROCESS_START` exported; ch run with `CH_HOST=localhost CH_USER=wikistream CH_PASSWORD=wikistream_dev_password`).
+4. **DEVIATION (comma-list):** plan §9 asserted `--cov=pkg1,pkg2` comma lists work — pytest-cov 7.1.0 treats a comma list as a single non-matching source ("No data to report", 0.00%). Repeated `--cov=` flags (expanded from the space-separated env var) is the enforced shape.
+
+**Evidence:** ci.yml YAML-validated (`yaml.safe_load` round-trip, 4 matrix entries). AC7 pending final pre-commit run.
+
+### 6.7 — Gate-blocks proof (AC6)
+
+**Status:** DONE — 2026-08-14
+
+1. **Block:** `cp consumer/src/sse.py $TMP/sse.py.bak` then `sed -i '' '30d'` (deleted `feed()`'s `self._buffer += self._decoder.decode(chunk)` — covered, behavior-critical) → exact AC2 command → **exit 1, 31 failed / 81 passed** (test_sse.py index/assert errors + downstream consume-loop failures; term-missing reported the deleted line).
+2. **Restore:** `cp $TMP/sse.py.bak consumer/src/sse.py` (diff verified empty) → exact AC2 command → **exit 0, 112 passed, 262/262 = 100.00%**.
+
+**Evidence:** both gate outputs captured; restore diff empty. AC6 ✓ (local reproduction per plan Q5; optional throwaway-PR CI demo left to Ahmed's call).
+
+### 6.8 — Final measurements + Go/No-Go
+
+**Status:** DONE — 2026-08-14
+
+1. **Baseline (log §4):** unit-only src 74% (125 miss/483); combined 81% (91 miss); consumer.py unit 52%; healthcheck 55%; batcher 97%; models 97%.
+2. **Final unit-only:** src **99.38%** (3 miss/484) — consumer.py 116/199/380 (unpatched signal-handler + real-sleep paths; recorded decision §10: consumer.py lives on the 90% bar). Six boundary modules **262/262 = 100.00%**.
+3. **Final combined (unit + ch append):** src 99.38% (484/3) — consumer ch suites (kill/resume, malformed frames) add no unique lines.
+4. **gx/suite.py:** 89/89 = 100% (6.5).
+5. **AC7:** `pre-commit run --all-files` → clean (8 hooks: trailing-whitespace, eof-fixer, check-yaml, check-json, check-merge-conflict, check-added-large-files, ruff 0.16.2 --fix, ruff-format). One prior E501 trip (test_batcher.py fixture lines, >88 chars) fixed with `# noqa: E501`.
+6. **Go/No-Go:** **GO.** AC1–AC8 evidenced (AC1 6.1–6.4, AC2 6.2, AC3 6.8, AC4 6.5, AC5 ch suites green: consumer `-m ch --ignore=tests/gx` 6 passed 34.2 s + gx `-m ch` 4 passed 16.77 s, AC6 6.7, AC7 6.8.5, AC8 this entry). This closes Gate 2's deferred GX-enforcement item (log §4.2.9). No exceptions documented → coverage-boundary.md untouched (Q6).
+
+**Evidence:** gate outputs + term-missing reports cited per entry; branch `feature/Coverage-Bar-&-Cost-Validation`.
+
 ## Phase 7 — Performance & Cost Validation
 
 ## Phase 8 — Evidence Capture & Teardown

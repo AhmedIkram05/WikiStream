@@ -45,6 +45,10 @@ STATE_FILE = os.path.join(STATE_DIR, "consumer_state.json")
 
 logger = logging.getLogger("wikistream.consumer")
 
+# Idle-stats line cadence (seconds of stream silence before logging n=0).
+# Module constant so tests can zero it instead of faking the clock.
+IDLE_STATS_INTERVAL = 60.0
+
 
 def _wait_seconds(retry_ms: int | None, retry_after: int | None) -> float:
     """Reconnect wait: SSE retry hint is the floor (1s default), Retry-After
@@ -300,7 +304,7 @@ async def consume_forever(
                                     )
                                     last_stats_log = time.monotonic()
                                 now_mono = time.monotonic()
-                                if now_mono - last_stats_log >= 60.0:
+                                if now_mono - last_stats_log >= IDLE_STATS_INTERVAL:
                                     last_stats_log = now_mono
                                     logger.info(
                                         "inserted events=0 total=%d "

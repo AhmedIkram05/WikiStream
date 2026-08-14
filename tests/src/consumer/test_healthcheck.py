@@ -12,7 +12,7 @@ the asserts are that main() chose the SIGTERM path (recorder captured
 import os
 import signal
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -180,3 +180,82 @@ def test_connection_failure_exits_1(monkeypatch):
         assert calls == []
     finally:
         query(f"DROP TABLE IF EXISTS {table}", env)
+
+
+# ---- unit: main() paths with a faked ClickHouse client (no CH needed) ----
+# get_client is monkeypatched so main() never touches the network; the kill
+# recorder proves the SIGTERM decision was made (Phase 6: close the 55% unit
+# gap on main() without running ch).
+
+
+class _FakeHealthClient:
+    """Duck-typed clickhouse_connect client: .query -> {first_row}, .close()."""
+
+    def __init__(self, first_row):
+        self._first_row = first_row
+        self.closed = False
+
+    def query(self, sql):
+        return type("_QueryResult", (), {"first_row": self._first_row})()
+
+    def close(self):
+        self.closed = True
+
+
+def _utcnow_naive():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def test_main_stale_max_inserted_kills(monkeypatch):
+    patch_ch(monkeypatch, ch_env(), stale_seconds=300)
+    calls = recorder(monkeypatch)
+    fake = _FakeHealthClient([_utcnow_naive() - timedelta(seconds=301)])
+    monkeypatch.setattr(healthcheck, "get_client", lambda **kw: fake)
+    assert healthcheck.main() == 0
+    assert calls == [(1, signal.SIGTERM)]
+    assert fake.closed
+
+
+def test_main_fresh_max_inserted_no_kill(monkeypatch):
+    patch_ch(monkeypatch, ch_env(), stale_seconds=300)
+    calls = recorder(monkeypatch)
+    fake = _FakeHealthClient([_utcnow_naive() - timedelta(seconds=60)])
+    monkeypatch.setattr(healthcheck, "get_client", lambda **kw: fake)
+    assert healthcheck.main() == 0
+    assert calls == []
+    assert fake.closed
+
+
+def test_main_get_client_failure_exits_1(monkeypatch):
+    patch_ch(monkeypatch, ch_env(), stale_seconds=300)
+    calls = recorder(monkeypatch)
+
+    def boom(**kwargs):
+        raise RuntimeError("connect refused")
+
+    monkeypatch.setattr(healthcheck, "get_client", boom)
+    assert healthcheck.main() == 1
+    assert calls == []
+
+
+def test_main_bad_port_exits_1(monkeypatch):
+    monkeypatch.setattr(healthcheck, "CLICKHOUSE_PORT", "not-a-number")
+    calls = recorder(monkeypatch)
+    assert healthcheck.main() == 1
+    assert calls == []
+
+
+def test_module_main_guard(monkeypatch):
+    """The `python -m src.healthcheck` entry point (lines 89-90).
+
+    runpy re-executes the module source in-process with __name__ == '__main__',
+    so pytest-cov sees the guard; a bad port makes main() fail pre-network.
+    Module attrs are rebuilt from env inside the fresh namespace, so the env
+    var (not monkeypatched attrs) drives this.
+    """
+    import runpy
+
+    monkeypatch.setenv("CLICKHOUSE_PORT", "not-a-number")
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("src.healthcheck", run_name="__main__")
+    assert exc.value.code == 1

@@ -70,6 +70,10 @@ def _suite_command() -> list[str]:
         import great_expectations  # noqa: F401
     except ImportError:
         return ["uv", "run", "--project", "gx", "python", "-m", "gx.suite"]
+    # Phase 6 AC4: when the coverage gate runs, COVERAGE_PROCESS_START points
+    # at the gx .coveragerc and coverage's startup hook measures this plain
+    # subprocess automatically (no `coverage run` wrapper needed — a nested
+    # one would double-start tracing).
     return [sys.executable, "-m", "gx.suite"]
 
 
