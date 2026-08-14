@@ -56,10 +56,13 @@ resource "google_compute_instance" "wikistream_vm" {
 
 # Durable data disk: survives every startup.sh-driven instance recreate
 # (metadata_startup_script is ForceNew). protected like the tfstate bucket.
+# 30 -> 50 on 2026-08-14 (5B.4): ch-data organically hit 93% (2.2G free,
+# filling ~3G/2h); grown in place (pd resize is a live update) for headroom
+# through 5C + the DEMO chaos battery.
 resource "google_compute_disk" "ch_data" {
   name    = "ch-data"
   type    = "pd-standard"
-  size    = 30
+  size    = 50
   zone    = var.zone
   project = var.project_id
   labels  = var.labels

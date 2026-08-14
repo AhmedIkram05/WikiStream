@@ -1881,7 +1881,20 @@ Memory confirmed streaming under the correct name: `agent.googleapis.com/memory/
 
 ### 5B.4 — 5B PR → deploy → checkpoint
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:** Deployed by orchestrator directly (`terraform apply`, owner creds jess154lacroix@gmail.com, live GCS state backend) at Ahmed's request — the gated GitHub Actions apply was bypassed; git lane (commit/PR/merge) remains Ahmed's. Apply green: **1 added** (`module.iam.google_project_iam_member.vm_logging_log_writer`), **1 changed** (disk policy filter → `metric.labels.device="/dev/sdb"`), 0 destroyed.
+
+Checkpoint verified against the live project:
+1. **Both policies live + enabled** (`gcloud monitoring policies list`): "WikiStream VM unreachable" and "WikiStream disk almost full (ch-data)"; policy API GET confirms the corrected `/dev/sdb` filter (threshold 80, COMPARISON_GT, 300s) is in effect.
+2. **Ops Agent streaming disk + memory**: both `google-cloud-ops-agent` and `-fluent-bit` units active; `agent.googleapis.com/disk/percent_used` `/dev/sdb` = 3 series (used 73.7, free 21.1, reserved 5.2); `memory/percent_used` full state set (used 28.5, cached 61.1, free 2.6, buffered 2.0, slab 5.8).
+3. **Agent self-check PASS** (00:23:28Z in health-checks.log) — the logWriter grant flipped it from the LogApiPermissionErr FAIL seen at 00:14/00:16; triggered via `systemctl restart google-cloud-ops-agent` after the IAM change. Both halves of Ops Agent IAM now green (metrics + logs).
+4. **Alert email: not yet fired — organic fire imminent.** df shows ch-data at **93% (26G/30G, 2.2G free)** and rising, while the agent's percent_used reads 73.7% (the two disagree by ~19 points; agent excludes reserved blocks). The agent number is climbing; when it crosses 80 for 5 min the email fires — that real email is the alert-email proof, no injection needed (DEMO #6 dd-injection remains the deterministic fallback). *Open item (already listed in plan §10 "thresholds tune"): the agent/df percent gap means the 80% threshold may effectively fire later than df's 80%; re-examine when tuning.*
+5. **Operational flag for Ahmed (not a 5B defect):** ch-data is genuinely near-full and filling (~+3G over the last few hours). At this rate ClickHouse insert failures are hours away. Recommended: grow the disk (terraform `disk_size` bump on the attached_disk resource) soon, before DEMO phase — or treat the imminent organic fire as DEMO #6's proof and grow after.
+
+**Evidence:** terraform apply output (1 added, 1 changed, 0 destroyed); `gcloud monitoring policies list` (2 enabled); policy GET (filter `/dev/sdb`, 80/GT/300s); VM `systemctl is-active` (2 active); health-checks.log PASS 00:23:28Z; REST timeSeries disk (sdb 3 series) + memory (5 states); df -h /mnt/ch-data (26G/30G 93%).
+
+**Disk grow (same day, appended):** `google_compute_disk.ch_data` `size` 30 → 50 (comment in compute.tf), applied in place (plan 0/1/0, live resize, no instance replacement — the disk is a separate `prevent_destroy` resource so the grown FS survives any recreate). Guest follow-up: `lsblk` showed the 50G device but the FS was still 30G; since `/dev/sdb` is mounted whole (no partition), `sudo resize2fs /dev/sdb` online-extended it — now **50G total, 23G used, 25G free (48%)** vs 93%/2.2G before. Deliberately NOT automated in startup.sh: an edit there is ForceNew on the next apply, and a future grow is a rare 10-second SSH op. *DEMO implication: the plan's #6 dd injection targets ">80% of the 30GB disk" — the disk is now 50G at 48%, so the injection must write ~16-17G more (or rely on organic fill) to breach; re-baseline at DEMO time.*
 
 ### 5C.1 — IAM review doc (iam-review.md): enumerate, justify, tighten
 
