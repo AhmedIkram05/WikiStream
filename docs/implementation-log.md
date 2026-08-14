@@ -1828,6 +1828,23 @@ entry) plus one 5B.3-verification note on the disk filter's `device` clause.
 No TF changes required. The condition_absent deviation was reconfirmed
 correct: the provider's canonical uptime-absence example is identical in shape
 to this policy.
+**Deploy blocker (2026-08-14, found by the live apply):** the apply failed on
+the first Cloud Monitoring API call — `Error creating NotificationChannel:
+403 Permission denied (or the resource may not exist)`. Root cause: the
+deploy SA (wikistream-deploy) holds its 8 project roles via
+infra/bootstrap/main.tf's google_project_iam_member.deploy_project_roles
+(compute/artifactregistry/secretmanager/iam/serviceAccount/resourcemanager/
+bigquery/storage admins) and had no monitoring role; alert policies and
+notification channels need `roles/monitoring.editor`. Fixed two ways: (a)
+out-of-band `gcloud projects add-iam-policy-binding … --role=roles/monitoring.editor`
+on wikistream-deploy (unblocks the re-run immediately — owner creds, grant
+live), and (b) declared in bootstrap/main.tf's role list with a comment, so
+bootstrap stays the source of truth (bootstrap apply = no-op on the binding,
+plans "1 to add"). Re-run of the apply job then creates only the channel + 2
+policies (instance replace and label bumps already landed in the failed run).
+Reading for a future phase: ANY new lateral GCP resource type (monitoring,
+cloud run, etc.) needs its role added to the same bootstrap list before the
+apply can create it.
 **Evidence:** terraform plan (live backend): 5 to add, 12 to change, 1 to
 destroy (destroy = instance replace only; adds = 1 IAM binding + 1 channel + 2
 policies; changes = 12 label phase bumps). terraform fmt -check clean;
