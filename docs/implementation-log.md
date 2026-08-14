@@ -1867,7 +1867,17 @@ terraform validate clean; bash -n clean.
 
 ### 5B.3 — Metrics-flow verification (disk/percent_used visible in Cloud Monitoring)
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:** Full live verification against wikistream-505003 (owner creds jess154lacroix@gmail.com; gcloud 577 has no `time-series` subcommand — used the REST API with a Bearer token). Both policies live and enabled (`gcloud monitoring policies list`: "WikiStream VM unreachable", "WikiStream disk almost full (ch-data)"); Ops Agent 2.x active on the VM (`google-cloud-ops-agent.service` + `-fluent-bit`). Three real findings, all now resolved in code:
+
+1. **Deployed disk filter was DEAD.** The metric descriptor `agent.googleapis.com/disk/percent_used` has labels **only** `device` + `state` — there is **no `mount_point` label** (a label filter on `mount_point` 400s: "Cannot find metrics that match type=... label=mount_point"), and `device` is the kernel name with the `/dev/` prefix. The plan's `(device="ch-data" OR mount_point="/mnt/ch-data")` can never match any series — and the policy API does not validate unknown labels at create time, so it deployed silently. Fixed: filter is now `metric.labels.device="/dev/sdb"` (ch-data). *Deviation recorded in the plan doc 5B.2 spec.*
+2. **sdb series absent until an agent restart.** The hostmetrics mount scan ran before startup.sh mounted ch-data, so only loop/sda series appeared (and the earlier 84/85% values were the OLD pre-reset instance's boot-disk series). `sudo systemctl restart google-cloud-ops-agent` after the mount was stable → full emission: **/dev/sdb used 72.5%** (close to the 80% threshold, trending up — df shows 81% of usable), sda1 17.6% (fresh boot disk), sda15/16 + loops normal. Root-cause reading: restart-after-mount; stock config (no custom filtering).
+3. **Agent self-check FAIL on logging half:** `[API Check] Result: FAIL ... Service account is missing the roles/logging.logWriter role`. VM SA has metricWriter but not logWriter, so the agent's log path was degraded (metrics fine). Fixed: `google_project_iam_member.vm_logging_log_writer` added in modules/iam/iam.tf (documented second half of Ops Agent IAM; deliberately a separate resource — a for_each would rename/replace the live binding).
+
+Memory confirmed streaming under the correct name: `agent.googleapis.com/memory/percent_used` (full state set: used 41.6, cached 44.0, free 5.4, buffered 3.1, slab 5.9); `memory/usage` does not exist in this agent version.
+
+**Evidence:** REST timeSeries queries (disk+memory, 2h window) before/after restart; `systemctl status google-cloud-ops-agent` (ActiveEnterTimestamp 00:14:44); agent self-check log + health-checks.log + subagents/logging-module.log; `/etc/google-cloud-ops-agent/config.yaml` stock. Two TF changes + plan-doc spec update shipped as the next 5B PR: policy filter `/dev/sdb` + IAM logWriter.
 
 ### 5B.4 — 5B PR → deploy → checkpoint
 
