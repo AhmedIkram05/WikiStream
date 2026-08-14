@@ -31,7 +31,12 @@ resource "google_monitoring_alert_policy" "disk_almost_full" {
   conditions {
     display_name = "ch-data disk usage > 80%"
     condition_threshold {
-      filter          = "metric.type=\"agent.googleapis.com/disk/percent_used\" AND resource.type=\"gce_instance\" AND (metric.labels.device=\"ch-data\" OR metric.labels.mount_point=\"/mnt/ch-data\")"
+      # 5B.3 (2026-08-14): the descriptor has NO mount_point label, and device
+      # is the kernel name with the /dev/ prefix — /dev/sdb is ch-data. The
+      # originally planned (device="ch-data" OR mount_point=...) could never
+      # match any series (dead alert); policy API validates labels only at
+      # fire time.
+      filter          = "metric.type=\"agent.googleapis.com/disk/percent_used\" AND resource.type=\"gce_instance\" AND metric.labels.device=\"/dev/sdb\""
       comparison      = "COMPARISON_GT"
       threshold_value = 80
       duration        = "300s"

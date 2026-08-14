@@ -1867,19 +1867,62 @@ terraform validate clean; bash -n clean.
 
 ### 5B.3 — Metrics-flow verification (disk/percent_used visible in Cloud Monitoring)
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:** Full live verification against wikistream-505003 (owner creds jess154lacroix@gmail.com; gcloud 577 has no `time-series` subcommand — used the REST API with a Bearer token). Both policies live and enabled (`gcloud monitoring policies list`: "WikiStream VM unreachable", "WikiStream disk almost full (ch-data)"); Ops Agent 2.x active on the VM (`google-cloud-ops-agent.service` + `-fluent-bit`). Three real findings, all now resolved in code:
+
+1. **Deployed disk filter was DEAD.** The metric descriptor `agent.googleapis.com/disk/percent_used` has labels **only** `device` + `state` — there is **no `mount_point` label** (a label filter on `mount_point` 400s: "Cannot find metrics that match type=... label=mount_point"), and `device` is the kernel name with the `/dev/` prefix. The plan's `(device="ch-data" OR mount_point="/mnt/ch-data")` can never match any series — and the policy API does not validate unknown labels at create time, so it deployed silently. Fixed: filter is now `metric.labels.device="/dev/sdb"` (ch-data). *Deviation recorded in the plan doc 5B.2 spec.*
+2. **sdb series absent until an agent restart.** The hostmetrics mount scan ran before startup.sh mounted ch-data, so only loop/sda series appeared (and the earlier 84/85% values were the OLD pre-reset instance's boot-disk series). `sudo systemctl restart google-cloud-ops-agent` after the mount was stable → full emission: **/dev/sdb used 72.5%** (close to the 80% threshold, trending up — df shows 81% of usable), sda1 17.6% (fresh boot disk), sda15/16 + loops normal. Root-cause reading: restart-after-mount; stock config (no custom filtering).
+3. **Agent self-check FAIL on logging half:** `[API Check] Result: FAIL ... Service account is missing the roles/logging.logWriter role`. VM SA has metricWriter but not logWriter, so the agent's log path was degraded (metrics fine). Fixed: `google_project_iam_member.vm_logging_log_writer` added in modules/iam/iam.tf (documented second half of Ops Agent IAM; deliberately a separate resource — a for_each would rename/replace the live binding).
+
+Memory confirmed streaming under the correct name: `agent.googleapis.com/memory/percent_used` (full state set: used 41.6, cached 44.0, free 5.4, buffered 3.1, slab 5.9); `memory/usage` does not exist in this agent version.
+
+**Evidence:** REST timeSeries queries (disk+memory, 2h window) before/after restart; `systemctl status google-cloud-ops-agent` (ActiveEnterTimestamp 00:14:44); agent self-check log + health-checks.log + subagents/logging-module.log; `/etc/google-cloud-ops-agent/config.yaml` stock. Two TF changes + plan-doc spec update shipped as the next 5B PR: policy filter `/dev/sdb` + IAM logWriter.
 
 ### 5B.4 — 5B PR → deploy → checkpoint
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:** Deployed by orchestrator directly (`terraform apply`, owner creds jess154lacroix@gmail.com, live GCS state backend) at Ahmed's request — the gated GitHub Actions apply was bypassed; git lane (commit/PR/merge) remains Ahmed's. Apply green: **1 added** (`module.iam.google_project_iam_member.vm_logging_log_writer`), **1 changed** (disk policy filter → `metric.labels.device="/dev/sdb"`), 0 destroyed.
+
+Checkpoint verified against the live project:
+1. **Both policies live + enabled** (`gcloud monitoring policies list`): "WikiStream VM unreachable" and "WikiStream disk almost full (ch-data)"; policy API GET confirms the corrected `/dev/sdb` filter (threshold 80, COMPARISON_GT, 300s) is in effect.
+2. **Ops Agent streaming disk + memory**: both `google-cloud-ops-agent` and `-fluent-bit` units active; `agent.googleapis.com/disk/percent_used` `/dev/sdb` = 3 series (used 73.7, free 21.1, reserved 5.2); `memory/percent_used` full state set (used 28.5, cached 61.1, free 2.6, buffered 2.0, slab 5.8).
+3. **Agent self-check PASS** (00:23:28Z in health-checks.log) — the logWriter grant flipped it from the LogApiPermissionErr FAIL seen at 00:14/00:16; triggered via `systemctl restart google-cloud-ops-agent` after the IAM change. Both halves of Ops Agent IAM now green (metrics + logs).
+4. **Alert email: not yet fired — organic fire imminent.** df shows ch-data at **93% (26G/30G, 2.2G free)** and rising, while the agent's percent_used reads 73.7% (the two disagree by ~19 points; agent excludes reserved blocks). The agent number is climbing; when it crosses 80 for 5 min the email fires — that real email is the alert-email proof, no injection needed (DEMO #6 dd-injection remains the deterministic fallback). *Open item (already listed in plan §10 "thresholds tune"): the agent/df percent gap means the 80% threshold may effectively fire later than df's 80%; re-examine when tuning.*
+5. **Operational flag for Ahmed (not a 5B defect):** ch-data is genuinely near-full and filling (~+3G over the last few hours). At this rate ClickHouse insert failures are hours away. Recommended: grow the disk (terraform `disk_size` bump on the attached_disk resource) soon, before DEMO phase — or treat the imminent organic fire as DEMO #6's proof and grow after.
+
+**Evidence:** terraform apply output (1 added, 1 changed, 0 destroyed); `gcloud monitoring policies list` (2 enabled); policy GET (filter `/dev/sdb`, 80/GT/300s); VM `systemctl is-active` (2 active); health-checks.log PASS 00:23:28Z; REST timeSeries disk (sdb 3 series) + memory (5 states); df -h /mnt/ch-data (26G/30G 93%).
+
+**Disk grow (same day, appended):** `google_compute_disk.ch_data` `size` 30 → 50 (comment in compute.tf), applied in place (plan 0/1/0, live resize, no instance replacement — the disk is a separate `prevent_destroy` resource so the grown FS survives any recreate). Guest follow-up: `lsblk` showed the 50G device but the FS was still 30G; since `/dev/sdb` is mounted whole (no partition), `sudo resize2fs /dev/sdb` online-extended it — now **50G total, 23G used, 25G free (48%)** vs 93%/2.2G before. Deliberately NOT automated in startup.sh: an edit there is ForceNew on the next apply, and a future grow is a rare 10-second SSH op. *DEMO implication: the plan's #6 dd injection targets ">80% of the 30GB disk" — the disk is now 50G at 48%, so the injection must write ~16-17G more (or rely on organic fill) to breach; re-baseline at DEMO time.*
 
 ### 5C.1 — IAM review doc (iam-review.md): enumerate, justify, tighten
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:**
+1. **`docs/planning/iam-review.md` created** — before/after matrix, one row per principal × binding (22 rows), every binding justified or marked as deviation. Enumerated live from `gcloud projects get-iam-policy` (project), `gcloud secrets get-iam-policy` ×3, `gcloud storage buckets get-iam-policy` ×2, `gcloud artifacts repositories get-iam-policy wikistream-consumer --location=us-central1`, `bq show` (dataset access). No phantom bindings — every row cross-checks the 2026-08-14 live state.
+2. **Deviations recorded (D1–D6)** vs the locked phase plan:
+   - **D1** `roles/monitoring.editor` on `wikistream-deploy` (9 project roles, not 8) — added for the 5B.2 apply blocker (declared in infra/bootstrap/main.tf too).
+   - **D2** `roles/logging.logWriter` on `wikistream-vm` — 5B.3 finding (Ops Agent `LogApiPermissionErr`).
+   - **D3** `roles/monitoring.metricWriter` on `wikistream-vm` — 5B.2 addition (Ops Agent metrics).
+   - **D4** third secret accessor on `wikistream-vm`: `slack-webhook-url` (plan listed ×2).
+   - **D5** gs://wikistream-505003-bq-staging carries only objectCreator+objectViewer (no legacyBucketReader; plan grouped ×2 buckets as 3 roles each — legacyBucketReader is backups-only).
+   - **D6** default firewall rules present (4 × `default-allow-*`) — the real 5C finding, cross-referenced to §5C.2.
+3. **Conclusion: reviewed, retained with rationale** — no removals warranted in this phase; the firewall (not IAM) is the actual exposure. AC15 satisfied by the doc's live cross-check.
+
+**Evidence:** docs/planning/iam-review.md (71 lines); live gcloud/bq policy output 2026-08-14 (owner creds).
 
 ### 5C.2 — Firewall lockdown: delete default-allow-* (TF null_resource)
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:**
+1. **`null_resource.disable_default_firewall_rules` added** to `infra/main/modules/network/network.tf` (between `allow_clickhouse` and the output block), verbatim per the locked plan: local-exec `gcloud compute firewall-rules delete default-allow-ssh default-allow-rdp default-allow-icmp default-allow-internal --quiet --project=${var.project_id} 2>/dev/null || true`; triggers = the 4 rule names; `|| true` makes re-applies idempotent. Custom rules (allow-ssh/grafana/clickhouse from `var.allowed_ips`, allow-internal 10.0.0.0/24) untouched. Existing 4 firewall rules + output block unchanged (70 → 82 lines).
+2. **DEVIATION-5C-2-a:** `hashicorp/null` added to `required_providers` in `infra/main/main.tf` — the plan's file list covered only iam-review.md + network.tf, but `terraform validate` fails without the null provider declared (`This configuration requires provider registry.terraform.io/hashicorp/null`). Declared with a 5C.2 comment; no version pin (matches `random`). Necessary for the plan's own verification step (terraform plan) to pass.
+3. **Verification (orchestrator, read-only):** `terraform fmt -check -recursive` clean; `terraform init` (installs null provider only); `terraform validate` **Success**; `terraform plan` against live backend (wikistream-505003-terraform-state/prefix main) shows exactly **1 to add, 0 to change, 0 to destroy** — only `module.network.null_resource.disable_default_firewall_rules`, no other drift.
+
+**Evidence:** infra/main/modules/network/network.tf (82 lines, null_resource at lines 72–78, explanatory comment 68–71); infra/main/main.tf (null provider declared); `terraform plan` output (1 to add / 0 change / 0 destroy). Note: the null_resource has static triggers, so the delete fires once per resource lifetime — if the default rules were ever recreated (e.g. VPC recreated), they would not auto-delete; the §5C.3 post-apply `gcloud compute firewall-rules list` check is the guard.
 
 ### 5C.3 — 5C PR → deploy → gcloud rule-state verification → Go/No-Go
 

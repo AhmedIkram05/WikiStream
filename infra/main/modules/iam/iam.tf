@@ -22,6 +22,17 @@ resource "google_project_iam_member" "vm_monitoring_metric_writer" {
   member  = "serviceAccount:${google_service_account.wikistream_vm.email}"
 }
 
+# 5B.3 (2026-08-14): the agent's own startup self-check FAILED without this
+# (logEntries.create PermissionDenied on its ping log). logWriter is the
+# documented second half of Ops Agent IAM — metrics (above) + logs.
+# Deliberately a separate resource: converting to for_each would rename and
+# replace the existing binding.
+resource "google_project_iam_member" "vm_logging_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.wikistream_vm.email}"
+}
+
 # Scoped per secret: this SA can only read the two Phase 2 secrets, nothing
 # else in the project.
 resource "google_secret_manager_secret_iam_member" "secret_accessor" {

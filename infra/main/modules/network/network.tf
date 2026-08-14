@@ -65,6 +65,18 @@ resource "google_compute_firewall" "allow_clickhouse" {
   source_ranges = var.allowed_ips
 }
 
+# 5C.2: delete GCP's permissive default firewall rules (world-open SSH/RDP/ICMP
+# + over-broad internal). Idempotent: `|| true` + 2>/dev/null swallow the
+# already-deleted / already-absent case so re-applies are no-ops. Custom rules
+# above remain the only ingress.
+resource "null_resource" "disable_default_firewall_rules" {
+  triggers = { rules = "default-allow-ssh,default-allow-rdp,default-allow-icmp,default-allow-internal" }
+
+  provisioner "local-exec" {
+    command = "gcloud compute firewall-rules delete default-allow-ssh default-allow-rdp default-allow-icmp default-allow-internal --quiet --project=${var.project_id} 2>/dev/null || true"
+  }
+}
+
 output "subnetwork_self_link" {
   value = google_compute_subnetwork.wikistream_subnet.self_link
 }
