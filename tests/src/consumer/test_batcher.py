@@ -3,7 +3,7 @@
 import asyncio
 from datetime import datetime, timezone
 
-from src.batcher import EventBatcher
+from src.batcher import EventBatcher, _cursor_ts, _max_id
 
 
 class FakeClient:
@@ -89,6 +89,32 @@ def test_flush_max_id_math():
     assert asyncio.run(b.flush(FakeClient())) == ("x", 3)
 
 
+def test_flush_max_id_kafka_composite():
+    """Kafka composite cursor ids: array order varies per event (eqiad-first
+    vs codfw-first), so the max must be by partition timestamp, not string."""
+    from src.batcher import _cursor_ts
+
+    # noqa: E501 — JSON fixtures; splitting would break string literals
+    old = '[{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786629538451},{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1}]'  # noqa: E501
+    new_eqiad_first = '[{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786692862935},{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1}]'  # noqa: E501
+    new_codfw_first = '[{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1},{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786692862935}]'  # noqa: E501
+
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), old)
+    b.add(("t", "d"), new_codfw_first)
+    assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
+
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), new_codfw_first)
+    b.add(("t", "d"), new_eqiad_first)
+    assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
+
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), new_eqiad_first)
+    b.add(("t", "d"), old)
+    assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
+
+
 def test_failed_flush_drops_rows():
     fake = FakeClient(fail=True)
     b = EventBatcher(now=constant_clock)
@@ -125,3 +151,20 @@ def test_seen_semantics():
     assert b.seen(None) is False  # never marks
     b.add(("t", "d"), None)  # None id doesn't pollute the ring
     assert b.seen("None") is False
+
+
+def test_cursor_ts_edges():
+    """Phase 6 gap: _cursor_ts except-branch and non-list inputs were
+    uncovered — these are the malformed-cursor-id defensive paths."""
+    assert _cursor_ts("[not json") == 0  # ValueError
+    assert _cursor_ts(123) == 0  # TypeError
+    assert _cursor_ts('{"topic":"eqiad"}') == 0  # dict, not a list
+    assert _cursor_ts('[1, 2, "x"]') == 0  # no dict entries
+    assert _cursor_ts('[{"offset": -1}, {"timestamp": 5}]') == 5
+    assert _cursor_ts('[{"timestamp": 0}, {"offset": 1}]') == 1
+
+
+def test_max_id_garbage_json_arrays():
+    """Both ids unparseable as JSON — fall back to the left id (ties)."""
+    assert _max_id("[", "[x") == "["
+    assert _max_id('[{"offset":-1}]', '[{"timestamp":7}]') == '[{"timestamp":7}]'

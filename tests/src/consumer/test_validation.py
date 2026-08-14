@@ -194,3 +194,16 @@ def test_timestamp_bool_rejected():
 def test_model_timestamp_epoch_int():
     event = WikiEvent.model_validate(make_payload(timestamp=1786626373))
     assert event.timestamp == datetime.fromtimestamp(1786626373, tz=timezone.utc)
+
+
+def test_timestamp_naive_string_utc():
+    """Naive ISO string has no tzinfo — must be coerced to UTC, not rejected
+    (Phase 6 gap: models.py naive-datetime .replace path was uncovered)."""
+    assert validate_timestamp("2026-08-13T12:00:00") is None
+
+
+def test_timestamp_junk_types_unparseable():
+    """Non-str/int/float types fall through to the final else branch."""
+    assert validate_timestamp({}) == "timestamp_unparseable"
+    assert validate_timestamp([]) == "timestamp_unparseable"
+    assert validate_timestamp(datetime(2026, 8, 13)) == "timestamp_unparseable"

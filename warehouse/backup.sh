@@ -12,8 +12,11 @@
 # from /opt/wikistream/.env when present (else the environment), matching the
 # compose interpolation so the lift/prune target the real bind path.
 #
-# Ordering is deliberate: the GCS lift must succeed BEFORE local prune, so a
-# failed lift aborts (set -e) and the local backup survives for the next hour.
+# Ordering is deliberate: the GCS lift must succeed BEFORE the final local
+# prune, so a failed lift aborts (set -e) and the local backup survives for
+# the next hour. A separate generous guard prune runs BEFORE the snapshot is
+# created so a failed BACKUP or lift can never wedge the disk (the hourly
+# 'No space left on device' cascade seen 2026-08-14 05:20/06:20).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,10 +41,23 @@ fi
 
 NAME="backup-$(date -u +%Y%m%d-%H%M%S)"
 
+# Guard prune BEFORE creating a new snapshot: if the BACKUP query or the lift
+# fails, set -e aborts before the post-lift prune below, so without this a
+# failing backup would accumulate forever and wedge the disk. Keep the last 4
+# (the post-lift prune then tightens to 2 after a successful lift). `|| true`
+# so a glob miss (backups dir wiped) can't fail the script.
+ls -1d "$CH_DATA_DIR"/backups/backup-* 2>/dev/null | sort | head -n -4 | while read -r old; do
+  rm -rf "$old"
+  echo "[backup] guard-pruned $(basename "$old")"
+done || true
+
 # Password via stdin (`--password` with no value): keeps it out of the docker
-# CLI argv, where any OS-login user could read it via ps.
+# CLI argv, where any OS-login user could read it via ps. --receive_timeout
+# raises the client socket timeout above the 300s default: the BACKUP query
+# streams multi-GB and hit 'Timeout exceeded ... Waited for 300 seconds' under
+# disk/IO pressure (2026-08-14), leaving partial snapshots.
 BACKUP_OUT="$(printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client \
-  --user wikistream --password --query "BACKUP DATABASE default TO Disk('backups','$NAME')")"
+  --user wikistream --password --receive_timeout 1800 --query "BACKUP DATABASE default TO Disk('backups','$NAME')")"
 case "$BACKUP_OUT" in
   *BACKUP_CREATED*) ;;
   *) echo "[backup] FAILED name=$NAME output=$BACKUP_OUT" >&2; exit 1 ;;

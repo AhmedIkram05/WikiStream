@@ -17,6 +17,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "coverage>=7",
 ]
 
 [tool.ruff.lint]
