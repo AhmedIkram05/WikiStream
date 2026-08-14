@@ -1898,11 +1898,31 @@ Checkpoint verified against the live project:
 
 ### 5C.1 — IAM review doc (iam-review.md): enumerate, justify, tighten
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:**
+1. **`docs/planning/iam-review.md` created** — before/after matrix, one row per principal × binding (22 rows), every binding justified or marked as deviation. Enumerated live from `gcloud projects get-iam-policy` (project), `gcloud secrets get-iam-policy` ×3, `gcloud storage buckets get-iam-policy` ×2, `gcloud artifacts repositories get-iam-policy wikistream-consumer --location=us-central1`, `bq show` (dataset access). No phantom bindings — every row cross-checks the 2026-08-14 live state.
+2. **Deviations recorded (D1–D6)** vs the locked phase plan:
+   - **D1** `roles/monitoring.editor` on `wikistream-deploy` (9 project roles, not 8) — added for the 5B.2 apply blocker (declared in infra/bootstrap/main.tf too).
+   - **D2** `roles/logging.logWriter` on `wikistream-vm` — 5B.3 finding (Ops Agent `LogApiPermissionErr`).
+   - **D3** `roles/monitoring.metricWriter` on `wikistream-vm` — 5B.2 addition (Ops Agent metrics).
+   - **D4** third secret accessor on `wikistream-vm`: `slack-webhook-url` (plan listed ×2).
+   - **D5** gs://wikistream-505003-bq-staging carries only objectCreator+objectViewer (no legacyBucketReader; plan grouped ×2 buckets as 3 roles each — legacyBucketReader is backups-only).
+   - **D6** default firewall rules present (4 × `default-allow-*`) — the real 5C finding, cross-referenced to §5C.2.
+3. **Conclusion: reviewed, retained with rationale** — no removals warranted in this phase; the firewall (not IAM) is the actual exposure. AC15 satisfied by the doc's live cross-check.
+
+**Evidence:** docs/planning/iam-review.md (71 lines); live gcloud/bq policy output 2026-08-14 (owner creds).
 
 ### 5C.2 — Firewall lockdown: delete default-allow-* (TF null_resource)
 
-**Status:** ☐ to do
+**Status:** DONE
+
+**2026-08-14:**
+1. **`null_resource.disable_default_firewall_rules` added** to `infra/main/modules/network/network.tf` (between `allow_clickhouse` and the output block), verbatim per the locked plan: local-exec `gcloud compute firewall-rules delete default-allow-ssh default-allow-rdp default-allow-icmp default-allow-internal --quiet --project=${var.project_id} 2>/dev/null || true`; triggers = the 4 rule names; `|| true` makes re-applies idempotent. Custom rules (allow-ssh/grafana/clickhouse from `var.allowed_ips`, allow-internal 10.0.0.0/24) untouched. Existing 4 firewall rules + output block unchanged (70 → 82 lines).
+2. **DEVIATION-5C-2-a:** `hashicorp/null` added to `required_providers` in `infra/main/main.tf` — the plan's file list covered only iam-review.md + network.tf, but `terraform validate` fails without the null provider declared (`This configuration requires provider registry.terraform.io/hashicorp/null`). Declared with a 5C.2 comment; no version pin (matches `random`). Necessary for the plan's own verification step (terraform plan) to pass.
+3. **Verification (orchestrator, read-only):** `terraform fmt -check -recursive` clean; `terraform init` (installs null provider only); `terraform validate` **Success**; `terraform plan` against live backend (wikistream-505003-terraform-state/prefix main) shows exactly **1 to add, 0 to change, 0 to destroy** — only `module.network.null_resource.disable_default_firewall_rules`, no other drift.
+
+**Evidence:** infra/main/modules/network/network.tf (82 lines, null_resource at lines 72–78, explanatory comment 68–71); infra/main/main.tf (null provider declared); `terraform plan` output (1 to add / 0 change / 0 destroy). Note: the null_resource has static triggers, so the delete fires once per resource lifetime — if the default rules were ever recreated (e.g. VPC recreated), they would not auto-delete; the §5C.3 post-apply `gcloud compute firewall-rules list` check is the guard.
 
 ### 5C.3 — 5C PR → deploy → gcloud rule-state verification → Go/No-Go
 

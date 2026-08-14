@@ -14,6 +14,11 @@ terraform {
     random = {
       source = "hashicorp/random"
     }
+    # 5C.2: required for the null_resource that deletes the default firewall
+    # rules (see modules/network/network.tf).
+    null = {
+      source = "hashicorp/null"
+    }
   }
 }
 
