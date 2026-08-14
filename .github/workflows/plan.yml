@@ -59,7 +59,7 @@ jobs:
       # File path passed via env so the script never guesses where the file
       # lives. The fenced block makes the plan readable in the PR thread.
       - name: Comment plan on PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PLAN_FILE: ${{ runner.temp }}/plan.txt
         with:
