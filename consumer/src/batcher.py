@@ -11,6 +11,7 @@ kill the server's replay (Last-Event-ID) refills it; the BQ parity check is
 the long-tail safety net.
 """
 
+import json
 import logging
 import time
 from collections import deque
@@ -23,10 +24,35 @@ COLUMNS = ["inserted_at", "event"]
 SETTINGS = {"async_insert": 1, "wait_for_async_insert": 0}
 
 
+def _cursor_ts(s: str) -> int:
+    """Highest partition position in a Kafka composite cursor id.
+
+    The id is a JSON array of per-partition cursors like
+    `[{"topic":"eqiad...","timestamp":1786...},{"topic":"codfw...","offset":-1}]`.
+    The ARRAY ORDER varies between events (eqiad-first or codfw-first), so a
+    raw string compare is meaningless — compare the max numeric position.
+    """
+    try:
+        cursors = json.loads(s)
+    except (TypeError, ValueError):
+        return 0
+    best = 0
+    if isinstance(cursors, list):
+        for c in cursors:
+            if isinstance(c, dict):
+                for key in ("timestamp", "offset"):
+                    v = c.get(key)
+                    if isinstance(v, int) and v > best:
+                        best = v
+    return best
+
+
 def _max_id(a: str, b: str) -> str:
     """Larger of two ids: numeric compare when both are digit-strings, else string."""
     if a.isdigit() and b.isdigit():
         return a if int(a) >= int(b) else b
+    if a.startswith("[") or b.startswith("["):
+        return a if _cursor_ts(a) >= _cursor_ts(b) else b
     return a if a >= b else b
 
 

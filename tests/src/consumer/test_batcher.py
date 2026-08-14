@@ -89,6 +89,31 @@ def test_flush_max_id_math():
     assert asyncio.run(b.flush(FakeClient())) == ("x", 3)
 
 
+def test_flush_max_id_kafka_composite():
+    """Kafka composite cursor ids: array order varies per event (eqiad-first
+    vs codfw-first), so the max must be by partition timestamp, not string."""
+    from src.batcher import _cursor_ts
+
+    old = '[{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786629538451},{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1}]'
+    new_eqiad_first = '[{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786692862935},{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1}]'
+    new_codfw_first = '[{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1},{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786692862935}]'
+
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), old)
+    b.add(("t", "d"), new_codfw_first)
+    assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
+
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), new_codfw_first)
+    b.add(("t", "d"), new_eqiad_first)
+    assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
+
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), new_eqiad_first)
+    b.add(("t", "d"), old)
+    assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
+
+
 def test_failed_flush_drops_rows():
     fake = FakeClient(fail=True)
     b = EventBatcher(now=constant_clock)
