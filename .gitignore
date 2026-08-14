@@ -229,6 +229,8 @@ tfplan
 crash.log
 override.tf
 override.tf.json
+*.tfvars
+!*.tfvars.example
 
 # Graphify
 /graphify-out
