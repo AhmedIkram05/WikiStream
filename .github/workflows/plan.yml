@@ -30,7 +30,7 @@ jobs:
       TF_VAR_allowed_ips: ${{ secrets.TF_VAR_ALLOWED_IPS }}
       TF_VAR_oslogin_human_member: ${{ secrets.TF_VAR_OSLOGIN_HUMAN_MEMBER }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # WIF: no stored key on the runner; identity comes from the OIDC token
       # issued for this run. Version pinned at build 2026-08-11.

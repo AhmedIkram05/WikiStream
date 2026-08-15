@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # WIF: identity from the run's OIDC token, no stored key. Version
       # pinned at build 2026-08-11.
@@ -91,7 +91,7 @@ jobs:
       TF_VAR_allowed_ips: ${{ secrets.TF_VAR_ALLOWED_IPS }}
       TF_VAR_oslogin_human_member: ${{ secrets.TF_VAR_OSLOGIN_HUMAN_MEMBER }}
     steps:
-      - uses: actions/checkout@v4 # fresh runner: no source tree carried over
+      - uses: actions/checkout@v7 # fresh runner: no source tree carried over
 
       - uses: google-github-actions/auth@v2 # pinned at build 2026-08-11
         with:
