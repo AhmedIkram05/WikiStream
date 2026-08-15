@@ -1,0 +1,6 @@
+project_id           = "example-project"
+region               = "us-east1"
+zone                 = "us-east1-b"
+alert_email          = "example@email.com"
+allowed_ips          = ["example-ips"]
+oslogin_human_member = "user:example@email.com"
