@@ -1,6 +1,6 @@
 # WikiStream
 
-> A production-grade real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** — an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** — **58.9M+ raw events ingested**, **zero data loss under 5,655 events/sec sustained (2.08x real-world peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% test coverage**, and a **~$41.65/month** infrastructure bill, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
+> A production-grade real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** — an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** — **58.9M+ raw events ingested**, **zero data loss under 5,655 events/sec sustained (2.08x real-world peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and a **~$41.65/month** infrastructure bill, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=000000" alt="Python 3.13">
@@ -9,10 +9,14 @@
   <img src="https://img.shields.io/badge/BigQuery-warehouse-4285F4?style=for-the-badge&logo=googlebigquery&logoColor=white&labelColor=000000" alt="BigQuery">
   <img src="https://img.shields.io/badge/Terraform-1.15-7B42BC?style=for-the-badge&logo=terraform&logoColor=white&labelColor=000000" alt="Terraform">
   <img src="https://img.shields.io/badge/Google%20Cloud-GCP-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white&labelColor=000000" alt="Google Cloud">
-  <img src="https://img.shields.io/badge/systemd-timers-FFB000?style=for-the-badge&logo=systemd&logoColor=white&labelColor=000000" alt="systemd">
+  <img src="https://img.shields.io/badge/systemd-timers-FFB000?style=for-the-badge&labelColor=000000" alt="systemd">
   <img src="https://img.shields.io/badge/Docker-compose-2496ED?style=for-the-badge&logo=docker&logoColor=white&labelColor=000000" alt="Docker Compose">
   <img src="https://img.shields.io/badge/pytest-143%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white&labelColor=000000" alt="pytest">
   <img src="https://img.shields.io/badge/Great%20Expectations-11%2F11-28C8FF?style=for-the-badge&labelColor=000000" alt="Great Expectations">
+  <img src="https://img.shields.io/badge/Pydantic-v2-E92063?style=for-the-badge&logo=pydantic&logoColor=white&labelColor=000000" alt="Pydantic v2">
+  <img src="https://img.shields.io/badge/EventStreams-SSE%20realtime-FF9800?style=for-the-badge&labelColor=000000" alt="EventStreams SSE">
+  <img src="https://img.shields.io/badge/Materialized%20Views-SummingMergeTree-2E7D32?style=for-the-badge&labelColor=000000" alt="ClickHouse Materialized Views">
+  <img src="https://img.shields.io/badge/Workload%20Identity-OIDC%20federation-4285F4?style=for-the-badge&labelColor=000000" alt="Workload Identity Federation">
   <img src="https://img.shields.io/badge/GitHub%20Actions-CI%2FCD-2088FF?style=for-the-badge&logo=githubactions&logoColor=white&labelColor=000000" alt="GitHub Actions">
 </p>
 
@@ -20,6 +24,7 @@
   <img src="https://github.com/AhmedIkram05/WikiStream/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://github.com/AhmedIkram05/WikiStream/actions/workflows/plan.yml/badge.svg" alt="Terraform Plan">
   <img src="https://github.com/AhmedIkram05/WikiStream/actions/workflows/apply.yml/badge.svg" alt="Terraform Apply">
+  <img src="https://img.shields.io/codecov/c/github/AhmedIkram05/WikiStream?style=for-the-badge&logo=codecov&logoColor=white&labelColor=000000" alt="Codecov">
 </p>
 
 ---
@@ -133,7 +138,7 @@ flowchart LR
 | --- | --- | --- |
 | **Streaming ingestion** | Async `httpx2` + hand-rolled WHATWG-compliant SSE parser | Zero-dependency, full control over `Last-Event-ID` resume semantics; the production `httpx` fork was abandoned upstream |
 | **Schema-on-write** | Pydantic v2 validation *before* persistence | Every row in ClickHouse is guaranteed typed before it hits disk; malformed events route to a dead-letter table, never to the store |
-| **Batching** | 1,000 rows / 5s flush with `async_insert=1, wait_for_async_insert=0` | ~40x fewer round-trips; ClickHouse merges tiny inserts server-side |
+| **Batching** | 1,000 rows / 5s flush with `async_insert=1, wait_for_async_insert=0` | ~1,000x fewer insert round-trips; ClickHouse merges tiny batches server-side |
 | **Query layer** | 3 SummingMergeTree materialized views, **no `POPULATE`** | Dashboard queries skip JSON parsing entirely: **15.0x faster p50**, **~200x fewer rows scanned** |
 | **Warehouse tier** | Hourly CH → GCS → BigQuery export + parity check | Queryable partitioned history past the 30-day raw TTL; **SUMS-based parity** (not row counts — merge-state-safe) |
 | **Data quality** | Pydantic inline + Great Expectations batch suite on a systemd timer | Two layers: sub-second validation at the edge, distributional checks (nulls, freshness, cardinality, bot-ratio) on a rolling window |
@@ -148,12 +153,12 @@ flowchart LR
 
 | Metric | Value |
 | --- | --- |
-| Raw events ingested (live count) | **58,938,615** and growing |
+| Raw events ingested (live count) | **58,938,615** (captured 2026-08-14) and growing |
 | Sustained ingestion rate | **~203.5 events/sec** (12,210/min average over 3 days) |
 | Observed burst windows | **14K–36K events/min** sustained |
 | 24h average throughput (real dataset) | **565.5 events/sec** |
 | Real-world peak minute | **2,719 events/sec** (2026-08-13 15:16) |
-| Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (576,740 events total) |
+| Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (577,738 events total) |
 | Dashboard query speedup (MV vs raw scan) | **15.0x p50 / 13.2x p99** (Q1), **3.8x / 3.5x** (Q2) |
 | Rows scanned per query (MV vs raw) | **0.23M vs 46.8M — ~200x fewer** |
 | Test suite | **143 passed**, 2 skipped, **99.38% coverage** |
@@ -215,7 +220,7 @@ Every number on this page is backed by a real artifact — screenshots and termi
 
 ### Live Dashboard
 
-> The Grafana dashboard queries **materialized views only** — pre-aggregated per minute, so the 10s-refresh panels stay sub-10ms even while the raw table holds tens of millions of rows. Panels: edit velocity (30 rows over 15 min), bot-vs-human pie, top pages bar gauge (10), project-language bars (15), edit-size histogram (6 buckets).
+> The Grafana dashboard queries **materialized views only** — pre-aggregated per minute, so the 10s-refresh panels stay interactive: the heaviest dashboard query answers in **~6s over a 24-hour window** where the equivalent raw scan takes **90s+ (15.0x)**. Panels: edit velocity (30 rows over 15 min), bot-vs-human pie, top pages bar gauge (10), project-language bars (15), edit-size histogram (6 buckets).
 
 ### Data Quality Gate
 
@@ -447,7 +452,7 @@ Every rule fired, **Slack and email delivery confirmed by the recipient**, then 
 
 ### 11. Performance — Burst & Benchmark
 
-**Burst harness** (`scripts/burst_test.py`) — stdlib-only asyncio (deliberately not k6), the *real* consumer binary as a subprocess, fresh state per level, zero consumer code changes, 1% malformed traffic by design. Against a baseline measured from the real 50.2M-row dataset:
+**Burst harness** (`scripts/burst_test.py`) — stdlib-only asyncio (deliberately not k6), the *real* consumer binary as a subprocess, fresh state per level, zero consumer code changes, 1% malformed traffic by design. Against a baseline measured from the real dataset (50.2M rows at capture; the store passed 58.9M by receipt time — it never stops growing):
 
 | Level | Target | Sent | Valid | Dead-lettered | Drops |
 | --- | --- | --- | --- | --- | --- |
@@ -457,7 +462,7 @@ Every rule fired, **Slack and email delivery confirmed by the recipient**, then 
 | 5× | 2,828/s | 169,639 | 167,889 | 1,750 | **0** |
 | 10× | 5,655/s | 339,252 | 335,870 | 3,382 | **0** |
 
-**576,740 events through the real pipeline, zero drops at every multiple.** The 10× level sustained **5,655 ev/s for 60s — 2.08× the real observed peak minute (2,719 ev/s)** — and no ceiling appeared below 10× baseline. Dead-letter routing matched injection exactly per reason at every level; the durable cursor matched the flushed valid count exactly.
+**577,738 events through the real pipeline, zero drops at every multiple.** The 10× level sustained **5,655 ev/s for 60s — 2.08× the real observed peak minute (2,719 ev/s)** — and no ceiling appeared below 10× baseline. Dead-letter routing matched injection exactly per reason at every level; the durable cursor matched the flushed valid count exactly.
 
 **Query benchmark** — real 50.2M-row dataset, client-side `time.perf_counter`, 1 warmup + 5 timed runs, 24h window, canonical dashboard queries:
 
@@ -467,6 +472,8 @@ Every rule fired, **Slack and email delivery confirmed by the recipient**, then 
 | Q2 top pages | 218,791 ms | 58,026 ms | **3.8x** (p99 3.5x) | 18.0M → 15.1M |
 
 Q2's smaller scan reduction is expected — the win there is pre-aggregated narrower rows (no `JSONExtract`, no minute re-grouping).
+
+> Absolute query times include ~40 ms network RTT (Mac → us-east1); the raw-vs-MV delta is the signal.
 
 ### 12. Cost / FinOps
 
@@ -485,7 +492,7 @@ Itemized from the real `gcloud` inventory at us-east1 rates — no estimates:
 | **Total run-rate** | **≈ $41.65/mo** |
 
 - **$300 trial ≈ 7.2 months** of full run-rate.
-- VM + disks + IP = **$39.86 = 93%** of the bill — everything on the teardown list (ADR-001).
+- VM + disks + IP = **$39.86 ≈ 96%** of the bill — everything on the teardown list (ADR-001).
 - **Residual post-teardown ≈ $1.79/mo** (buckets, secrets, BQ dataset).
 
 ---
@@ -534,13 +541,13 @@ The 2 skips are `pytest.importorskip("great_expectations")` — GX pins Python 3
 | --- | --- | --- |
 | `network` | VPC, subnet `10.0.0.0/24`, **4 firewall rules** | Ports 22/3000/8123 restricted to one IP (`allow_internal` for the /24); a `null_resource` deletes GCP's default allow-all rules |
 | `compute` | Static IP, e2-medium, 50GB boot, ubuntu-2404 + OSLogin, startup script | `startup.sh` is idempotent: installs agent/CLI, renders `.env`, runs migrations, `compose pull && up` |
-| `iam` | VM SA (secretAccessor ×2, monitoring writer), deploy SA (6 roles) | Least-privilege; a 22-row IAM review matrix documents every binding (`docs/planning/iam-review.md`) |
-| `bigquery` | Dataset + 5 tables, staging bucket | Dataset-scoped `dataEditor` only (ADR-010) |
+| `iam` | VM SA (secretAccessor ×2, monitoring writer), deploy SA (9 roles) | Least-privilege; a 22-row IAM review matrix documents every binding (`docs/planning/iam-review.md`) |
+| `bigquery` | Dataset + 5 tables, staging bucket | Dataset WRITER + project-scoped `bigquery.jobUser` (queries need `jobs.create`); ADR-010 |
 | `storage` | Artifact Registry reader | Scoped to the single image repo |
 | `monitoring` | Ops Agent policies: disk-almost-full, vm-unreachable | Email channel; agentless uptime check |
 | `backups` | Backups bucket + IAM | Legacy-bucket-reader role; 2-day lifecycle |
 
-State lives in `gs://wikistream-505003-terraform-state` (bootstrap config, local state, **never destroyed**). Terraform ~1.15 / Google provider 7.41.
+State lives in `gs://wikistream-505003-terraform-state` (bootstrap config, local state, **never destroyed**). Terraform ~1.15 / Google provider 7.43.
 
 <p align="center">
   <img src="assets/vm-gcp.png" alt="GCP VM" width="620"/>
@@ -556,12 +563,12 @@ State lives in `gs://wikistream-505003-terraform-state` (bootstrap config, local
 
 ## CI/CD Pipeline
 
-Two workflows, both using Workload Identity Federation (no stored GCP keys):
+Three workflows, all using Workload Identity Federation (no stored GCP keys):
 
 ```mermaid
 flowchart TD
     PR["Pull request"] --> PLAN["plan.yml<br/>terraform fmt · validate · plan"]
-    PLAN --> CMT["Posts plan comment<br/>+ label-based approve"]
+    PLAN --> CMT["Posts plan comment<br/>apply gated by required reviewer"]
 
     M["Merge to main"] --> CI["ci.yml<br/>ruff · pytest · coverage gates"]
     CI --> IMG["Build image → push<br/>Artifact Registry"]
@@ -573,7 +580,7 @@ flowchart TD
 | Workflow | Trigger | Guard |
 | --- | --- | --- |
 | `plan.yml` | Any PR | Auto-comment with the plan diff |
-| `ci.yml` | Push to main | Lint + tests + **coverage gates block** |
+| `ci.yml` | Push, PRs, manual | Lint + tests + **coverage gates block** |
 | `apply.yml` | Push to main, after CI | `production` Environment, required reviewer, concurrency per-ref |
 
 The apply path does double duty as the deploy mechanism: `startup.sh` edits force a VM recreate (`metadata_startup_script` is `ForceNew` in the provider), and a boot-time `git fetch origin && git reset --hard origin/HEAD` guarantees the VM runs exactly the merged tree.
@@ -599,16 +606,16 @@ The apply path does double duty as the deploy mechanism: `startup.sh` edits forc
 
 | Layer | Mechanism |
 | --- | --- |
-| Credentials | **Zero static keys.** WIF for CI; Secret Manager for `clickhouse-password`, `grafana-admin-password`, `slack-webhook-url` (random 81-byte value) |
+| Credentials | **Zero static keys.** WIF for CI; Secret Manager for `clickhouse-password`, `grafana-admin-password`, `slack-webhook-url` (81-byte webhook URL) |
 | Network | Firewall allows only ports 22/3000/8123 **from a single IP**; internal /24; GCP default allow-all rules deleted by Terraform. Cloud Shell is refused, home IP passes |
 | VM access | OS Login (`user:jess154lacroix@gmail.com`), no password SSH |
-| IAM | Dataset-scoped BQ `dataEditor`, repo-scoped AR reader, minimal SA roles — 22-row review matrix with recorded deviations (D1–D6) |
+| IAM | Dataset-scoped BQ WRITER + project-scoped `jobUser`, repo-scoped AR reader, minimal SA roles — 22-row review matrix with recorded deviations (D1–D6) |
 | Data | Raw TTL 30d, dead-letter 90d, `pipeline_health` 7d; backups age 2d |
 | Secrets in state | `secrets.tf` generates `random_password` → Secret Manager only; rotation noted as a Phase-5 follow-up |
 
 <p align="center">
   <img src="assets/IAM-gcp.png" alt="IAM review" width="620"/>
-  <em>IAM — the before/after review matrix documenting every role binding.</em>
+  <em>IAM — the deploy service account in the GCP console; every binding reviewed in the 22-row matrix.</em>
 </p>
 
 ---
@@ -629,7 +636,7 @@ The apply path does double duty as the deploy mechanism: `startup.sh` edits forc
 docker compose up -d clickhouse
 
 # 2. Run the migration suite against it
-#    (see migrations/README — the runner is bash + HTTP API)
+#    (runner: migrations/apply.sh — bash + ClickHouse HTTP API, 30x2s readiness)
 
 # 3. Run the consumer (streams real Wikipedia edits)
 uv run --project consumer python -m src.consumer
@@ -684,7 +691,7 @@ wikistream/
 │       ├── heartbeat.py      # 15s pipeline_health writer
 │       └── healthcheck.py    # Docker healthcheck entrypoint
 ├── gx/                       # Great Expectations 0.18.22 suite (Python 3.12)
-│   └── suite.py              # 8 expectations on a rolling window, exit-code contract
+│   └── suite.py              # 11 expectations on a rolling window, exit-code contract
 ├── migrations/               # Versioned .sql migrations (000–008) + bash runner
 ├── warehouse/                # Export/parity scripts + SQL + systemd units
 ├── infra/
@@ -707,7 +714,7 @@ wikistream/
 | `docs/implementation-log.md` | Day-by-day build log — every phase's ACs, evidence, and incidents (2,100+ lines) |
 | `docs/planning/master-plan.md` | Walking-skeleton methodology, phase dependency graph, Go/No-Go gates |
 | `docs/planning/vision-and-adr.md` | Product vision, component inventory, 11 ADRs, trade-off analysis |
-| `docs/planning/iam-review.md` | 22-row IAM review matrix with recorded deviations |
+| `/docs/planning/iam-review.md` | 22-row IAM review matrix with recorded deviations |
 | `docs/planning/coverage-boundary.md` | Which modules are business-critical and why |
 
 ---
