@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Wikimedia recentchange SSE -> ClickHouse consumer"
 requires-python = ">=3.13"
 dependencies = [
-    "clickhouse-connect[async]==1.6.0",
+    "clickhouse-connect[async]==1.7.1",
     "httpx2==2.10.0",
     "pydantic>=2,<3",
 ]
