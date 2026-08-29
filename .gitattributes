@@ -1,0 +1,8 @@
+# Linguist: ensure SQL is tracked (ClickHouse + warehouse SQL would otherwise be missed)
+# ponytail: force language, don't rely on Bayesian guess
+*.sql linguist-language=SQL
+
+# Data / docs are not code
+docs/** linguist-documentation=true
+assets/** linguist-documentation=true
+*.csv linguist-detectable=false
