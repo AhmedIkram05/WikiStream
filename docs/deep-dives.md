@@ -20,7 +20,7 @@ flowchart LR
     P7 --> P8["P8 Evidence & Teardown<br/>README · destroy · rebuild"]
 ```
 
-**Why this shape?** Every choice traces to an explicit trade-off analysis (ADR-001…011, full table in [Design Decisions](#design-decisions-adrs)) - ClickHouse over Postgres/BigQuery-as-engine (OLAP-native, no per-second billing on a continuous dashboard), native SSE over Kafka (the source is a single ordered feed; proven on a sibling project), a single VM over GKE (right-sized for ~40K events/min), and systemd timers over Cloud Scheduler (the database the jobs query lives on the same host).
+**Why this shape?** Every choice traces to an explicit trade-off analysis (ADR-001…011, full table in [Design Decisions](../README.md#trade-offs-that-mattered)) - ClickHouse over Postgres/BigQuery-as-engine (OLAP-native, no per-second billing on a continuous dashboard), native SSE over Kafka (the source is a single ordered feed; proven on a sibling project), a single VM over GKE (right-sized for ~40K events/min), and systemd timers over Cloud Scheduler (the database the jobs query lives on the same host).
 ## Component Deep Dives
 
 ### 1. Ingestion & SSE Client
