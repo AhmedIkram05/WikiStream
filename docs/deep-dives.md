@@ -21,6 +21,7 @@ flowchart LR
 ```
 
 **Why this shape?** Every choice traces to an explicit trade-off analysis (ADR-001…011, full table in [Design Decisions](../README.md#trade-offs-that-mattered)) - ClickHouse over Postgres/BigQuery-as-engine (OLAP-native, no per-second billing on a continuous dashboard), native SSE over Kafka (the source is a single ordered feed; proven on a sibling project), a single VM over GKE (right-sized for ~40K events/min), and systemd timers over Cloud Scheduler (the database the jobs query lives on the same host).
+
 ## Component Deep Dives
 
 ### 1. Ingestion & SSE Client
@@ -154,9 +155,9 @@ Two layers, deliberately split (ADR-005):
 1. **Inline (sub-second):** Pydantic v2 validation at the edge - type, timestamp parseability, schema shape. Failures route to `dead_letter`, never to the store.
 2. **Batch (hourly):** Great Expectations `0.18.22` against a rolling window, sampling **5%** of ~1.2M rows/hour.
 
-The GX suite checks (all tuned to *measured* production bounds, not guessed ones):
+The GX suite checks (all tuned to *measured* live bounds, not guessed ones):
 
-| Expectation | Production bound | Why |
+| Expectation | Measured live bound | Why |
 | --- | --- | --- |
 | Row count in range | `(50,000, 5,000,000)` | Full-window pre-check; VM volume is 1.2M rows/hr, not the planned 160K |
 | Nulls = 0 | wiki, title, event_type, is_bot, length_new, event_timestamp | Schema-on-write should make nulls impossible |
@@ -297,6 +298,7 @@ Itemized from the real `gcloud` inventory at us-east1 rates - no estimates:
 | CI gate | Per-module `--cov-fail-under=100` + overall `--cov-fail-under=90` - **blocks merges** |
 
 The 2 skips are `pytest.importorskip("great_expectations")` - GX pins Python 3.12 (no cp313 wheels) while the consumer runs 3.13/3.14; those tests run green under the GX project's own env. The gate itself was proven: deleting one covered line from `sse.py` made CI exit 1 with 31 failures; restoring it → exit 0, 112 passed, 262/262.
+
 ## Infrastructure (Terraform)
 
 | Module | Resources | Notes |
@@ -313,7 +315,7 @@ State lives in `gs://wikistream-505003-terraform-state` (bootstrap config, local
 
 <p align="center">
   <img src="assets/vm-gcp.png" alt="GCP VM" width="620"/>
-  <em>The production VM - e2-medium, static IP, both disks, OS Login.</em>
+  <em>The VM - e2-medium, static IP, both disks, OS Login.</em>
 </p>
 
 <p align="center">
