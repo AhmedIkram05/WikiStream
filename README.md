@@ -1,6 +1,6 @@
 # WikiStream
 
-> A production-grade real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero data loss under 5,655 events/sec sustained (2.08x real-world peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and a **~$41.65/month** infrastructure bill, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
+> A real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero data loss under 5,655 events/sec sustained (2.08x real-world peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and a **~$41.65/month** infrastructure bill, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=000000" alt="Python 3.13">
@@ -161,7 +161,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/systemd-timers.png" alt="systemd timers" width="760"/>
-  <em>Four production timers, all active: backup (:20), GX suite (:30), warehouse export (:00), parity check (:05).</em>
+  <em>Four systemd timers, all active: backup (:20), GX suite (:30), warehouse export (:00), parity check (:05).</em>
 </p>
 
 ### CI/CD Pipeline
@@ -238,7 +238,7 @@ uv run --project consumer pytest --cov=src
 uv run --project gx pytest tests/gx
 ```
 
-### Production Deployment
+### Deployment
 
 ```bash
 # Everything is Terraform + GitHub Actions
