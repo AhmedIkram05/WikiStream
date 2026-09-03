@@ -3,21 +3,21 @@
 > A real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero data loss under 5,655 events/sec sustained (2.08x real-world peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and a **~$41.65/month** infrastructure bill, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white&labelColor=000000" alt="Python 3.13">
-  <img src="https://img.shields.io/badge/ClickHouse-26.3%20LTS-FFCC01?style=for-the-badge&logo=clickhouse&logoColor=black&labelColor=000000" alt="ClickHouse 26.3 LTS">
-  <img src="https://img.shields.io/badge/Grafana-13.1-FF5900?style=for-the-badge&logo=grafana&logoColor=white&labelColor=000000" alt="Grafana 13.1">
-  <img src="https://img.shields.io/badge/BigQuery-warehouse-4285F4?style=for-the-badge&logo=googlebigquery&logoColor=white&labelColor=000000" alt="BigQuery">
-  <img src="https://img.shields.io/badge/Terraform-1.15-7B42BC?style=for-the-badge&logo=terraform&logoColor=white&labelColor=000000" alt="Terraform">
-  <img src="https://img.shields.io/badge/Google%20Cloud-GCP-4285F4?style=for-the-badge&logo=googlecloud&logoColor=white&labelColor=000000" alt="Google Cloud">
-  <img src="https://img.shields.io/badge/systemd-timers-FFB000?style=for-the-badge&labelColor=000000" alt="systemd">
-  <img src="https://img.shields.io/badge/Docker-compose-2496ED?style=for-the-badge&logo=docker&logoColor=white&labelColor=000000" alt="Docker Compose">
-  <img src="https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white&labelColor=000000" alt="pytest">
-  <img src="https://img.shields.io/badge/Great%20Expectations-28C8FF?style=for-the-badge&labelColor=000000" alt="Great Expectations">
-  <img src="https://img.shields.io/badge/Pydantic-v2-E92063?style=for-the-badge&logo=pydantic&logoColor=white&labelColor=000000" alt="Pydantic v2">
-  <img src="https://img.shields.io/badge/EventStreams-SSE%20realtime-FF9800?style=for-the-badge&labelColor=000000" alt="EventStreams SSE">
-  <img src="https://img.shields.io/badge/Materialized%20Views-SummingMergeTree-2E7D32?style=for-the-badge&labelColor=000000" alt="ClickHouse Materialized Views">
-  <img src="https://img.shields.io/badge/Workload%20Identity-OIDC%20federation-4285F4?style=for-the-badge&labelColor=000000" alt="Workload Identity Federation">
-  <img src="https://img.shields.io/badge/GitHub%20Actions-CI%2FCD-2088FF?style=for-the-badge&logo=githubactions&logoColor=white&labelColor=000000" alt="GitHub Actions">
+<a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&labelColor=000000&logo=python"></a>
+<a href="https://clickhouse.com/"><img src="https://img.shields.io/badge/ClickHouse-FFCC01?style=for-the-badge&labelColor=000000&logo=clickhouse"></a>
+<a href="https://grafana.com/"><img src="https://img.shields.io/badge/Grafana-FF5900?style=for-the-badge&labelColor=000000&logo=grafana"></a>
+<a href="https://cloud.google.com/bigquery"><img src="https://img.shields.io/badge/BigQuery-4285F4?style=for-the-badge&labelColor=000000&logo=googlebigquery"></a>
+<a href="https://www.terraform.io/"><img src="https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&labelColor=000000&logo=terraform"></a>
+<a href="https://cloud.google.com/"><img src="https://img.shields.io/badge/Google_Cloud-4285F4?style=for-the-badge&labelColor=000000&logo=googlecloud"></a>
+<a href="https://systemd.io/"><img src="https://img.shields.io/badge/systemd-FFB000?style=for-the-badge&labelColor=000000"></a>
+<a href="https://docs.docker.com/compose/"><img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&labelColor=000000&logo=docker"></a>
+<a href="https://docs.pytest.org/"><img src="https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&labelColor=000000&logo=pytest"></a>
+<a href="https://greatexpectations.io/"><img src="https://img.shields.io/badge/Great_Expectations-28C8FF?style=for-the-badge&labelColor=000000"></a>
+<a href="https://docs.pydantic.dev/"><img src="https://img.shields.io/badge/Pydantic-E92063?style=for-the-badge&labelColor=000000&logo=pydantic"></a>
+<a href="https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams"><img src="https://img.shields.io/badge/EventStreams-FF9800?style=for-the-badge&labelColor=000000"></a>
+<a href="https://clickhouse.com/docs/materialized-views"><img src="https://img.shields.io/badge/Materialized_Views-2E7D32?style=for-the-badge&labelColor=000000"></a>
+<a href="https://cloud.google.com/iam/docs/workload-identity-federation"><img src="https://img.shields.io/badge/Workload_Identity-4285F4?style=for-the-badge&labelColor=000000"></a>
+<a href="https://github.com/features/actions"><img src="https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&labelColor=000000&logo=githubactions"></a>
 </p>
 
 <p align="center">
