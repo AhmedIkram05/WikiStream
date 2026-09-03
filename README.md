@@ -24,7 +24,7 @@
   <img src="https://github.com/AhmedIkram05/WikiStream/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://github.com/AhmedIkram05/WikiStream/actions/workflows/plan.yml/badge.svg" alt="Terraform Plan">
   <img src="https://github.com/AhmedIkram05/WikiStream/actions/workflows/apply.yml/badge.svg" alt="Terraform Apply">
-  <img src="https://img.shields.io/codecov/c/github/AhmedIkram05/WikiStream?style=for-the-badge&logo=codecov&logoColor=white&labelColor=000000" alt="Codecov">
+  <a href="https://codecov.io/gh/AhmedIkram05/WikiStream"><img src="https://img.shields.io/codecov/c/github/AhmedIkram05/WikiStream" /></a>
 </p>
 
 ---
