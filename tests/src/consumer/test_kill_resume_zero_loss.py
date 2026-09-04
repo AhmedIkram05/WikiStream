@@ -221,6 +221,10 @@ def test_kill_resume_zero_loss(monkeypatch, tmp_path):
             # ring, same counters). Replay covers (durable, 200]; the tail
             # batch only drains on the graceful final flush, so wait for the
             # count plateau (replay exhausted) and then stop.
+            # ponytail: disconnect_after fires per-connection, not once — leave
+            # it armed and LEG2b eats extra drops/replays, so the 8s plateau
+            # can fire mid-replay (backoff gap) and the tail never arrives.
+            fixture.disconnect_after = None
             task2 = asyncio.create_task(
                 consume_forever(client, stop2, durable, counters)
             )
