@@ -4,6 +4,7 @@
 
 <p align="center">
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&labelColor=000000&logo=python"></a>
+<a href="https://docs.python.org/3/library/asyncio.html"><img src="https://img.shields.io/badge/asyncio-3776AB?style=for-the-badge&labelColor=000000&logo=python"></a>
 <a href="https://clickhouse.com/"><img src="https://img.shields.io/badge/ClickHouse-FFCC01?style=for-the-badge&labelColor=000000&logo=clickhouse"></a>
 <a href="https://grafana.com/"><img src="https://img.shields.io/badge/Grafana-FF5900?style=for-the-badge&labelColor=000000&logo=grafana"></a>
 <a href="https://cloud.google.com/bigquery"><img src="https://img.shields.io/badge/BigQuery-4285F4?style=for-the-badge&labelColor=000000&logo=googlebigquery"></a>
