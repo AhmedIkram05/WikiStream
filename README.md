@@ -144,6 +144,16 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
   <em>Per-minute throughput over the last 30 minutes - 14K-36K events/min bursts, ingested continuously.</em>
 </p>
 
+<p align="center">
+  <img src="assets/slack.gif" alt="Grafana to Slack alert" width="760"/>
+  <em>Grafana→Slack: app/pipeline alert firing to Slack.</em>
+</p>
+
+<p align="center">
+  <img src="assets/emails.gif" alt="Cloud Monitoring to email alert" width="760"/>
+  <em>Cloud Monitoring→email: infra alert delivering to email.</em>
+</p>
+
 ### Data Quality Gate
 
 <p align="center">
@@ -158,6 +168,28 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
   <em>Full suite: 143 passed, 2 skipped in 66s; 99% coverage across the consumer core.</em>
 </p>
 
+<p align="center">
+  <img src="assets/quality-tour.gif" alt="Data quality tour" width="760"/>
+  <em>GX + pytest + sample carousel.</em>
+</p>
+
+### Warehouse Export
+
+<p align="center">
+  <img src="assets/clickhouse-sample.png" alt="ClickHouse sample rows" width="760"/>
+  <em>Deterministic hourly sample from ClickHouse (also featured in quality tour carousel).</em>
+</p>
+
+<p align="center">
+  <img src="assets/bigquery-gcp.gif" alt="BigQuery warehouse tables" width="760"/>
+  <em>BigQuery warehouse: partitioned tables loaded via GCS staging.</em>
+</p>
+
+<p align="center">
+  <img src="assets/storage-buckets-gcp.png" alt="GCS staging and backup buckets" width="760"/>
+  <em>GCS staging and backup buckets console.</em>
+</p>
+
 ### Ops Automation
 
 <p align="center">
@@ -165,9 +197,24 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
   <em>Four systemd timers, all active: backup (:20), GX suite (:30), warehouse export (:00), parity check (:05).</em>
 </p>
 
+<p align="center">
+  <img src="assets/infra-tour.gif" alt="Infra tour" width="760"/>
+  <em>VM, IAM, and timers carousel.</em>
+</p>
+
+<p align="center">
+  <img src="assets/vpc-gcp.gif" alt="VPC firewall console" width="760"/>
+  <em>VPC/firewall console.</em>
+</p>
+
 ### CI/CD Pipeline
 
 > Every pull request gets an automatic Terraform plan comment; every merge to `main` builds the container image, pushes it to Artifact Registry, and - gated by the `production` GitHub Environment with a required reviewer - applies infrastructure and reboots the VM with the new startup script.
+
+<p align="center">
+  <img src="assets/cicd-tour.gif" alt="CI/CD tour" width="760"/>
+  <em>Plan → CI → gated apply, zero static creds.</em>
+</p>
 
 ## Trade-offs That Mattered
 
