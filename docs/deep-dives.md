@@ -161,7 +161,7 @@ The GX suite checks (all tuned to *measured* live bounds, not guessed ones):
 | --- | --- | --- |
 | Row count in range | `(50,000, 5,000,000)` | Full-window pre-check; VM volume is 1.2M rows/hr, not the planned 160K |
 | Nulls = 0 | wiki, title, event_type, is_bot, length_new, event_timestamp | Schema-on-write should make nulls impossible |
-| `event_type` domain | `{edit, new, log, categorize}` | Drift detection |
+| `event_type` domain | `{edit, new, log, categorize}` | Value-set gate; schema-drift guard itself is enforced in CI |
 | Median lag | `< 300s` between `event_timestamp` and `inserted_at` | Freshness - the pipeline must keep up |
 | Max skew | `< 300s` | Clock anomalies |
 | Wiki cardinality | `> 100` distinct | Live feed sanity |
@@ -174,7 +174,7 @@ Sampling uses `rand() < int(0x100000000 * rate)` - `%`-based sampling breaks thr
 **Dead-letter table** (`dead_letter`, TTL 90 days):
 
 - Written **only** from the validation branch - invalid JSON, unparseable timestamps, pydantic errors. Transport failures never land here (keeps the DLQ-rate alert semantically honest).
-- Synchronous insert (`async_insert=0`) + **at-least-once**: a failed DL insert re-runs after reconnect.
+- Synchronous insert (`async_insert=0`) + **at-least-once across reconnects and kills (Last-Event-ID + durable cursor, SIGKILL-proofed)**; insert failures are captured by a dead-letter path with an `insert_failed` counter.
 - Proved: `dead_letter GROUP BY reason → 4× timestamp_missing, 1× validation:invalid_json, 4× timestamp_unparseable`, with `dead_lettered=4, insert_failed=0`.
 
 **Durable resume** - the cursor lives on the ch-data disk (`/mnt/ch-data/state/consumer_state.json`), written atomically via `tmp + os.replace`. The durable id **advances only on a successful flush or DL insert** - never on receipt. Graceful shutdown joins within 10s.
@@ -267,7 +267,7 @@ Q2's smaller scan reduction is expected - the win there is pre-aggregated narrow
 
 ### 12. Cost / FinOps
 
-Itemized from the real `gcloud` inventory at us-east1 rates - no estimates:
+Itemized from the real `gcloud` inventory at us-east1 rates (a full month was never billed, so the run-rate is projected):
 
 | Item | Monthly |
 | --- | --- |

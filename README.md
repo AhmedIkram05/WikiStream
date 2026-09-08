@@ -1,6 +1,6 @@
 # WikiStream
 
-> A real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero data loss under 5,655 events/sec sustained (2.08x real-world peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and a **~$41.65/month** infrastructure bill, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
+> A real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero drops in a 60-second synthetic burst at 10× baseline (2.08× the 2,719/s recorded real peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and an **itemized projected ~$41.65/month** infrastructure run-rate, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
 
 <p align="center">
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&labelColor=000000&logo=python"></a>
@@ -105,7 +105,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | **Zero-loss resume, proven by murder** | The consumer was SIGKILL'd mid-insert (exit 137); on restart it replayed the kill window into a 50K dedup ring and logged `inserted=1000 total=4370 duplicates_skipped=85→150` - zero loss, zero duplicates. A chaos battery of **8/8 injections** each fired its alert, was remediated, and cleared. |
 | **Exactness is verified, not assumed** | The MV equivalence suite asserts `sum(edits) MV 5821 == raw 5821` on live data, and warehouse parity compares SUMS (not row counts - merge-state-safe). When parity did fire during chaos testing, re-running the export restored `verdict 1.0` and cleared the alert. |
 | **A batch plane with zero scheduler spend** | Backup, GX suite, warehouse export, and parity checks all run on **4 systemd timers on the same VM as the database** - no Cloud Scheduler, no Cloud Run jobs, `Persistent=true` catches missed runs. |
-| **FinOps as a feature** | **$41.65/month** run-rate with 96% of it (VM + disks + IP) on the teardown list → **$1.79/month** residual; the $300 GCP trial covers 7.2 months. Build → run → teardown → rebuild is the lifecycle, and the rebuild is the evidence. |
+| **FinOps as a feature** | **Itemized projected run-rate of $41.65/month** (echo of a full month: compute, disks, IP, GCS, Secret Manager, BigQuery) with 96% of it (VM + disks + IP) on the teardown list → **$1.79/month** residual; the $300 GCP trial covers 7.2 months. Build → run → teardown → rebuild is the lifecycle, and the rebuild is the evidence. |
 
 ## Key Metrics
 
@@ -113,20 +113,20 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | --- | --- |
 | Raw events ingested (live count) | **58,938,615** (captured 2026-08-14) and growing |
 | Sustained ingestion rate | **~203.5 events/sec** (12,210/min average over 3 days) |
-| Observed burst windows | **14K-36K events/min** sustained |
+| Observed burst windows | **14K-36K events/min** (observed rolling 30-min window) |
 | 24h average throughput (real dataset) | **565.5 events/sec** |
 | Real-world peak minute | **2,719 events/sec** (2026-08-13 15:16) |
 | Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (577,738 events total) |
 | Dashboard query speedup (MV vs raw scan) | **15.0x p50 / 13.2x p99** (Q1), **3.8x / 3.5x** (Q2) |
 | Rows scanned per query (MV vs raw) | **0.23M vs 46.8M - ~200x fewer** |
-| Test suite | **143 passed**, 2 skipped, **99.38% coverage** |
+| Test suite | **143 passed**, 2 skipped, **99.4% coverage of consumer-core statements (484)** - GX suite and warehouse batch plane gated separately |
 | Business-critical modules (6) | **262/262 statements - 100.00%** |
 | Great Expectations gate | **11/11 expectations, exit 0**, hourly on a 5% sample |
 | Data-loss events | **0** - across burst tests, SIGKILL resume, 8 chaos injections |
 | Dead-letter routing | Only validation failures (never transport failures) - TTL 90 days |
 | Restore verification | **4,514,837 / 4,514,837 rows exact** from a GCS backup |
 | Warehouse freshness | **< 60 min** to BigQuery, parity-verified hourly |
-| Infrastructure cost | **$41.65/month** run-rate · **$1.79/month** residual post-teardown |
+| Infrastructure cost | **Itemized projected run-rate of $41.65/month** · **$1.79/month** residual post-teardown |
 
 ## Demos
 
