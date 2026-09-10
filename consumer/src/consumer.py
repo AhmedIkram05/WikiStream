@@ -171,6 +171,36 @@ async def consume_forever(
     last_saved_mono = time.monotonic()
     last_stats_log = time.monotonic()
     retry_ms: int | None = None
+    pending_flushes: set[asyncio.Task] = set()
+
+    async def _flush_job() -> None:
+        nonlocal durable_id, last_stats_log
+        try:
+            mid, flushed = await batcher.flush(client)
+            if mid is not None:
+                counters["total"] += flushed
+                durable_id = _max_id(durable_id, mid)
+            else:
+                counters["insert_failed"] += flushed
+                logger.warning(
+                    "insert_failed events=%d reason=%s",
+                    flushed,
+                    "batch dropped",
+                )
+            logger.info(
+                "inserted events=%d total=%d "
+                "dead_lettered=%d insert_failed=%d "
+                "duplicates_skipped=%d resumed_from=%s",
+                flushed,
+                counters["total"],
+                counters["dead_lettered"],
+                counters["insert_failed"],
+                counters["duplicates_skipped"],
+                resumed_from or "none",
+            )
+            last_stats_log = time.monotonic()
+        except Exception as exc:
+            logger.warning("flush_failed reason=%s", exc)
 
     async with httpx2.AsyncClient(timeout=httpx2.Timeout(None, connect=10.0)) as http:
         while not stop.is_set():
@@ -205,9 +235,9 @@ async def consume_forever(
                                 ev_id = ev.id
                                 obj: object | None = None
                                 # Step 1: JSON validity. DL semantics are
-                                # at-least-once: the dead_lettered counter and
-                                # the durable cursor advance ONLY when the DL
-                                # row landed (write_dead_letter returns bool);
+                                # buffered at-most-once (like main batch):
+                                # counter/cursor advance when DL insert is
+                                # accepted (write_dead_letter returns bool).
                                 # a failed write leaves the cursor behind so
                                 # the replay re-runs this event (the crash
                                 # window between a landed DL row and the cursor
@@ -278,31 +308,17 @@ async def consume_forever(
                                 )
                                 # Step 6: flush when due.
                                 if flush_due:
-                                    mid, flushed = await batcher.flush(client)
-                                    if mid is not None:
-                                        counters["total"] += flushed
-                                        durable_id = _max_id(durable_id, mid)
-                                    else:
-                                        counters["insert_failed"] += flushed
-                                        logger.warning(
-                                            "insert_failed events=%d reason=%s",
-                                            flushed,
-                                            "batch dropped",
-                                        )
-                                    # Step 7: stats — every flush logs; a
-                                    # heartbeat logs n=0 after 60s of silence.
-                                    logger.info(
-                                        "inserted events=%d total=%d "
-                                        "dead_lettered=%d insert_failed=%d "
-                                        "duplicates_skipped=%d resumed_from=%s",
-                                        flushed,
-                                        counters["total"],
-                                        counters["dead_lettered"],
-                                        counters["insert_failed"],
-                                        counters["duplicates_skipped"],
-                                        resumed_from or "none",
+                                    # ponytail: fire-and-forget flush
+                                    # so SSE never awaits CH; ceiling =
+                                    # unbounded tasks if CH stalls,
+                                    # bounded in practice by 1000-row
+                                    # batches.
+                                    flush_task = asyncio.create_task(_flush_job())
+                                    pending_flushes.add(flush_task)
+                                    flush_task.add_done_callback(
+                                        pending_flushes.discard
                                     )
-                                    last_stats_log = time.monotonic()
+                                    await asyncio.sleep(0)
                                 now_mono = time.monotonic()
                                 if now_mono - last_stats_log >= IDLE_STATS_INTERVAL:
                                     last_stats_log = now_mono
@@ -317,6 +333,8 @@ async def consume_forever(
                                         resumed_from or "none",
                                     )
                                 # Step 8: debounced durable save.
+                                # ponytail: kept sync — local atomic write
+                                # ~1ms every 2s, no race like threaded saves.
                                 now_mono = time.monotonic()
                                 if (
                                     durable_id != last_saved_id
@@ -328,6 +346,8 @@ async def consume_forever(
                         reason = "stream ended"
             except Exception as exc:
                 reason = f"{type(exc).__name__}: {exc}"
+            if pending_flushes:
+                await asyncio.gather(*pending_flushes, return_exceptions=True)
             logger.warning(
                 "reconnect reason=%s last_event_id=%s",
                 reason,
@@ -337,6 +357,8 @@ async def consume_forever(
                 break
 
     # Connection loop exited (stop set): FINAL FLUSH — zero loss on shutdown.
+    if pending_flushes:
+        await asyncio.gather(*pending_flushes, return_exceptions=True)
     if batcher.pending_count:
         mid, flushed = await batcher.flush(client)
         if mid is not None:
