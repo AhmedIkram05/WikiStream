@@ -32,7 +32,7 @@ def test_success_path():
     assert len(call["data"]) == 1
     assert isinstance(call["data"][0][0], datetime)
     assert call["data"][0][1:] == ["validation:invalid_json", "w", "t", "e"]
-    assert call["settings"] == {"async_insert": 0}
+    assert call["settings"] == {"async_insert": 1, "wait_for_async_insert": 0}
 
 
 def test_failure_never_raises(caplog):
