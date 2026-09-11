@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Phase 4B — hourly ClickHouse `default` DB backup to the local `backups`
-# disk, lifted to GCS (wikistream-505003-backups), local kept last 2.
+# Phase 4B — daily ClickHouse `default` DB backup to the local `backups`
+# disk (06:20 via wikistream-backup.timer), lifted to GCS
+# (wikistream-505003-backups), local kept last 2. Cadence + retention sized
+# together (implementation-log §9.12): raw TTL 1 day so raw (~9 GB) +
+# keep-last-2 backups (~2 × 7-9 GB) fit the 50 GB disk with headroom.
 # Targets the Debian bookworm VM (GNU date). The BACKUP direction runs as the
 # wikistream user (GRANT BACKUP ON *.* is granted by the orchestrator); the
 # one-time RESTORE spot-check (4.2.8) deliberately runs as the container's

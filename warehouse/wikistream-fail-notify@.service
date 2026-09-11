@@ -1,0 +1,12 @@
+[Unit]
+Description=WikiStream batch job failure notification (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Reads SLACK_WEBHOOK_URL rendered by boot.sh section 5 (Secret Manager). The
+# template is never enabled on a schedule: the four batch units trigger it via
+# OnFailure=wikistream-fail-notify@%n.service and %i carries the failed unit.
+EnvironmentFile=/opt/wikistream/.env
+ExecStart=/opt/wikistream/warehouse/notify-failure.sh %i

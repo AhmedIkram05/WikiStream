@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Phase 3C — hourly ClickHouse → BigQuery export.
-# Defaults (no args) to the LAST COMPLETED UTC hour; pass START END (UTC
+# Defaults (no args) to a TRAILING 2-HOUR window ending at the current top of
+# the hour ("last two completed UTC hours"); pass START END (UTC
 # 'YYYY-MM-DD HH:MM:SS') to backfill a specific window. Note: this script
-# targets the Ubuntu VM — window math uses GNU date (-d '1 hour ago').
+# targets the Ubuntu VM — window math uses GNU date (-d '2 hours ago').
 #
 # Depends on: docker (container $CLICKHOUSE_CONTAINER), gcloud storage,
 # bq. CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env
 # when present, else the environment).
 #
-# Re-exporting an already-exported window APPENDS rows to BigQuery — bq load
-# has no upsert; idempotency is handled by the parity check plus a manual
-# Delete + reload remediation. Run at :00 via wikistream-export.timer.
+# Idempotent per window: bq load lands rows in <table>_staging, then a MERGE
+# (kpi tables) or window DELETE+INSERT (raw sample, no natural key) converges
+# the final table — re-running a window upserts the same keys instead of
+# appending duplicates. Run at :00 via wikistream-export.timer.
+# ponytail: staging is never vacuumed; the MERGE filters the window so leftover
+# rows are harmless (same-key upsert), add expiry if staging cost matters.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,11 +40,16 @@ if [ $# -eq 2 ]; then
   START="$1"
   END="$2"
 elif [ $# -eq 0 ]; then
+  # Trailing 2-hour overlap: MERGE upserts make the re-exported hour a no-op
+  # for keys it already has, while a late-arriving event (e.g. timestamped
+  # 09:59, ingested 10:15) still lands inside the next run's window — the
+  # hour-9 slice is re-imported and converged. window_end is unchanged, so
+  # parity.sh's freshness gate (window_end match) keeps verifying this run.
   END="$(date -u +'%Y-%m-%d %H:00:00')"
-  START="$(date -u +'%Y-%m-%d %H:00:00' -d '1 hour ago')"
+  START="$(date -u +'%Y-%m-%d %H:00:00' -d '2 hours ago')"
 else
   echo "[export] usage: $0 [START END]" >&2
-  echo "[export]   START END = UTC 'YYYY-MM-DD HH:MM:SS' (inclusive-exclusive window); no args = last completed UTC hour" >&2
+  echo "[export]   START END = UTC 'YYYY-MM-DD HH:MM:SS' (inclusive-exclusive window); no args = trailing 2 completed UTC hours" >&2
   exit 1
 fi
 
@@ -52,13 +61,20 @@ STAMP="$(date -u +%Y%m%d%H)"
 # overwrite an existing object, so re-running the same hour needs a fresh name.
 RUN_ID="$(date -u +%H%M%S)"
 
-# key | export SQL | BQ table | partition field
+# Run a committed merge_*.sql for the window (same {START}/{END} substitution
+# as the extract; wikistream. -> $BQ_DATASET so overrides keep working).
+merge_window() {
+  bq --quiet query --use_legacy_sql=false \
+    "$(sed -e "s/{START}/$START/" -e "s/{END}/$END/" -e "s/wikistream\\./$BQ_DATASET./g" "sql/$1")"
+}
+
+# key | export SQL | final table | partition field | staging table | merge SQL
 TABLES=(
-  # key|sqlfile|bq_table|partition_field|clustering_fields
-  "kpi_edits|export_edits.sql|kpi_edits_hourly|hour|wiki"
-  "kpi_top_pages|export_top_pages.sql|kpi_top_pages_hourly|hour|"
-  "kpi_sizes|export_sizes.sql|kpi_edit_sizes_hourly|hour|"
-  "raw_sample|export_raw_sample.sql|raw_events_sample|inserted_at|"
+  # key|sqlfile|bq_table|partition_field|staging_table|merge_sql
+  "kpi_edits|export_edits.sql|kpi_edits_hourly|hour|kpi_edits_hourly_staging|merge_edits.sql"
+  "kpi_top_pages|export_top_pages.sql|kpi_top_pages_hourly|hour|kpi_top_pages_hourly_staging|merge_top_pages.sql"
+  "kpi_sizes|export_sizes.sql|kpi_edit_sizes_hourly|hour|kpi_edit_sizes_hourly_staging|merge_sizes.sql"
+  "raw_sample|export_raw_sample.sql|raw_events_sample|inserted_at|raw_events_sample_staging|reload_raw_sample.sql"
 )
 rows_kpi_edits=0
 rows_kpi_top_pages=0
@@ -66,7 +82,7 @@ rows_kpi_sizes=0
 rows_raw_sample=0
 
 for entry in "${TABLES[@]}"; do
-  IFS='|' read -r key sqlfile btable partfield cluster_fields <<<"$entry"
+  IFS='|' read -r key sqlfile btable partfield stable mergesql <<<"$entry"
   mkdir -p "$STAGING_TMP/$key"
   object="$STAGING_TMP/$key/${STAMP}-${RUN_ID}.jsonl"
 
@@ -78,8 +94,8 @@ for entry in "${TABLES[@]}"; do
   if [ -s "$object" ]; then
     gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null
     bq load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
-      ${cluster_fields:+--clustering_fields="$cluster_fields"} \
-      --schema="schemas/$btable.json" "$BQ_DATASET.$btable" "$object"
+      --schema="schemas/$btable.json" "$BQ_DATASET.$stable" "$object"
+    merge_window "$mergesql"
   else
     # Empty window for this table: drop the object, skip cp + load, rows stays 0.
     rm -f "$object"

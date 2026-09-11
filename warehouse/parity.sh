@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Phase 3C — warehouse parity check: ClickHouse vs BigQuery for one window.
-# Defaults (no args) to the LAST COMPLETED UTC hour; pass START END (UTC
-# 'YYYY-MM-DD HH:MM:SS') for a specific window. Runs at :05 via
-# wikistream-parity.timer to validate the export the :00 timer just made.
-# Targets the Ubuntu VM — window math uses GNU date.
+# Defaults (no args) to a TRAILING 2-HOUR window mirroring export.sh's overlap
+# ("last two completed UTC hours"); pass START END (UTC 'YYYY-MM-DD HH:MM:SS')
+# for a specific window. Runs at :05 via wikistream-parity.timer so it
+# validates the slice the :00 timer just merged — overlap hour included, so
+# late-arrival rehydration is checked, not assumed. Targets the Ubuntu VM —
+# window math uses GNU date.
 #
 # Depends on: docker (container $CLICKHOUSE_CONTAINER), bq. CLICKHOUSE_PASSWORD
 # is required (sourced from /opt/wikistream/.env when present, else env).
@@ -41,11 +43,14 @@ if [ $# -eq 2 ]; then
   START="$1"
   END="$2"
 elif [ $# -eq 0 ]; then
+  # Mirror export.sh's trailing 2-hour overlap (same window_end, so the
+  # freshness gate still keys on the exported run); parity therefore checks
+  # the full exported slice — previous hour's rehydrated rows included.
   END="$(date -u +'%Y-%m-%d %H:00:00')"
-  START="$(date -u +'%Y-%m-%d %H:00:00' -d '1 hour ago')"
+  START="$(date -u +'%Y-%m-%d %H:00:00' -d '2 hours ago')"
 else
   echo "[parity] usage: $0 [START END]" >&2
-  echo "[parity]   START END = UTC 'YYYY-MM-DD HH:MM:SS' (inclusive-exclusive window); no args = last completed UTC hour" >&2
+  echo "[parity]   START END = UTC 'YYYY-MM-DD HH:MM:SS' (inclusive-exclusive window); no args = trailing 2 completed UTC hours" >&2
   exit 1
 fi
 
