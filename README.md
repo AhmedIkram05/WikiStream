@@ -1,6 +1,6 @@
 # WikiStream
 
-> A real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero drops in a 60-second synthetic burst at 10× baseline (2.08× the 2,719/s recorded real peak)**, **15.0x faster dashboard queries via materialized views**, **99.38% coverage on the consumer core**, and an **itemized projected ~$41.65/month** infrastructure run-rate, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
+> A real-time streaming analytics platform that ingests **every public Wikipedia edit as it happens** - an async Python consumer pulls the Wikimedia EventStreams SSE feed, validates each event with Pydantic, batches and persists it into a self-hosted **ClickHouse 26.3 LTS** cluster, and serves **live dashboards, hourly warehouse exports, and a fully automated data-quality and ops layer** - **58.9M+ raw events ingested**, **zero drops in a 60-second synthetic burst at 10× baseline (2.08× the 2,719/s recorded real peak)**, **15.0x faster dashboard queries via materialized views**, **an idempotent staging→MERGE BigQuery warehouse with a daily KPI gold rollup**, **100% coverage on the consumer core**, and an **itemized projected ~$41.04/month** infrastructure run-rate, all deployed as infrastructure-as-code on GCP with a **build → run → teardown → rebuild** lifecycle.
 
 <p align="center">
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&labelColor=000000&logo=python"></a>
@@ -30,9 +30,9 @@
 
 ---
 
-WikiStream is a **continuous, self-hosted streaming data platform**: a single e2-medium VM on GCP runs the whole pipeline in Docker Compose - an async consumer, a self-hosted ClickHouse, and Grafana - while **systemd timers** drive the batch plane (data-quality suite, warehouse export, parity checks, native backups). Infrastructure is 100% Terraform with a GCS state bucket and GitHub Actions + Workload Identity Federation.
+WikiStream is a **continuous, self-hosted streaming data platform**: a single e2-medium VM on GCP runs the whole pipeline in Docker Compose - an async consumer, a self-hosted ClickHouse, and Grafana - while **systemd timers** drive the batch plane (data-quality suite, warehouse export, parity checks, native backups) and a **BigQuery scheduled query** rolls the hourly KPIs into a daily gold table at 06:00. Infrastructure is 100% Terraform with a GCS state bucket and GitHub Actions + Workload Identity Federation.
 
-The OLTP-free design is the point: every edit lands in ClickHouse within **seconds**, dashboards query **pre-aggregated materialized views** (not raw JSON blobs), and an hourly **BigQuery warehouse tier** keeps a queryable, partitioned history beyond the 30-day raw TTL.
+The OLTP-free design is the point: every edit lands in ClickHouse within **seconds**, dashboards query **pre-aggregated materialized views** (not raw JSON blobs), and an hourly **BigQuery warehouse tier** - loading through staging tables and **MERGE** upserts, so re-running any window is idempotent - keeps a queryable, partitioned, governance-locked history beyond the 1-day raw TTL (sized by disk arithmetic - BQ owns history).
 
 <p align="center">
   <img src="assets/clickhouse-total.png" alt="ClickHouse total row count" width="760"/>
@@ -68,20 +68,22 @@ flowchart LR
     end
 
     subgraph GCP["GCP data plane"]
-        GCS[("GCS staging<br/>wikistream-505003-bq-staging")]
-        BQ[("BigQuery · wikistream<br/>5 partitioned tables")]
+        BQ[("BigQuery · wikistream<br/>6 partitioned tables<br/>staging → MERGE")]
+        ROLL["kpi_daily gold rollup<br/>06:00 scheduled query"]
+        GCS[("GCS JSONL backup<br/>wikistream-505003-bq-staging · 7d")]
         BK[("GCS backups<br/>keep-last-2")]
     end
 
     SSE --> CON
     GXT -->|"GX suite · CH window"| CH
-    EXP -->|"hourly · CH → GCS → BQ"| GCS
-    GCS --> BQ
+    EXP -->|"bq load → staging tables<br/>→ MERGE upsert"| BQ
+    EXP -->|"JSONL backup"| GCS
+    BQ -->|"hourly KPIs"| ROLL
     PAR -->|"SUMS parity + freshness"| BQ
     BAK -->|"BACKUP DATABASE"| BK
 ```
 
-End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-ID` resume → validates every event with Pydantic → flushes valid rows in 1,000-row/5s batches into `raw_events` → materialized views aggregate per minute for Grafana → an hourly timer exports a deterministic sample to GCS and loads it into 5 partitioned BigQuery tables, while a parity timer verifies the sums match and a heartbeat writes a fresh verdict every 15s.
+End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-ID` resume → validates every event with Pydantic → flushes valid rows in 1,000-row/5s batches into `raw_events` → materialized views aggregate per minute for Grafana → an hourly timer `bq load`s deterministic samples into BigQuery staging tables and **MERGEs** them into partitioned final tables (re-running any window converges - no duplicates), while a 06:00 scheduled query rolls hourly KPIs into a daily `kpi_daily` gold table, JSONL copies land in GCS as a 7-day backup, a parity timer verifies the sums match, and a heartbeat writes a fresh verdict every 15s.
 
 ## Every Piece, in One Line
 
@@ -91,11 +93,12 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | **Validation** | Pydantic v2 schema-on-write | Every row is typed before it hits disk; malformed events route to a dead-letter table |
 | **Batcher** | 1,000 rows / 5s flush, `async_insert=1` | ~1,000x fewer insert round-trips; ClickHouse merges server-side |
 | **Materialized views** | 3 SummingMergeTree MVs, no `POPULATE` | Dashboard queries skip JSON parsing: **15.0x faster p50, ~200x fewer rows scanned** |
-| **BigQuery warehouse** | Hourly CH → GCS → BQ export + SUMS parity | Queryable partitioned history past the 30-day raw TTL; merge-state-safe parity |
-| **systemd timers** | 4 timers + 8 unit files via `boot.sh` | Backup, GX, export, parity run unattended on the VM |
+| **BigQuery warehouse** | Hourly `bq load` → staging tables → MERGE upserts with a **2-hour trailing overlap** (late arrivals self-heal) + SUMS parity over the same slice; daily `kpi_daily` rollup on the BQ scheduler | Queryable partitioned history past the 1-day raw TTL (retention sized by disk math; BQ owns history); re-runs are idempotent and late arrivals rehydrate automatically; merge-state-safe parity |
+| **Warehouse governance** | `require_partition_filter` + expirations (730d KPI / 90d raw / 7d staging / 365d ops) + clustering + `v_bq_cost_daily` view | Cost is enforced in the schema, not in discipline: every scan must narrow a partition, stale data self-expires, and GB-scanned/day lands in Grafana |
+| **systemd timers** | 4 timers + 8 unit files + an `OnFailure=` page-template via `boot.sh` | Backup, GX, export, parity run unattended — and any failed run Slacks instantly |
 | **Data quality** | Pydantic inline + Great Expectations batch suite | Sub-second edge validation + hourly distributional checks (nulls, freshness, bot-ratio) |
 | **Durability** | JSON-array cursor + atomic `os.replace` + 50K dedup ring | SIGKILL mid-insert and resume **zero-loss, zero-dup** - proven empirically |
-| **Alerting** | 5 Grafana rules → Slack, 2 Cloud Monitoring policies → email | Two non-overlapping layers: app/pipeline vs infrastructure; all verified in chaos testing |
+| **Alerting** | 5 Grafana rules → Slack, 2 Cloud Monitoring policies → email, `OnFailure=` on every batch job → Slack | Three non-overlapping channels: verdicts (pipeline_health), infra, and now instant paging on any failed export/parity/backup/GX run |
 | **Terraform estate** | 7 modules, 100% IaC, WIF CI/CD | Least-privilege IAM, gated apply, zero static credentials |
 
 ## Why It's Interesting
@@ -105,7 +108,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | **Zero-loss resume, proven by murder** | The consumer was SIGKILL'd mid-insert (exit 137); on restart it replayed the kill window into a 50K dedup ring and logged `inserted=1000 total=4370 duplicates_skipped=85→150` - zero loss, zero duplicates. A chaos battery of **8/8 injections** each fired its alert, was remediated, and cleared. |
 | **Exactness is verified, not assumed** | The MV equivalence suite asserts `sum(edits) MV 5821 == raw 5821` on live data, and warehouse parity compares SUMS (not row counts - merge-state-safe). When parity did fire during chaos testing, re-running the export restored `verdict 1.0` and cleared the alert. |
 | **A batch plane with zero scheduler spend** | Backup, GX suite, warehouse export, and parity checks all run on **4 systemd timers on the same VM as the database** - no Cloud Scheduler, no Cloud Run jobs, `Persistent=true` catches missed runs. |
-| **FinOps as a feature** | **Itemized projected run-rate of $41.65/month** (echo of a full month: compute, disks, IP, GCS, Secret Manager, BigQuery) with 96% of it (VM + disks + IP) on the teardown list → **$1.79/month** residual; the $300 GCP trial covers 7.2 months. Build → run → teardown → rebuild is the lifecycle, and the rebuild is the evidence. |
+| **FinOps as a feature** | **Itemized projected run-rate of $41.04/month** (echo of a full month: compute, disks, IP, GCS, Secret Manager, BigQuery) with 96% of it (VM + disks + IP) on the teardown list → **$1.18/month** residual; the $300 GCP trial covers 7.2 months. Build → run → teardown → rebuild is the lifecycle, and the rebuild is the evidence. **BQ cost is a Grafana metric too** - `v_bq_cost_daily` (region-US `INFORMATION_SCHEMA.JOBS`, 30-day cap) is panel 7 in the live dashboard. |
 
 ## Key Metrics
 
@@ -119,14 +122,15 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (577,738 events total) |
 | Dashboard query speedup (MV vs raw scan) | **15.0x p50 / 13.2x p99** (Q1), **3.8x / 3.5x** (Q2) |
 | Rows scanned per query (MV vs raw) | **0.23M vs 46.8M - ~200x fewer** |
-| Test suite | **143 passed**, 2 skipped, **99.4% coverage of consumer-core statements (484)** - GX suite and warehouse batch plane gated separately |
+| Test suite | **161 passed, 2 skipped** full suite incl. live ClickHouse (**130/2 in the offline CI gate**) - **100% coverage of consumer src (497 stmts, 0 miss)**; black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
+| Warehouse idempotency | **staging → MERGE** hourly loads - re-running any window converges (parity remediation is literally "re-run export.sh") |
 | Business-critical modules (6) | **262/262 statements - 100.00%** |
 | Great Expectations gate | **11/11 expectations, exit 0**, hourly on a 5% sample |
 | Data-loss events | **0** - across burst tests, SIGKILL resume, 8 chaos injections |
 | Dead-letter routing | Only validation failures (never transport failures) - TTL 90 days |
 | Restore verification | **4,514,837 / 4,514,837 rows exact** from a GCS backup |
 | Warehouse freshness | **< 60 min** to BigQuery, parity-verified hourly |
-| Infrastructure cost | **Itemized projected run-rate of $41.65/month** · **$1.79/month** residual post-teardown |
+| Infrastructure cost | **Itemized projected run-rate of $41.04/month** · **$1.18/month** residual post-teardown |
 
 ## Demos
 
@@ -137,7 +141,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
   <em>WikiStream Live Analytics - edit velocity, bot-vs-human split, top pages, per-project volume, edit-size histogram.</em>
 </p>
 
-> The Grafana dashboard queries **materialized views only** - the heaviest dashboard query answers in **~6s over a 24-hour window** where the equivalent raw scan takes **90s+ (15.0x)**. Panels: edit velocity (30 rows over 15 min), bot-vs-human pie, top pages bar gauge (10), project-language bars (15), edit-size histogram (6 buckets).
+> The Grafana dashboard queries **materialized views only** - the heaviest dashboard query answers in **~6s over a 24-hour window** where the equivalent raw scan takes **90s+ (15.0x)**. Panels: edit velocity (30 rows over 15 min), bot-vs-human pie, top pages bar gauge (10), project-language bars (15), edit-size histogram (6 buckets), BQ cost - GB scanned per day (panel 7, sourced from `v_bq_cost_daily`).
 
 <p align="center">
   <img src="assets/clickhouse-throughput.png" alt="Per-minute throughput" width="760"/>
@@ -165,7 +169,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/pytest-coverage.png" alt="pytest full suite" width="760"/>
-  <em>Full suite: 143 passed, 2 skipped in 66s; 99% coverage across the consumer core.</em>
+  <em>Full suite with live ClickHouse: 161 passed, 2 skipped in 65.63s; 100% coverage across consumer src (497 stmts, 0 miss).</em>
 </p>
 
 <p align="center">
@@ -182,7 +186,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/bigquery-gcp.gif" alt="BigQuery warehouse tables" width="760"/>
-  <em>BigQuery warehouse: partitioned tables loaded via GCS staging.</em>
+  <em>BigQuery warehouse: partitioned tables loaded via staging + MERGE upserts (idempotent hourly re-runs), plus the kpi_daily gold rollup.</em>
 </p>
 
 <p align="center">
@@ -227,7 +231,7 @@ Every architectural call is traceable to a numbered ADR ([docs/planning/vision-a
 | 003 | Self-hosted ClickHouse engine | Postgres, TimescaleDB, Druid, Pinot, Snowflake, ClickHouse Cloud | OLAP-native, no per-second billing on a continuous dashboard; BigQuery added as warehouse, not engine |
 | 004 | Async httpx2 + hand-rolled SSE | Kafka, plain httpx | One ordered source feed; zero broker ops; full control of `Last-Event-ID` resume |
 | 005 | Pydantic inline + GX batch split | GX-only | Sub-second edge validation + distributional batch checks; DLQ in ClickHouse not a file |
-| 006 | Partitioned MergeTree + MVs + 30-day TTL + native backups | Raw-only, no TTL | Dashboard speed, bounded storage, restorable history |
+| 006 | Partitioned MergeTree + MVs + raw TTL **1 day** (rev 2026-09-10, disk-sized) + daily native backups | Raw-only, no TTL in BQ; disk can't hold 30d at ~9 GB/day | Dashboard speed, bounded storage, restorable history |
 | 007 | Terraform with GCS state via bootstrap | Local/remote state elsewhere | State bucket never destroyed by teardown |
 | 008 | GitHub Actions + WIF, gated apply | Static keys, auto-apply | Zero long-lived credentials; `production` Environment requires a reviewer |
 | 009 | pytest + coverage gates (100% core, ≥90% overall) | No gates | CI **rejects** PRs below the bar - proven by deliberately breaking a line |
