@@ -247,8 +247,10 @@ def test_export_sql_references_existing_columns(seeded):
         missing = set(cols) - describe[tbl]
         assert not missing, f"{tbl} missing columns {sorted(missing)}"
 
-    # placeholders survive verbatim in every committed SQL file
+    # placeholders survive verbatim in every committed windowed SQL file
     for path in sorted(WAREHOUSE_SQL.glob("*_*.sql")):
+        if path.name.startswith("v_"):
+            continue  # BQ-side info-schema views (v_bq_cost_daily) take no window
         text = path.read_text()
         assert "{START}" in text and "{END}" in text, f"{path.name} lost placeholders"
 
@@ -453,3 +455,80 @@ def test_export_runs_shape(seeded):
     }
     for k in ("rows_edits", "rows_top_pages", "rows_sizes", "rows_raw_sample"):
         assert isinstance(line[k], int)
+
+
+MERGE_FILES = {
+    "merge_edits.sql": (
+        "wikistream.kpi_edits_hourly",
+        "wikistream.kpi_edits_hourly_staging",
+    ),
+    "merge_top_pages.sql": (
+        "wikistream.kpi_top_pages_hourly",
+        "wikistream.kpi_top_pages_hourly_staging",
+    ),
+    "merge_sizes.sql": (
+        "wikistream.kpi_edit_sizes_hourly",
+        "wikistream.kpi_edit_sizes_hourly_staging",
+    ),
+    "reload_raw_sample.sql": (
+        "wikistream.raw_events_sample",
+        "wikistream.raw_events_sample_staging",
+    ),
+}
+
+
+def test_merge_sql_idempotent_shape():
+    """Staging + MERGE contract (no live BQ needed, hence no ch mark): every
+    merge file keeps {START}/{END}, reads its staging table, writes the final
+    table, and — for keyed KPIs — MERGEs on the table key (raw sample has no
+    key: window DELETE + INSERT)."""
+    start, end = "2026-08-12 12:00:00", "2026-08-12 13:00:00"
+    keys = {
+        "merge_edits.sql": ["hour", "wiki", "is_bot"],
+        "merge_top_pages.sql": ["hour", "title", "wiki"],
+        "merge_sizes.sql": ["hour", "bucket"],
+    }
+    for fname, (final, staging) in MERGE_FILES.items():
+        sub = substitute((WAREHOUSE_SQL / fname).read_text(), start, end)
+        assert "{START}" not in sub and "{END}" not in sub, fname
+        assert staging in sub and final in sub, fname
+        if fname in keys:
+            assert "MERGE" in sub and "WHEN NOT MATCHED" in sub, fname
+            on = sub.split("ON", 1)[1]
+            for col in keys[fname]:
+                assert col in on, f"{fname} ON clause missing {col}"
+        else:
+            assert "DELETE" in sub and "INSERT" in sub, fname
+            # Atomic reload: a crash between statements must not empty the window.
+            assert "BEGIN TRANSACTION" in sub and "COMMIT TRANSACTION" in sub, fname
+
+
+def test_rollup_daily_shape():
+    """Gold rollup contract (no live BQ needed): S.-qualified INSERT (no
+    ambiguous bare refs), LAG() over an extra lookback day so the window
+    boundary row gets a real prev_day_edits, and only window days merged."""
+    sub = substitute(
+        (WAREHOUSE_SQL / "rollup_daily.sql").read_text(),
+        "2026-08-12 12:00:00",
+        "2026-08-12 13:00:00",
+    )
+    assert "{START}" not in sub and "{END}" not in sub
+    assert "LAG(edits)" in sub
+    assert "TIMESTAMP_SUB(TIMESTAMP(" in sub  # extra lookback day for LAG
+    values = sub.split("VALUES", 1)[1]
+    for col in (
+        "day",
+        "wiki",
+        "edits",
+        "bytes_delta",
+        "prev_day_edits",
+        "dod_growth_pct",
+    ):
+        assert f"S.{col}" in values, f"rollup VALUES missing S.{col}"
+
+
+def test_cost_view_bounded():
+    """Cost view must cap its JOBS scan (180d retention otherwise) so each
+    Grafana refresh reads 30d, not the full history."""
+    sql = (WAREHOUSE_SQL / "v_bq_cost_daily.sql").read_text()
+    assert "creation_time >=" in sql and "INTERVAL 30 DAY" in sql

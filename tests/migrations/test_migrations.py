@@ -174,9 +174,9 @@ def test_ttl_present():
         assert "toIntervalDay(30)" in ttl, f"unexpected TTL expression: {ttl}"
     else:
         # CH 26.x dropped TTL metadata from system.tables — SHOW CREATE is
-        # the version-proof form; it normalizes to toIntervalDay(30).
+        # the version-proof form; it normalizes to toIntervalDay(1).
         show = scalar("SHOW CREATE TABLE default.raw_events")
-        assert "TOINTERVALDAY(30)" in show.upper(), f"TTL missing from DDL: {show}"
+        assert "TOINTERVALDAY(1)" in show.upper(), f"TTL missing from DDL: {show}"
 
 
 @pytest.mark.ch
@@ -207,9 +207,11 @@ def test_legacy_migration():
         "ignored_field": "extraction must skip this",
     }
     json_event = json.dumps(event)
+    # now()-based: raw_events carries a 30-day TTL, so fixed dates age out of
+    # the store silently (the old '2026-08-11' literal started expiring today).
     query(
         f"INSERT INTO default.raw_events (inserted_at, event)"
-        f" VALUES ('2026-08-11 12:34:56', {sql_literal(json_event)})"
+        f" VALUES (now() - INTERVAL 1 MINUTE, {sql_literal(json_event)})"
     )
     apply_ok()
 
@@ -256,7 +258,7 @@ def test_materialized_compute():
     }
     query(
         f"INSERT INTO default.raw_events (inserted_at, event)"
-        f" VALUES ('2026-08-11 10:00:00', {sql_literal(json.dumps(event))})"
+        f" VALUES (now() - INTERVAL 1 MINUTE, {sql_literal(json.dumps(event))})"
     )
     # Read the MATERIALIZED columns, NOT the event JSON — proves the
     # expressions ran at insert time (no OPTIMIZE / background pass).
