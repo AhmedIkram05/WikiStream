@@ -64,7 +64,7 @@ CREATE TABLE default.raw_events (
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(inserted_at)
 ORDER BY (inserted_at, sipHash64(event))
-TTL inserted_at + INTERVAL 30 DAY
+TTL inserted_at + INTERVAL 1 DAY
 SETTINGS max_suspicious_broken_parts = 1000
 ```
 
@@ -72,7 +72,7 @@ SETTINGS max_suspicious_broken_parts = 1000
 | --- | --- | --- |
 | Partitioning | Daily on `inserted_at` | Cheap partition-level drops at TTL, time-travel windowed queries |
 | Sort key | `(inserted_at, sipHash64(event))` | The hash gives the dedup key a 64-bit collision-safe spread |
-| TTL | 30 days (ADR-006) | Live dashboard only needs recent data; warehouse covers history |
+| TTL | **1 day** (ADR-006 rev 2026-09-10, §9.12) | Measured ~0.47 KB/row × ~20M rows/day: 30 days ≈ 280 GB vs a 53 GB disk — the TTL could never fire; every live consumer needs ≤ 24 h, and BQ (hourly KPIs + sample + `kpi_daily`) owns history |
 | `max_suspicious_broken_parts` | 1000 | Survives unclean shutdowns without refusing to merge (learned the hard way) |
 
 Sample of real persisted rows:
@@ -112,19 +112,22 @@ MV row counts are deliberately **never** compared to raw counts - `SummingMergeT
 | Top pages | `005_mv_top_pages_per_minute` | 10 rows |
 | Project language | `004` grouped by wiki | 15 rows |
 | Edit-size histogram | `006_mv_edit_sizes_per_minute` | 6 buckets (1h sum up to 6,008) |
+| BQ cost (panel 7) | `v_bq_cost_daily` — `region-US.INFORMATION_SCHEMA.JOBS`, 30-day cap | GB scanned / day per user, in the same dashboard as freshness |
 
 Plugins pinned via `GF_PLUGINS_PREINSTALL`: `grafana-clickhouse-datasource@4.20.0` and `grafana-bigquery-datasource@3.2.0` (the `GF_INSTALL_PLUGINS` path is broken in Grafana 13.1.1 - 404 crash-loop - another hard-won pin).
 
 ### 5. BigQuery Warehouse
 
-The warehouse tier answers "what happened last month?" without keeping raw data forever.
+The warehouse tier answers "what happened last month?" without keeping raw data forever. Every boundary in the plane is UTC end-to-end — the Wikimedia feed carries epoch-UTC timestamps, ClickHouse stores `DateTime64(..., 'UTC')`, and `DATE(hour)` / `DATE(creation_time)` in BigQuery are UTC days; the 06:00 rollup therefore rolls UTC days, by design rather than by accident.
 
 | Piece | Design |
 | --- | --- |
-| Dataset | `wikistream` (US), 5 tables: `kpi_edits_hourly`, `kpi_top_pages_hourly`, `kpi_edit_sizes_hourly`, `raw_events_sample`, `export_runs` |
-| Partitioning | `time_partitioning { DAY }` on every KPI table; `kpi_edits_hourly` additionally clustered on `wiki` |
-| Export | systemd timer **:00** - `formatDateTime` RFC3339, `if(is_bot,'true','false')` bool cast, deterministic 10% sample via `sipHash64(event) % 100 < 10` |
-| Load | `gcloud storage cp` → staging bucket (7-day Delete lifecycle) → `bq load` `NEWLINE_DELIMITED_JSON` |
+| Dataset | `wikistream` (US) — 6 partitioned finals: `kpi_edits_hourly`, `kpi_top_pages_hourly`, `kpi_edit_sizes_hourly`, `raw_events_sample`, `export_runs`, `kpi_daily` — plus 4 per-run **staging** tables the loader writes before merging |
+| Partitioning | `require_partition_filter` on every table (scans must narrow a partition); DAY partitions with expirations: 730d KPIs, 90d raw sample, 7d staging, 365d `export_runs`; clustered `["wiki","is_bot"]` / `["wiki"]` on the hourly tables, `["wiki"]` on `raw_events_sample` and `kpi_daily` |
+| Export | systemd timer **:00** - `formatDateTime` RFC3339, `if(is_bot,'true','false')` bool cast, deterministic 10% sample via `sipHash64(event) % 100 < 10`; **trailing 2-hour overlap**: each run re-exports the previous hour too, so a late-arriving event (timestamped 09:59, ingested 10:15) rehydrates into BQ on the next run — MERGE upserts make the overlap a no-op for existing keys; parity mirrors the same 2-hour slice, so rehydration is *checked*, not assumed; JSONL also copied to GCS as a 7-day backup (parallel to, not part of, the load) |
+| Load | `bq load` NEWLINE_DELIMITED_JSON into `<final>_staging` → committed **MERGE** upsert (`merge_edits.sql` on `(hour, wiki, is_bot)`, `merge_top_pages.sql` on `(hour, title, wiki)`, `merge_sizes.sql` on `(hour, bucket)`; `raw_events_sample` window DELETE+INSERT in a transaction). Re-running any window converges — the actual mechanism behind "re-run `export.sh` restores parity" |
+| Gold rollup | `kpi_daily` (day, wiki, edits, bytes_delta, prev_day_edits, dod_growth_pct) — `rollup_daily.sql` MERGE over the hourly table with `LAG(…)` DoD growth, run daily **06:00 by a BigQuery scheduled query** (Terraform-managed transfer config, `tokenCreator` IAM) |
+| Governance | `v_bq_cost_daily` view over `region-US.INFORMATION_SCHEMA.JOBS` (jobs, GB scanned, slot-seconds per user/day, 30-day cap) — Grafana panel 7 |
 | Parity | systemd timer **:05** - compares **SUMS** (edits, bytes) between CH window and BQ tables, writes a 1.0/0.0 verdict into `pipeline_health`; failed parity fires `parity-drift` |
 | Freshness | Grafana panel 6: `TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(exported_at), MINUTE)` - green < 60, orange 60-120, red > 120 |
 
@@ -132,21 +135,23 @@ The warehouse tier answers "what happened last month?" without keeping raw data 
 
 <p align="center">
   <img src="assets/bigquery-gcp.gif" alt="BigQuery console" width="760"/>
-  <em>The BigQuery dataset in the GCP console - 5 partitioned tables, hourly loads, verified parity.</em>
+  <em>The BigQuery dataset in the GCP console - partitioned tables loaded through staging + MERGE, hourly, verified parity.</em>
 </p>
 
 ### 6. systemd Automation
 
-The batch plane is eight unit files, all installed by `boot.sh`:
+The batch plane is nine unit files - eight installed at boot plus the on-demand `wikistream-fail-notify@` template - all installed by `boot.sh`:
 
 | Timer | Schedule | `Persistent=true` | Job |
 | --- | --- | --- | --- |
-| `wikistream-backup.timer` | :20 hourly | yes | Native `BACKUP DATABASE` → GCS, keep-last-2 |
+| `wikistream-backup.timer` | 06:20 daily | yes | Native `BACKUP DATABASE` → GCS, keep-last-2 (cadence sized in §9.12) |
 | `wikistream-gx.timer` | :30 hourly | yes | Great Expectations suite on the latest hour |
-| `wikistream-export.timer` | :00 hourly | yes | CH → GCS → BigQuery export |
+| `wikistream-export.timer` | :00 hourly | yes | `bq load` → staging tables → MERGE upsert (+ JSONL → GCS backup) |
 | `wikistream-parity.timer` | :05 hourly | yes | SUMS parity + freshness verdict |
 
 Plus a **15-second consumer heartbeat** that writes deltas (`inserted_delta`, `dead_lettered_delta`, `insert_failed_delta`, `duplicates_skipped_delta`) into `pipeline_health` - the single source every alert queries.
+
+**Failure paging (OnFailure):** all four batch oneshots (`export`, `parity`, `backup`, `gx`) carry `OnFailure=wikistream-fail-notify@%n.service` - a templated oneshot that reads `SLACK_WEBHOOK_URL` from `.env` and pages Slack instantly with the failed unit's name. A 03:00 crash therefore pages within seconds instead of waiting for the freshness panel to go red at +120 min; the GX case matters most, where a *crashed* run writes no 0.0 verdict and would otherwise escape `gx-fail` entirely.
 
 ### 7. Data Quality - Pydantic + Great Expectations
 
@@ -215,6 +220,8 @@ flowchart TD
     CH --> G5["gx-fail · 1m"]
     G1 & G2 & G3 & G4 & G5 --> SL["Slack · contact point 'slack-alerts'"]
 
+    ON["systemd OnFailure<br/>export / parity / backup / GX"] --> SL
+
     OA["Cloud Monitoring + Ops Agent"] --> P1["disk-almost-full · >80% for 300s"]
     OA --> P2["vm-unreachable · absent 120s"]
     P1 & P2 --> EM["email · ahmedikram30@gmail.com"]
@@ -229,6 +236,8 @@ flowchart TD
 | `gx-fail` | GX exit ≠ 0 (1m) | Forced failure produced the exact error payload and a 0.0 verdict |
 
 Every rule fired, **Slack and email delivery confirmed by the recipient**, then each was verified cleared. The chaos battery ran **8/8 injections** (consumer kill, DLQ flood, ClickHouse outage, parity drift, GX forced-fail, 17GB disk fill to 86%, VM stop/unreachable, firewall lockdown) - each fired its alert, was remediated, and cleared.
+
+Fourth channel added 2026-09-10: systemd **`OnFailure` → templated Slack page** (`wikistream-fail-notify@%n`) on all four batch oneshots — it covers the blind spot where a job *fails* without writing a pipeline_health verdict (GX crash = no 0.0 verdict; export/merge errors only surface via freshness after 2h). Not exercised by the chaos battery; verified by a guarded dry run (missing webhook → loud exit 1, so a broken alert config self-reports rather than silently paging nothing) plus shell/CI lint gates; first live page lands with the next gated GCP apply.
 
 <p align="center">
   <img src="assets/slack.gif" alt="Slack alert delivery" width="620"/>
@@ -275,26 +284,31 @@ Itemized from the real `gcloud` inventory at us-east1 rates (a full month was ne
 | Boot disk 50GB pd-standard | $5.00 |
 | ch-data disk 50GB pd-standard | $5.00 |
 | Static external IP | $3.65 |
-| GCS (backups 46.4GB age-2d + staging 8.8GB age-7d) | ~$1.11 |
+| GCS (backups ~2 × 7-9 GB daily age-2d + staging 8.8 GB age-7d) | ~$0.50 |
 | 3 × Secret Manager secrets | $0.18 |
-| BigQuery (5 tables, <0.1GB) | < $0.50 |
+| BigQuery (10 partitioned tables, <0.1GB) | < $0.50 |
 | Artifact Registry + Cloud Monitoring | ~$0 |
-| **Total run-rate** | **≈ $41.65/mo** |
+| **Total run-rate** | **≈ $41.04/mo** |
 
 - **$300 trial ≈ 7.2 months** of full run-rate.
 - VM + disks + IP = **$39.86 ≈ 96%** of the bill - everything on the teardown list (ADR-001).
-- **Residual post-teardown ≈ $1.79/mo** (buckets, secrets, BQ dataset).
+- **Residual post-teardown ≈ $1.18/mo** (buckets, secrets, BQ dataset).
 
 ## Testing
 
 | Layer | Result |
 | --- | --- |
-| Full suite (`pytest --cov=src`, all 143 incl. 31 ClickHouse integration) | **143 passed, 2 skipped** in 66s |
-| Coverage - consumer core | **99.38% (484 stmts, 3 miss)** |
+| CI suite (`pytest -m "not ch"`) | **130 passed, 2 skipped** (GX gated separately) |
+| Full suite (all tests, live ClickHouse) | **161 passed, 2 skipped** in ~66s - coverage TOTAL `497 / 0 / 100%` |
+| Shell batch jobs | **5 black-box contracts** - PATH-shimmed `date/docker/bq/gcloud/gsutil` harness proves window math, bq orchestration, the `export_runs` JSON contract, fail-loud exit codes (OnFailure paging), and backup prune order/count without any cloud or container |
+| Batch-unit wiring | **4 contracts** - OnFailure Slack-page assertions over the four unit files, the fail-notify template, the guarded script, and boot.sh's install line |
+| `pytest-coverage.png` receipt | the full-suite card - regenerated to current truth whenever the test surface changes (currently **161/2 in 65.63s**, coverage `497 / 0 / 100%`) |
+| Coverage - consumer src | **100% (497 stmts, 0 miss)** |
 | Coverage - 6 business-critical modules | **262/262 = 100.00%** (`sse`, `models`, `batcher`, `dead_letter`, `heartbeat`, `healthcheck`) |
 | Coverage - `gx/suite.py` | **89/89 = 100%** (parallel-mode `coverage combine`) |
 | Integration (`-m ch`, real ClickHouse) | 31 tests: migrations, MV equivalence, kill/resume, DLQ, healthchecks |
-| GX suite tests | 17 green - drive the real `suite.py` as a subprocess and assert the exit-code contract |
+| GX suite tests | 14 green - drive the real `suite.py` as a subprocess and assert the exit-code contract |
+| Warehouse SQL shape tests | 3 green - placeholder-substitution checks on `merge_*.sql` / `rollup_daily.sql` / `v_bq_cost_daily.sql` (no live BQ needed) |
 | CI gate | Per-module `--cov-fail-under=100` + overall `--cov-fail-under=90` - **blocks merges** |
 
 The 2 skips are `pytest.importorskip("great_expectations")` - GX pins Python 3.12 (no cp313 wheels) while the consumer runs 3.13/3.14; those tests run green under the GX project's own env. The gate itself was proven: deleting one covered line from `sse.py` made CI exit 1 with 31 failures; restoring it → exit 0, 112 passed, 262/262.
@@ -306,7 +320,7 @@ The 2 skips are `pytest.importorskip("great_expectations")` - GX pins Python 3.1
 | `network` | VPC, subnet `10.0.0.0/24`, **4 firewall rules** | Ports 22/3000/8123 restricted to one IP (`allow_internal` for the /24); a `null_resource` deletes GCP's default allow-all rules |
 | `compute` | Static IP, e2-medium, 50GB boot, ubuntu-2404 + OSLogin, startup script | `startup.sh` is idempotent: installs agent/CLI, renders `.env`, runs migrations, `compose pull && up` |
 | `iam` | VM SA (secretAccessor ×2, monitoring writer), deploy SA (9 roles) | Least-privilege; a 22-row IAM review matrix documents every binding (`docs/planning/iam-review.md`) |
-| `bigquery` | Dataset + 5 tables, staging bucket | Dataset WRITER + project-scoped `bigquery.jobUser` (queries need `jobs.create`); ADR-010 |
+| `bigquery` | Dataset + 10 partitioned tables (6 finals incl. `kpi_daily` + 4 staging) + `kpi_daily` daily scheduled transfer, staging bucket | Dataset WRITER + project-scoped `bigquery.jobUser` + transfer `tokenCreator` (queries need `jobs.create`); ADR-010 |
 | `storage` | Artifact Registry reader | Scoped to the single image repo |
 | `monitoring` | Ops Agent policies: disk-almost-full, vm-unreachable | Email channel; agentless uptime check |
 | `backups` | Backups bucket + IAM | Legacy-bucket-reader role; 2-day lifecycle |
@@ -367,7 +381,7 @@ The apply path does double duty as the deploy mechanism: `startup.sh` edits forc
 | Credentials | **Zero static keys.** WIF for CI; Secret Manager for `clickhouse-password`, `grafana-admin-password`, `slack-webhook-url` (81-byte webhook URL) |
 | Network | Firewall allows only ports 22/3000/8123 **from a single IP**; internal /24; GCP default allow-all rules deleted by Terraform. Cloud Shell is refused, home IP passes |
 | VM access | OS Login (`user:jess154lacroix@gmail.com`), no password SSH |
-| IAM | Dataset-scoped BQ WRITER + project-scoped `jobUser`, repo-scoped AR reader, minimal SA roles - 22-row review matrix with recorded deviations (D1-D6) |
+| IAM | Dataset-scoped BQ WRITER + project-scoped `jobUser` + transfer `tokenCreator`, repo-scoped AR reader, minimal SA roles - 22-row review matrix with recorded deviations (D1-D6; scheduled-query binding D7 in the addendum) |
 | Data | Raw TTL 30d, dead-letter 90d, `pipeline_health` 7d; backups age 2d |
 | Secrets in state | `secrets.tf` generates `random_password` → Secret Manager only; rotation noted as a Phase-5 follow-up |
 

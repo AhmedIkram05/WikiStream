@@ -2,6 +2,8 @@
 Description=WikiStream hourly Great Expectations data-quality check
 After=docker.service network-online.target
 Wants=network-online.target
+# A crashed GX run (no 0.0 verdict written) escapes gx-fail; page instantly.
+OnFailure=wikistream-fail-notify@%n.service
 
 [Service]
 Type=oneshot

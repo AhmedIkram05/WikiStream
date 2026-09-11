@@ -419,6 +419,63 @@
           "format": 1
         }
       ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "BQ cost — GB scanned per day",
+      "datasource": {
+        "type": "grafana-bigquery-datasource",
+        "uid": "wikistream-bigquery"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "gbytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-bigquery-datasource",
+            "uid": "wikistream-bigquery"
+          },
+          "refId": "A",
+          "rawSql": "SELECT day AS time, SUM(gb_scanned) AS gb_scanned FROM wikistream.v_bq_cost_daily WHERE day >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) GROUP BY day ORDER BY day",
+          "format": 1
+        }
+      ]
     }
   ]
 }

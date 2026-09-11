@@ -202,6 +202,8 @@ def test_max_id_edges_consumer_copy():
     assert consumer._max_id("5", "10") == "10"
     assert consumer._max_id("10", "10") == "10"
     assert consumer._max_id("[", "[x") == "["
+    assert consumer._max_id("b", "a") == "b"  # plain-string fallback (line 116)
+    assert consumer._max_id("a", "b") == "b"
     assert (
         consumer._max_id('[{"offset": -1}]', '[{"timestamp": 7}]')
         == '[{"timestamp": 7}]'
@@ -431,6 +433,40 @@ def test_consume_flush_failure_counts_insert_failed(
     assert consumer.load_state()["last_event_id"] is None
 
 
+def test_consume_flush_job_exception_logs_flush_failed(
+    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+):
+    # _flush_job's except (lines 202-203): flush() itself raising (not the
+    # batch-dropped None-mid path the batcher handles internally).
+    real_flush = consumer.EventBatcher.flush
+    calls = {"n": 0}
+
+    async def boom_once(self, client):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("ch exploded")
+        return await real_flush(self, client)
+
+    patch_sleep(monkeypatch)
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[b"".join(frame(str(i), payload()) for i in range(1, 1001))]
+            )
+        ],
+    )
+    patch_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(consumer.EventBatcher, "flush", boom_once)
+    ch = FakeCh()
+
+    with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
+        run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert "flush_failed reason=ch exploded" in caplog.text
+    assert counters["total"] == 1000  # final flush still lands everything
+
+
 def test_consume_non_200_retry_after_reconnect(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):
@@ -496,6 +532,32 @@ def test_consume_stop_at_chunk_boundary_final_flush(
     run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["total"] == 1  # event 1 added, final flush on exit
+    assert consumer.load_state()["last_event_id"] == "1"
+
+
+def test_consume_stop_before_next_chunk_breaks_loop(
+    monkeypatch, tmp_path, counters, stop, fake_dl
+):
+    # Line 229: stop observed AT a chunk boundary (generator keeps yielding,
+    # unlike test_consume_stop_at_chunk_boundary_final_flush which ends).
+    patch_sleep(monkeypatch)
+
+    class StopMidStream(FakeResponse):
+        async def aiter_bytes(self):
+            yield self.chunks[0]
+            stop.set()
+            yield self.chunks[1]  # never consumed — loop breaks first
+
+    patch_http(
+        monkeypatch,
+        [StopMidStream(chunks=[frame("1", payload()), frame("2", payload())])],
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["total"] == 1  # only event 1 reached the parser
     assert consumer.load_state()["last_event_id"] == "1"
 
 
@@ -591,6 +653,42 @@ def test_main_happy_path_graceful_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(consumer, "heartbeat_loop", fake_heartbeat)
 
     run(consumer.main())  # must return without hanging
+
+
+def test_main_resumes_from_saved_state(monkeypatch, tmp_path, caplog):
+    # Line 402: main() logs resumed_from when durable state exists.
+    patch_state(monkeypatch, tmp_path)
+    consumer.save_state("42", 5)
+    seen = {}
+
+    async def fake_consume(client, stop_ev, resumed_from, counters):
+        seen["resumed_from"] = resumed_from
+        seen["total"] = counters["total"]
+        stop_ev.set()
+        return None
+
+    async def fake_heartbeat(client, counters, stop_ev):
+        return None
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", fake_consume)
+    monkeypatch.setattr(consumer, "heartbeat_loop", fake_heartbeat)
+
+    with caplog.at_level(logging.INFO, logger="wikistream.consumer"):
+        run(consumer.main())
+
+    assert seen == {"resumed_from": "42", "total": 5}
+    assert "resumed_from=42" in caplog.text
 
 
 def test_main_timeout_cancels_tasks(monkeypatch):

@@ -3,7 +3,11 @@
 -- consumer's insert shape (inserted_at, event) is unchanged (Q1): they
 -- compute at insert and backfill, feeding the MVs, dashboards, warehouse
 -- export, and Phase 4's GX checks.
--- 30-day TTL (ADR-006): raw events only; materialized aggregates are exempt.
+-- Raw TTL = 1 day (ADR-006 rev 2026-09-10): sized by capacity arithmetic, not by
+-- aspiration — measured ~0.47 KB/row at ~20M rows/day puts 30 days at ~280 GB
+-- against a 53 GB disk; the TTL could never fire there. Every live consumer
+-- (dashboards, GX rolling window, parity slice) needs <= 24h; BQ (hourly KPIs,
+-- 10% deterministic sample, kpi_daily) owns the history.
 -- max_suspicious_broken_parts = 1000: broken-parts-after-reset mitigation
 -- (implementation-log §2.6) — every PR deploy is a reset, and 001 is its
 -- only home now that initdb.d retires.
@@ -23,5 +27,5 @@ CREATE TABLE IF NOT EXISTS default.raw_events
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(inserted_at)
 ORDER BY (inserted_at, sipHash64(event))
-TTL inserted_at + INTERVAL 30 DAY
+TTL inserted_at + INTERVAL 1 DAY
 SETTINGS max_suspicious_broken_parts = 1000

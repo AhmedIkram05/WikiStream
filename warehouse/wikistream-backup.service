@@ -2,6 +2,8 @@
 Description=WikiStream hourly ClickHouse backup
 After=docker.service network-online.target
 Wants=network-online.target
+# A failed/timeout run journals silently; page Slack instantly instead (gap-2).
+OnFailure=wikistream-fail-notify@%n.service
 
 [Service]
 Type=oneshot

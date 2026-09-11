@@ -2,6 +2,8 @@
 Description=WikiStream hourly BigQuery export
 After=docker.service network-online.target
 Wants=network-online.target
+# A failed run journals silently; page Slack instantly instead (gap-2).
+OnFailure=wikistream-fail-notify@%n.service
 
 [Service]
 Type=oneshot
