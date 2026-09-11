@@ -1,0 +1,32 @@
+[
+  {
+    "name": "day",
+    "type": "DATE",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "wiki",
+    "type": "STRING",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "edits",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "bytes_delta",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "prev_day_edits",
+    "type": "INT64",
+    "mode": "NULLABLE"
+  },
+  {
+    "name": "dod_growth_pct",
+    "type": "FLOAT64",
+    "mode": "NULLABLE"
+  }
+]
