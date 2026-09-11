@@ -69,3 +69,14 @@ Numbered deviations discovered vs the phase plan (each marked DEVIATION, referen
 Reviewed 2026-08-14 — every binding enumerated and justified; all retained with rationale. No removals warranted. The material security finding of Phase 5C is the default firewall rules (`default-allow-ssh/rdp/icmp/internal`), addressed by §5C.2 (`null_resource` deletion on `terraform apply`). AC15 (IAM review complete + accurate, no phantom bindings) is satisfied by this doc's live cross-check of every row against `gcloud`/`bq` policy output.
 
 Verified live 2026-08-14 against gcloud/bq policy output — no phantom bindings.
+
+## Addendum — 2026-09-10 (scheduled-query transfer binding)
+
+**D7 / DEVIATION** — new bindings for the daily `kpi_daily` rollup
+(implementation-log §9.2): the BigQuery transfer **service agent** gets the
+deploy SA as `roles/iam.serviceAccountTokenCreator` (impersonation), and the
+deploy SA carries the BigQuery permissions used by the Terraform-managed
+`google_bigquery_data_transfer_config` scheduled query (06:00 `kpi_daily`
+MERGE). Scope is the one scheduled transfer + its destination dataset — no
+project-wide transfer admin. All Phase-5 rows above remain unchanged and
+retained; this is the only IAM surface added since the original review.

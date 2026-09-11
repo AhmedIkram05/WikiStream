@@ -981,3 +981,26 @@ without a recorded, understood fix.
 - **Still open (Phase 4 decisions):** Pydantic validation + dead-letter +
   restart-resume in the consumer, dedup, ingestion scope filter (Wikipedia-only
   domains), native BACKUP schedule, GX suite + enforcement.
+
+## Postscript — 2026-09-10 warehouse hardening
+
+Phase 3ACs unchanged; the BQ tier this phase stood up got hardened after the
+evidence pass (implementation-log §9.1–9.3 for the full record):
+
+- **Hourly loads are now idempotent:** `bq load` writes per-run **staging
+  tables**, and committed MERGE SQL (`merge_edits/top_pages/sizes.sql`;
+  raw sample = windowed DELETE+INSERT in a transaction) upserts into the
+  finals. The §6 "append-only, PINNED windows, no merges" design note above is
+  superseded — parity remediation ("re-run `export.sh`") now converges exactly.
+- **New daily gold table `kpi_daily`** (day/wiki/edits/bytes_delta/dod growth)
+  rolls up the hourly KPI tables at 06:00 via a Terraform-managed BigQuery
+  scheduled-query transfer — the load path never depended on GCS JSONL; the
+  JSONL copy is a 7-day backup.
+- **Governance:** `require_partition_filter`, table expirations (730d/90d/7d/
+  365d), clustering, and the `v_bq_cost_daily` INFORMATION_SCHEMA view wired
+  into Grafana. The "5 partitioned tables" count above reads 6 finals + 4
+  staging tables today (`kpi_daily` added).
+- **Raw TTL superseded:** this phase's "30-day TTL (ADR-006)" never survived
+  capacity arithmetic (implementation-log §9.12): ~0.47 KB/row × ~20 M
+  rows/day ⇒ 30 days ≈ 280 GB vs a 53 GB disk; TTL is now **1 day**, and the
+  native backup runs daily at 06:20 instead of hourly.
