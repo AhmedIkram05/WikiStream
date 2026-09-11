@@ -1,8 +1,8 @@
 [Unit]
-Description=WikiStream hourly ClickHouse backup timer
+Description=WikiStream daily ClickHouse backup timer
 
 [Timer]
-OnCalendar=*-*-* *:20:00
+OnCalendar=*-*-* 06:20:00
 Persistent=true
 
 [Install]

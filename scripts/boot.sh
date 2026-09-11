@@ -51,11 +51,13 @@ echo "user bootstrap ok"
 #    lines; any non-zero exit aborts boot.sh via set -e).
 CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream CH_PASSWORD=${CH_PASSWORD} MIGRATIONS_DIR=/opt/wikistream/migrations bash /opt/wikistream/migrations/apply.sh
 
-# Phase 3C/4B: install BigQuery export + parity + backup + GX systemd units/timers
+# Phase 3C/4B: install BigQuery export + parity + backup + GX systemd units/timers,
+# plus the OnFailure page-template (batch failures Slack instantly, incl. GX crashes).
 cp /opt/wikistream/warehouse/wikistream-export.service /opt/wikistream/warehouse/wikistream-export.timer \
    /opt/wikistream/warehouse/wikistream-parity.service /opt/wikistream/warehouse/wikistream-parity.timer \
    /opt/wikistream/warehouse/wikistream-backup.service /opt/wikistream/warehouse/wikistream-backup.timer \
-   /opt/wikistream/gx/wikistream-gx.service /opt/wikistream/gx/wikistream-gx.timer /etc/systemd/system/
+   /opt/wikistream/gx/wikistream-gx.service /opt/wikistream/gx/wikistream-gx.timer \
+   /opt/wikistream/warehouse/wikistream-fail-notify@.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now wikistream-export.timer wikistream-parity.timer wikistream-backup.timer wikistream-gx.timer
 
