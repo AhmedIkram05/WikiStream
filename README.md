@@ -149,12 +149,12 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 </p>
 
 <p align="center">
-  <img src="assets/slack.gif" alt="Grafana to Slack alert" width="760"/>
+  <img src="assets/slack.webp" alt="Grafana to Slack alert" width="760"/>
   <em>Grafana→Slack: app/pipeline alert firing to Slack.</em>
 </p>
 
 <p align="center">
-  <img src="assets/emails.gif" alt="Cloud Monitoring to email alert" width="760"/>
+  <img src="assets/emails.webp" alt="Cloud Monitoring to email alert" width="760"/>
   <em>Cloud Monitoring→email: infra alert delivering to email.</em>
 </p>
 
@@ -185,7 +185,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 </p>
 
 <p align="center">
-  <img src="assets/bigquery-gcp.gif" alt="BigQuery warehouse tables" width="760"/>
+  <img src="assets/bigquery-gcp.webp" alt="BigQuery warehouse tables" width="760"/>
   <em>BigQuery warehouse: partitioned tables loaded via staging + MERGE upserts (idempotent hourly re-runs), plus the kpi_daily gold rollup.</em>
 </p>
 
@@ -207,7 +207,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 </p>
 
 <p align="center">
-  <img src="assets/vpc-gcp.gif" alt="VPC firewall console" width="760"/>
+  <img src="assets/vpc-gcp.webp" alt="VPC firewall console" width="760"/>
   <em>VPC/firewall console.</em>
 </p>
 

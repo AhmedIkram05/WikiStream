@@ -78,7 +78,7 @@ SETTINGS max_suspicious_broken_parts = 1000
 Sample of real persisted rows:
 
 <p align="center">
-  <img src="assets/clickhouse-sample.png" alt="Real ClickHouse rows" width="760"/>
+  <img src="../assets/clickhouse-sample.png" alt="Real ClickHouse rows" width="760"/>
   <em>Actual rows from the live table - categorize/edit/new events across commons, zh, wikidata projects.</em>
 </p>
 
@@ -134,7 +134,7 @@ The warehouse tier answers "what happened last month?" without keeping raw data 
 **Proven end-to-end:** export run at 18:00:19 → 18:03:33 delivered `rows_edits=272, rows_top_pages=40,870, rows_sizes=6, rows_raw_sample=10,516`; the parity check confirmed `edits=48,833 / bytes_delta=43,943,656` match ClickHouse exactly; freshness panel read 14 minutes. When parity *did* fire during chaos testing (a windowed DELETE of the BQ tables), the remediation - re-run `export.sh`, which reloads the identical window - restored `verdict 1.0` and the alert cleared.
 
 <p align="center">
-  <img src="assets/bigquery-gcp.gif" alt="BigQuery console" width="760"/>
+  <img src="../assets/bigquery-gcp.webp" alt="BigQuery console" width="760"/>
   <em>The BigQuery dataset in the GCP console - partitioned tables loaded through staging + MERGE, hourly, verified parity.</em>
 </p>
 
@@ -199,7 +199,7 @@ Sampling uses `rand() < int(0x100000000 * rate)` - `%`-based sampling breaks thr
 | Restore | **Verified once, exactly:** restored `backup-20260813-165326` from GCS → `restore_check.raw_events` `count() WHERE inserted_at <= 16:53:28.084` = **4,514,837 == 4,514,837 exact** |
 
 <p align="center">
-  <img src="assets/storage-buckets-gcp.png" alt="GCS storage buckets" width="760"/>
+  <img src="../assets/storage-buckets-gcp.png" alt="GCS storage buckets" width="760"/>
   <em>GCS in the console - the backups bucket (keep-last-2, age-2-day lifecycle) and the BigQuery staging bucket (7-day lifecycle).</em>
 </p>
 
@@ -240,12 +240,12 @@ Every rule fired, **Slack and email delivery confirmed by the recipient**, then 
 Fourth channel added 2026-09-10: systemd **`OnFailure` → templated Slack page** (`wikistream-fail-notify@%n`) on all four batch oneshots — it covers the blind spot where a job *fails* without writing a pipeline_health verdict (GX crash = no 0.0 verdict; export/merge errors only surface via freshness after 2h). Not exercised by the chaos battery; verified by a guarded dry run (missing webhook → loud exit 1, so a broken alert config self-reports rather than silently paging nothing) plus shell/CI lint gates; first live page lands with the next gated GCP apply.
 
 <p align="center">
-  <img src="assets/slack.gif" alt="Slack alert delivery" width="620"/>
+  <img src="../assets/slack.webp" alt="Slack alert delivery" width="620"/>
   <em>Slack alert delivery - the alert fired, then cleared, end-to-end on the live system.</em>
 </p>
 
 <p align="center">
-  <img src="assets/emails.gif" alt="Email alert delivery" width="620"/>
+  <img src="../assets/emails.webp" alt="Email alert delivery" width="620"/>
   <em>Cloud Monitoring email alerts for disk-almost-full and vm-unreachable.</em>
 </p>
 
@@ -328,12 +328,12 @@ The 2 skips are `pytest.importorskip("great_expectations")` - GX pins Python 3.1
 State lives in `gs://wikistream-505003-terraform-state` (bootstrap config, local state, **never destroyed**). Terraform ~1.15 / Google provider 7.43.
 
 <p align="center">
-  <img src="assets/vm-gcp.png" alt="GCP VM" width="620"/>
+  <img src="../assets/vm-gcp.png" alt="GCP VM" width="620"/>
   <em>The VM - e2-medium, static IP, both disks, OS Login.</em>
 </p>
 
 <p align="center">
-  <img src="assets/vpc-gcp.gif" alt="VPC network" width="620"/>
+  <img src="../assets/vpc-gcp.webp" alt="VPC network" width="620"/>
   <em>The VPC network - custom subnet and the four lockdown firewall rules.</em>
 </p>
 ## CI/CD Pipeline
@@ -361,17 +361,17 @@ flowchart TD
 The apply path does double duty as the deploy mechanism: `startup.sh` edits force a VM recreate (`metadata_startup_script` is `ForceNew` in the provider), and a boot-time `git fetch origin && git reset --hard origin/HEAD` guarantees the VM runs exactly the merged tree.
 
 <p align="center">
-  <img src="assets/ci-gh-actions.png" alt="CI run" width="620"/>
+  <img src="../assets/ci-gh-actions.png" alt="CI run" width="620"/>
   <em>CI - lint, tests, coverage gates, image build.</em>
 </p>
 
 <p align="center">
-  <img src="assets/plan-gh-actions.png" alt="Terraform plan" width="620"/>
+  <img src="../assets/plan-gh-actions.png" alt="Terraform plan" width="620"/>
   <em>plan.yml - automatic plan comment on every PR.</em>
 </p>
 
 <p align="center">
-  <img src="assets/apply-gh-actions.png" alt="Terraform apply" width="620"/>
+  <img src="../assets/apply-gh-actions.png" alt="Terraform apply" width="620"/>
   <em>apply.yml - gated apply, then VM reset.</em>
 </p>
 ## Security Model
@@ -386,7 +386,7 @@ The apply path does double duty as the deploy mechanism: `startup.sh` edits forc
 | Secrets in state | `secrets.tf` generates `random_password` → Secret Manager only; rotation noted as a Phase-5 follow-up |
 
 <p align="center">
-  <img src="assets/IAM-gcp.png" alt="IAM review" width="620"/>
+  <img src="../assets/IAM-gcp.png" alt="IAM review" width="620"/>
   <em>IAM - the deploy service account in the GCP console; every binding reviewed in the 22-row matrix.</em>
 </p>
 ## Project Structure
