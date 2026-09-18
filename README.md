@@ -122,7 +122,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (577,738 events total) |
 | Dashboard query speedup (MV vs raw scan) | **15.0x p50 / 13.2x p99** (Q1), **3.8x / 3.5x** (Q2) |
 | Rows scanned per query (MV vs raw) | **0.23M vs 46.8M - ~200x fewer** |
-| Test suite | **161 passed, 2 skipped** full suite incl. live ClickHouse (**130/2 in the offline CI gate**) - **100% coverage of consumer src (497 stmts, 0 miss)**; black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
+| Test suite | **176 total (169 + 7 param)** full suite incl. live ClickHouse (offline CI gate subset runs separately) - **100% coverage of consumer src (497 stmts, 0 miss)**; black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
 | Warehouse idempotency | **staging → MERGE** hourly loads - re-running any window converges (parity remediation is literally "re-run export.sh") |
 | Business-critical modules (6) | **262/262 statements - 100.00%** |
 | Great Expectations gate | **11/11 expectations, exit 0**, hourly on a 5% sample |
@@ -169,7 +169,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/pytest-coverage.png" alt="pytest full suite" width="760"/>
-  <em>Full suite with live ClickHouse: 161 passed, 2 skipped in 65.63s; 100% coverage across consumer src (497 stmts, 0 miss).</em>
+  <em>Full suite with live ClickHouse: 176 total in 65.63s; 100% coverage across consumer src (497 stmts, 0 miss).</em>
 </p>
 
 <p align="center">
