@@ -298,11 +298,11 @@ Itemized from the real `gcloud` inventory at us-east1 rates (a full month was ne
 
 | Layer | Result |
 | --- | --- |
-| CI suite (`pytest -m "not ch"`) | **130 passed, 2 skipped** (GX gated separately) |
-| Full suite (all tests, live ClickHouse) | **161 passed, 2 skipped** in ~66s - coverage TOTAL `497 / 0 / 100%` |
+| CI suite (`pytest -m "not ch"`) | offline CI gate subset runs separately (GX gated separately) |
+| Full suite (all tests, live ClickHouse) | **176 total (169 + 7 param)** in ~66s - coverage TOTAL `497 / 0 / 100%` |
 | Shell batch jobs | **5 black-box contracts** - PATH-shimmed `date/docker/bq/gcloud/gsutil` harness proves window math, bq orchestration, the `export_runs` JSON contract, fail-loud exit codes (OnFailure paging), and backup prune order/count without any cloud or container |
 | Batch-unit wiring | **4 contracts** - OnFailure Slack-page assertions over the four unit files, the fail-notify template, the guarded script, and boot.sh's install line |
-| `pytest-coverage.png` receipt | the full-suite card - regenerated to current truth whenever the test surface changes (currently **161/2 in 65.63s**, coverage `497 / 0 / 100%`) |
+| `pytest-coverage.png` receipt | the full-suite card - regenerated to current truth whenever the test surface changes (currently **176 total (169 + 7 param) in 65.63s**, coverage `497 / 0 / 100%`) |
 | Coverage - consumer src | **100% (497 stmts, 0 miss)** |
 | Coverage - 6 business-critical modules | **262/262 = 100.00%** (`sse`, `models`, `batcher`, `dead_letter`, `heartbeat`, `healthcheck`) |
 | Coverage - `gx/suite.py` | **89/89 = 100%** (parallel-mode `coverage combine`) |
