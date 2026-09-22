@@ -16,6 +16,10 @@ permissions:
 
 jobs:
   plan:
+    # Dependabot PRs skip the GCP-backed plan: the deploy SA / WIF is no
+    # longer active, so auth fails and the PR is blocked. fmt/validate still
+    # run locally without WIF, so cheap lint feedback is preserved.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # terraform.tfvars is gitignored (hygiene: personal values never in the
