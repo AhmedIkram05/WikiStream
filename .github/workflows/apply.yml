@@ -23,7 +23,12 @@ jobs:
   # Ungated on purpose: producing an immutable image is not a deployment
   # decision. The reviewer gate belongs on the apply job below, not on
   # building artifacts (ADR-008).
+  #
+  # Master switch: repo variable GCP_DEPLOY_ENABLED (see plan.yml). The
+  # deploy SA / WIF pool is disabled, so both jobs fail the WIF exchange on
+  # every push; unset variable = skipped, not red. apply follows via needs.
   build-push:
+    if: vars.GCP_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

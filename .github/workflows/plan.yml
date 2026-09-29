@@ -6,20 +6,50 @@ name: Terraform Plan
 on:
   pull_request:
 
-# Fork note: fork PRs get no OIDC token (public repo — expected), so auth
-# fails and the check goes red there. Plan runs for contributor PRs only;
-# accepted, documented in ADR-008.
+# Fork note: fork PRs get no OIDC token (public repo — expected), so plan
+# would fail auth there even with a live GCP identity; accepted, documented
+# in ADR-008.
 permissions:
   id-token: write # WIF exchange for the deploy SA
   contents: read # checkout
   pull-requests: write # post the plan comment
 
 jobs:
+  # No GCP dependency: fmt/validate never touch the backend or any Google
+  # API, so this runs for every PR, dependabot included. Only the plan job
+  # below needs the WIF exchange.
+  tf-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.6 # match local dev (1.15.6); do not float
+
+      - name: Format check
+        working-directory: infra/main
+        run: terraform fmt -check
+
+      # -backend=false: validate does not read state, so no GCS access.
+      # -input=false: never let CI hang on an interactive prompt.
+      - name: Init (no backend)
+        working-directory: infra/main
+        run: terraform init -input=false -backend=false
+
+      - name: Validate
+        working-directory: infra/main
+        run: terraform validate
+
+  # Master switch: repo variable GCP_DEPLOY_ENABLED. The deploy SA / WIF pool
+  # (infra/bootstrap) is disabled, so the WIF exchange fails with
+  # invalid_target and used to turn every human PR red. Unset variable = job
+  # skipped, not failed. Restore the pool, set the variable to 'true', and
+  # plan comments come back. Dependabot PRs keep their skip: dep bumps touch
+  # no terraform, so a plan run would be signal-free runner spend.
   plan:
-    # Dependabot PRs skip the GCP-backed plan: the deploy SA / WIF is no
-    # longer active, so auth fails and the PR is blocked. fmt/validate still
-    # run locally without WIF, so cheap lint feedback is preserved.
-    if: github.actor != 'dependabot[bot]'
+    if: vars.GCP_DEPLOY_ENABLED == 'true' && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # terraform.tfvars is gitignored (hygiene: personal values never in the
