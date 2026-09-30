@@ -20,15 +20,25 @@ permissions:
   id-token: write
 
 jobs:
+  # Master switch: repo variable GCP_DEPLOY_ENABLED (see plan.yml). The
+  # deploy SA / WIF pool is disabled, so cloud jobs would fail the WIF
+  # exchange on every push; disabled runs still conclude SUCCESS so the
+  # workflow badge stays green while deploys are switched off.
+  deploy-switch:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.eval.outputs.enabled }}
+    steps:
+      - name: Evaluate deploy switch
+        id: eval
+        run: echo "enabled=${{ vars.GCP_DEPLOY_ENABLED == 'true' }}" >> "$GITHUB_OUTPUT"
+
   # Ungated on purpose: producing an immutable image is not a deployment
   # decision. The reviewer gate belongs on the apply job below, not on
   # building artifacts (ADR-008).
-  #
-  # Master switch: repo variable GCP_DEPLOY_ENABLED (see plan.yml). The
-  # deploy SA / WIF pool is disabled, so both jobs fail the WIF exchange on
-  # every push; unset variable = skipped, not red. apply follows via needs.
   build-push:
-    if: vars.GCP_DEPLOY_ENABLED == 'true'
+    needs: deploy-switch
+    if: needs.deploy-switch.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
