@@ -309,6 +309,7 @@ terraform -chdir=infra/main plan   # preview
 | [docs/planning/vision-and-adr.md](docs/planning/vision-and-adr.md) | Product vision, component inventory, 11 ADRs, trade-off analysis |
 | [docs/planning/iam-review.md](docs/planning/iam-review.md) | 22-row IAM review matrix with recorded deviations |
 | [docs/planning/coverage-boundary.md](docs/planning/coverage-boundary.md) | Which modules are business-critical and why |
+| [docs/local-clickhouse.md](docs/local-clickhouse.md) | Local-only `legacy-raw-events.tsv.gz` fixture: what it is and how to re-import |
 
 ## About This Project
 
