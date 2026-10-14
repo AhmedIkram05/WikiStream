@@ -1,6 +1,6 @@
 # GX 0.18.22 pins pandas<2.2.0 / numpy<2.0.0 which have no cp313 wheels — this
 # image MUST stay on Python 3.12 (mirrored by the requires-python upper bound).
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # uv is the package manager for this project (pyproject.toml + uv.lock).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
