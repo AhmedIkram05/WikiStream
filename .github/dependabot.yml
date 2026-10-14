@@ -1,3 +1,6 @@
+# Dependabot — unified Monday-morning dependency updates.
+# Weekly, Monday 09:00 Europe/London. Minor/patch bumps are grouped into one
+# PR per ecosystem; majors stay individual PRs for review.
 version: 2
 updates:
   # Python deps (consumer/pyproject.toml + uv.lock). The dedicated `uv`
@@ -7,31 +10,112 @@ updates:
   - package-ecosystem: uv
     directory: /consumer
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
     commit-message:
-      prefix: "deps(python)"
+      prefix: "chore"
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
 
-  # GitHub Actions: action version bumps + workflow linting
+  # Python deps (gx/pyproject.toml + uv.lock) — the Great Expectations suite.
+  - package-ecosystem: uv
+    directory: /gx
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "chore"
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions: action version bumps + workflow linting.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
     commit-message:
-      prefix: "deps(actions)"
+      prefix: "chore"
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
 
-  # Container base image (consumer/Dockerfile)
+  # Container base image (consumer/Dockerfile).
   - package-ecosystem: docker
     directory: /consumer
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
     commit-message:
-      prefix: "deps(docker)"
+      prefix: "chore"
+    groups:
+      docker-all:
+        patterns: ["*"]
 
-  # Terraform providers. Seam: when infra/main + infra/bootstrap land
-  # (Phase 2), point each module here as its own directory entry.
+  # Container base image (gx/Dockerfile).
+  - package-ecosystem: docker
+    directory: /gx
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore"
+    groups:
+      docker-all:
+        patterns: ["*"]
+
+  # Terraform providers (infra/main + infra/bootstrap).
   - package-ecosystem: terraform
     directory: /infra
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - terraform
     commit-message:
-      prefix: "deps(terraform)"
+      prefix: "chore"
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
