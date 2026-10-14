@@ -25,25 +25,6 @@ updates:
       minor-patch:
         update-types: ["minor", "patch"]
 
-  # Python deps (gx/pyproject.toml + uv.lock) — the Great Expectations suite.
-  - package-ecosystem: uv
-    directory: /gx
-    schedule:
-      interval: weekly
-      day: monday
-      time: "09:00"
-      timezone: Europe/London
-    target-branch: main
-    open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - python
-    commit-message:
-      prefix: "chore"
-    groups:
-      minor-patch:
-        update-types: ["minor", "patch"]
-
   # GitHub Actions: action version bumps + workflow linting.
   - package-ecosystem: github-actions
     directory: /
@@ -101,9 +82,30 @@ updates:
       docker-all:
         patterns: ["*"]
 
-  # Terraform providers (infra/main + infra/bootstrap).
+  # Terraform providers. infra/main and infra/bootstrap are separate
+  # directories and Dependabot's terraform ecosystem does NOT recurse, so each
+  # module needs its own entry — a bare `/infra` finds no .tf files and the
+  # updater errors with "No files found in /infra".
   - package-ecosystem: terraform
-    directory: /infra
+    directory: /infra/main
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/London
+    target-branch: main
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - terraform
+    commit-message:
+      prefix: "chore"
+    groups:
+      minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: terraform
+    directory: /infra/bootstrap
     schedule:
       interval: weekly
       day: monday
