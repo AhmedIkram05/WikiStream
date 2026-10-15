@@ -77,7 +77,7 @@ def _suite_command() -> list[str]:
     return [sys.executable, "-m", "gx.suite"]
 
 
-def _run_suite(table: str) -> tuple[int, dict]:
+def _run_suite(table: str, window_end: datetime) -> tuple[int, dict]:
     env = {
         **os.environ,
         "CLICKHOUSE_HOST": HOST,
@@ -86,6 +86,10 @@ def _run_suite(table: str) -> tuple[int, dict]:
         "CLICKHOUSE_PASSWORD": PASSWORD,
         "GX_TABLE": table,
         "GX_WINDOW_HOURS": "1",
+        # Pin the validated window to the one the fixture was built with —
+        # otherwise a wall-clock hop across an hour boundary between insert and
+        # run makes the suite see an empty window.
+        "GX_WINDOW_END": window_end.isoformat(),
         "GX_ROW_MIN": "1",
         "GX_ROW_MAX": "500000",
         "GX_SAMPLE_RATE": "1.0",  # no sampling in tests — full deterministic batches
@@ -119,7 +123,7 @@ def test_valid_fixture_passes():
     try:
         client.command(CREATE_SQL.format(table=table))
         client.command(f"TRUNCATE TABLE {table}")
-        start, _ = _window()
+        start, end = _window()
         inserted_at = start + timedelta(minutes=30)
         event_ts = inserted_at - timedelta(seconds=60)
         rows = []
@@ -138,7 +142,7 @@ def test_valid_fixture_passes():
                 ]
             )
         client.insert(table, rows, column_names=COLUMNS)
-        rc, report = _run_suite(table)
+        rc, report = _run_suite(table, end)
         assert rc == 0, report
         assert report["success"] is True
         assert report["row_count"] == 200
@@ -153,7 +157,7 @@ def test_bad_fixture_fails():
     try:
         client.command(CREATE_SQL.format(table=table))
         client.command(f"TRUNCATE TABLE {table}")
-        start, _ = _window()
+        start, end = _window()
         inserted_at = start + timedelta(minutes=30)
         rows = []
         for i in range(200):
@@ -175,7 +179,7 @@ def test_bad_fixture_fails():
                 ]
             )
         client.insert(table, rows, column_names=COLUMNS)
-        rc, report = _run_suite(table)
+        rc, report = _run_suite(table, end)
         assert rc != 0, report
         assert report["success"] is False
         assert report["expectations_failed"] >= 1

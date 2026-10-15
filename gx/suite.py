@@ -95,7 +95,15 @@ def main() -> int:
     sample_threshold = max(1, int(0x100000000 * sample_rate))
     run_id = datetime.now(timezone.utc).isoformat()
 
-    end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    # GX_WINDOW_END pins the window end (ISO-8601). Tests set it so the fixture
+    # rows and this process agree even if the wall clock crosses an hour
+    # boundary mid-test; unset in production → last completed UTC hour.
+    window_end_env = os.getenv("GX_WINDOW_END")
+    end = (
+        datetime.fromisoformat(window_end_env)
+        if window_end_env
+        else datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    )
     start = end - timedelta(hours=window_hours)
     start_s = start.strftime("%Y-%m-%d %H:%M:%S")
     end_s = end.strftime("%Y-%m-%d %H:%M:%S")
