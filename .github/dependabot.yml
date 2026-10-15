@@ -78,6 +78,13 @@ updates:
       - docker
     commit-message:
       prefix: "chore"
+    ignore:
+      # gx pins CPython 3.12 (requires-python ">=3.12,<3.13"; GX 0.18.x needs
+      # pandas<2.2 / numpy<2.0, which have no cp313+ wheels). Ignore the python
+      # base-image major so the unsupported 3.14 bump is not re-proposed — the
+      # image must stay on python:3.12-slim (see gx/Dockerfile).
+      - dependency-name: "python"
+        versions: [">= 3.13"]
     groups:
       docker-all:
         patterns: ["*"]
