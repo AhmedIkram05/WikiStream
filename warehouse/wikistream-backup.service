@@ -1,5 +1,5 @@
 [Unit]
-Description=WikiStream hourly ClickHouse backup
+Description=WikiStream daily ClickHouse backup
 After=docker.service network-online.target
 Wants=network-online.target
 # A failed/timeout run journals silently; page Slack instantly instead (gap-2).

@@ -29,8 +29,10 @@ if [ -f /opt/wikistream/.env ]; then
   # Extract only what we need — sourcing a rotated .env as shell code would let
   # a value containing quotes/semicolons mangle the variables (compose parses
   # the same file safely; shell source does not).
-  CLICKHOUSE_PASSWORD="$(grep -E '^CLICKHOUSE_PASSWORD=' /opt/wikistream/.env | tail -n1 | cut -d= -f2-)"
-  CH_DATA_DIR="${CH_DATA_DIR:-$(grep -E '^CH_DATA_DIR=' /opt/wikistream/.env | tail -n1 | cut -d= -f2-)}"
+  # `|| true` on each: a missing key makes grep exit 1, which under pipefail
+  # would abort here and never reach the friendly diagnostic below.
+  CLICKHOUSE_PASSWORD="$(grep -E '^CLICKHOUSE_PASSWORD=' /opt/wikistream/.env | tail -n1 | cut -d= -f2- || true)"
+  CH_DATA_DIR="${CH_DATA_DIR:-$(grep -E '^CH_DATA_DIR=' /opt/wikistream/.env | tail -n1 | cut -d= -f2- || true)}"
 fi
 
 if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then

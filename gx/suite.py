@@ -125,8 +125,9 @@ def main() -> int:
             host=host, port=port, username=user, password=password
         )
     except Exception as exc:
-        # Construction-time failure: the verdict still lands in
-        # pipeline_health (value 0.0) and the suite fails loudly.
+        # Construction-time failure: no pipeline_health row is written (client
+        # is None, so report_status bails), so Grafana's gx-fail rule cannot
+        # fire — only the systemd OnFailure path covers this.
         verdict = {
             "success": False,
             "window_start": start.isoformat(),
