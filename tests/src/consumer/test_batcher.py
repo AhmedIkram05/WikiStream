@@ -126,6 +126,41 @@ def test_failed_flush_drops_rows():
     assert b.pending_count == 1
 
 
+def test_failed_flush_unmarks_ids_for_replay():
+    """A dropped batch's ids must leave the dedup ring, or a later server
+    replay (Last-Event-ID) hits seen() and the rows are lost until restart."""
+    fake = FakeClient(fail=True)
+    b = EventBatcher(now=constant_clock)
+    for event_id in ["1", "2", "3"]:
+        b.add(("t", "d"), event_id)
+    assert asyncio.run(b.flush(fake)) == (None, 3)
+    assert all(b.seen(event_id) is False for event_id in ("1", "2", "3"))
+
+    # Same ids replay → re-added, and the retry flush lands them.
+    ok = FakeClient()
+    for event_id in ["1", "2", "3"]:
+        assert b.add(("t", "d"), event_id) is False
+    assert asyncio.run(b.flush(ok)) == ("3", 3)
+    assert ok.calls[0]["data"] == [("t", "d")] * 3
+    assert all(b.seen(event_id) for event_id in ("1", "2", "3"))
+
+
+def test_unmark_survives_ring_eviction():
+    """Ids already evicted from a full ring must not break the unmark rebuild
+    (ring and set mirror stay in sync with maxlen preserved)."""
+    fake = FakeClient(fail=True)
+    b = EventBatcher(dedup_capacity=3, now=constant_clock)
+    for event_id in ["1", "2", "3", "4", "5"]:
+        b.add(("t", "d"), event_id)
+    assert b.seen("1") is False and b.seen("2") is False  # evicted at add-time
+    assert asyncio.run(b.flush(fake)) == (None, 5)
+    assert b.seen("3") is False and b.seen("4") is False and b.seen("5") is False
+    for event_id in ["6", "7", "8", "9"]:
+        b.add(("t", "d"), event_id)
+    assert b.seen("3") is False and b.seen("6") is False  # 3 evicted again, 6 kept
+    assert b.seen("7") is True and b.seen("8") is True and b.seen("9") is True
+
+
 def test_flush_empty():
     fake = FakeClient()
     assert asyncio.run(EventBatcher().flush(fake)) == (None, 0)

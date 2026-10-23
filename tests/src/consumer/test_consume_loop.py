@@ -433,6 +433,48 @@ def test_consume_flush_failure_counts_insert_failed(
     assert consumer.load_state()["last_event_id"] is None
 
 
+def test_consume_replays_dropped_batch_after_flush_failure(
+    monkeypatch, tmp_path, counters, stop, fake_dl
+):
+    """H1 regression: after a failed flush the dropped ids are unmarked, so a
+    server replay (same Last-Event-ID window, since the cursor never advanced)
+    re-inserts them instead of being skipped as duplicates for the process
+    lifetime. CH blips must not cost ~23s of stream permanently."""
+    waits = {"n": 0}
+
+    async def reconnect_then_stop(stop_ev, seconds):
+        waits["n"] += 1
+        return waits["n"] > 1  # 1st reconnect opens pass 2; 2nd exits
+
+    monkeypatch.setattr(consumer, "_sleep_or_stop", reconnect_then_stop)
+
+    class OnceFailingCh(FakeCh):
+        """CH blip: first insert fails, later inserts succeed."""
+
+        async def insert(self, table, data, column_names=None, settings=None):
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("boom")
+            self.calls.append((table, len(data)))
+            self.rows += len(data)
+
+    replay = b"".join(frame(str(i), payload()) for i in range(1, 1001))
+    patch_http(
+        monkeypatch,
+        [FakeResponse(chunks=[replay]), FakeResponse(chunks=[replay])],
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = OnceFailingCh(fail=True)  # inherits FakeCh.__init__; fails first insert only
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["insert_failed"] == 1000
+    assert counters["duplicates_skipped"] == 0  # replay not eaten by the ring
+    assert counters["total"] == 1000
+    assert ch.rows == 1000
+    assert consumer.load_state()["last_event_id"] == "1000"  # cursor: success only
+
+
 def test_consume_flush_job_exception_logs_flush_failed(
     monkeypatch, tmp_path, counters, stop, fake_dl, caplog
 ):

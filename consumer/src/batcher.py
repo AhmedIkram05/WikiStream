@@ -3,12 +3,13 @@
 EventBatcher accumulates rows until size/age thresholds are met, then flushes
 them in one async_insert to default.raw_events. At-most-once: a failed flush
 DROPS the batch (counted by the caller) — the stream is the source of truth
-and replay refills the dedup ring after a kill, so duplicates are cheap and
-losses are the thing to avoid (Q1: one row per event, best-effort).
+and replay refills the dedup ring after a kill or a failed flush, so
+duplicates are cheap and losses are the thing to avoid (Q1: one row per
+event, best-effort).
 
 Dedup ring is memory-only (capacity 50_000 ≈ 20 min at ~44 ev/s): after a
-kill the server's replay (Last-Event-ID) refills it; the BQ parity check is
-the long-tail safety net.
+kill (or a dropped batch) the server's replay (Last-Event-ID) refills it; the
+BQ parity check is the long-tail safety net.
 """
 
 import json
@@ -72,6 +73,7 @@ class EventBatcher:
         self._ring = deque(maxlen=dedup_capacity)
         self._ring_set: set[str] = set()
         self._pending: list[tuple] = []
+        self._pending_ids: list[str] = []
         self._first_added_at: float | None = None
         self._batch_max_id: str | None = None
         self._now = now or time.monotonic
@@ -92,6 +94,19 @@ class EventBatcher:
         self._ring.append(event_id)
         self._ring_set.add(event_id)
 
+    def _unmark_batch(self, ids: list[str]) -> None:
+        """Release a dropped batch's ids from ring + set so the server's
+        replay (Last-Event-ID) can re-add them — keeping the marks would make
+        the loss unrecoverable until the next process restart."""
+        if not ids:
+            return
+        dropped = set(ids)
+        survivors = [eid for eid in self._ring if eid not in dropped]
+        self._ring.clear()
+        self._ring.extend(survivors)
+        self._ring_set.clear()
+        self._ring_set.update(survivors)
+
     def add(self, event_row: tuple, event_id: str | None) -> bool:
         """Append a row; mark event_id (when given); True when a flush is due.
 
@@ -101,6 +116,7 @@ class EventBatcher:
             self._first_added_at = self._now()
         self._pending.append(event_row)
         if event_id is not None:
+            self._pending_ids.append(event_id)
             self._mark(event_id)
             self._batch_max_id = (
                 event_id
@@ -116,14 +132,17 @@ class EventBatcher:
         """Flush pending rows; returns (max_event_id, count).
 
         max_event_id = maximum event id in the batch (None if the batch had
-        no ids). On ANY exception the batch is DROPPED (at-most-once) and
+        no ids). On ANY exception the batch is DROPPED (at-most-once), its
+        ids are unmarked so a later server replay can refill them, and
         (None, len) is returned — the caller logs and counts the loss.
         """
         if not self._pending:
             return (None, 0)
         pending = self._pending
+        batch_ids = self._pending_ids
         batch_max = self._batch_max_id
         self._pending = []
+        self._pending_ids = []
         self._first_added_at = None
         self._batch_max_id = None
         try:
@@ -135,5 +154,6 @@ class EventBatcher:
             )
         except Exception as exc:
             logger.warning("flush_failed reason=%s", exc)
+            self._unmark_batch(batch_ids)
             return (None, len(pending))
         return (batch_max, len(pending))
