@@ -145,6 +145,18 @@ def test_failed_flush_unmarks_ids_for_replay():
     assert all(b.seen(event_id) for event_id in ("1", "2", "3"))
 
 
+def test_failed_flush_no_ids_skips_unmark():
+    """A dropped batch with only None event ids has an empty _pending_ids, so
+    _unmark_batch must take its no-ids early return (and the ring stays empty)."""
+    fake = FakeClient(fail=True)
+    b = EventBatcher(now=constant_clock)
+    for _ in range(3):
+        b.add(("t", "d"), None)
+    assert asyncio.run(b.flush(fake)) == (None, 3)
+    assert b.pending_count == 0
+    assert not b._ring and not b._ring_set
+
+
 def test_unmark_survives_ring_eviction():
     """Ids already evicted from a full ring must not break the unmark rebuild
     (ring and set mirror stay in sync with maxlen preserved)."""
