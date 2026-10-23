@@ -19,5 +19,6 @@ USING (
   WHERE day >= DATE(TIMESTAMP('{START}')) AND day <= DATE(TIMESTAMP('{END}'))
 ) AS S
 ON T.day = S.day AND T.wiki = S.wiki
+  AND T.day >= DATE(TIMESTAMP('{START}')) AND T.day <= DATE(TIMESTAMP('{END}'))
 WHEN MATCHED THEN UPDATE SET edits = S.edits, bytes_delta = S.bytes_delta, prev_day_edits = S.prev_day_edits, dod_growth_pct = S.dod_growth_pct
 WHEN NOT MATCHED THEN INSERT (day, wiki, edits, bytes_delta, prev_day_edits, dod_growth_pct) VALUES (S.day, S.wiki, S.edits, S.bytes_delta, S.prev_day_edits, S.dod_growth_pct)
