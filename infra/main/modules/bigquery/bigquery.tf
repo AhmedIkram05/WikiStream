@@ -231,6 +231,19 @@ resource "google_project_iam_member" "vm_job_user" {
   member  = "serviceAccount:${var.service_account_email}"
 }
 
+# The "BQ cost" Grafana panel reads v_bq_cost_daily, whose SQL scans
+# region-US`.INFORMATION_SCHEMA.JOBS. INFORMATION_SCHEMA is project-scoped:
+# dataset-scoped dataEditor + project jobUser cannot list project jobs, so
+# every dashboard refresh failed AccessDenied. resourceViewer is the
+# least-privilege role containing bigquery.jobs.listAll — job/reservation
+# metadata only, no table data, so table access stays dataset-scoped above
+# (ADR-010).
+resource "google_project_iam_member" "vm_bq_resource_viewer" {
+  project = var.project_id
+  role    = "roles/bigquery.resourceViewer"
+  member  = "serviceAccount:${var.service_account_email}"
+}
+
 # Staging bucket for exports (e.g. external tables / gs:// loads). Objects
 # auto-delete after 7 days — transient staging only, not a backup.
 resource "google_storage_bucket" "wikistream_bq_staging" {
