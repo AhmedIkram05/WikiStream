@@ -154,9 +154,12 @@ compare_table() {
   local ch_out bq_out verdict
 
   if [ -n "$aggregate" ]; then
-    if ! ch_out="$(docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
-        --password "$CLICKHOUSE_PASSWORD" --format TSV \
-        <<<"SELECT $aggregate FROM (
+    # Password via stdin (`--password` with no value, like backup.sh): keeps
+    # it out of the docker CLI argv, where any OS-login user could read it
+    # via ps.
+    if ! ch_out="$(printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
+        --password --format TSV \
+        --query "SELECT $aggregate FROM (
 $(sed "s/{START}/$START/; s/{END}/$END/" "sql/$export_sql")
 )")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
@@ -168,9 +171,9 @@ $(sed "s/{START}/$START/; s/{END}/$END/" "sql/$export_sql")
   else
     # Single source of truth: count over the committed export SQL, so the 10%
     # deterministic-sample predicate can never drift out of sync with export.sh.
-    if ! ch_out="$(docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
-        --password "$CLICKHOUSE_PASSWORD" --format TSV \
-        <<<"SELECT count() AS row_count FROM (
+    if ! ch_out="$(printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
+        --password --format TSV \
+        --query "SELECT count() AS row_count FROM (
 $(sed "s/{START}/$START/; s/{END}/$END/" "sql/export_raw_sample.sql")
 )")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
@@ -227,7 +230,9 @@ emit_log
 # Phase 5: push the verdict into pipeline_health (alerting telemetry)
 _P5_VALUE=0.0; [ "$status" = "ok" ] && _P5_VALUE=1.0
 _P5_DETAIL=$(printf '{"status":"%s","window_start":"%s","window_end":"%s"}' "$status" "$WINDOW_START" "$WINDOW_END" | sed "s/'/\\\\'/g")
-docker exec "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream --password "$CLICKHOUSE_PASSWORD" \
+# Password via stdin (`--password` with no value, like backup.sh) — same argv
+# hygiene as the compare_table queries above.
+printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream --password \
   --query "INSERT INTO default.pipeline_health (ts, source, metric, value, detail) VALUES (now(), 'parity', 'result', $_P5_VALUE, '$_P5_DETAIL')" \
   || { echo "[$(date -u)] parity: pipeline_health write failed" >&2; }
 

@@ -6,8 +6,8 @@ never advances past the last durable event), flush-failure semantics
 (dropped, never dead-lettered), and counter progression end-to-end.
 
 Integration mechanics (verified against the real consumer):
-- durable_id advances ONLY on a successful flush or a dead-letter write,
-  never per event — so with < max_rows events and no age trigger there is no
+- durable_id advances ONLY on a successful flush (main batch or dead-letter
+  flush), never per event — so with < max_rows events and no age trigger there is no
   mid-run flush and the state file only ever shows the resume id while the
   batch sits pending. The state file is therefore the ready signal: it
   appears when the first event is processed, and all fixture events arrive
@@ -232,10 +232,10 @@ def test_flush_failure_no_dead_letter(tmp_path, monkeypatch):
     calls = []
 
     async def scenario():
-        async def spy(*args, **kwargs):
+        async def spy(self, *args, **kwargs):
             calls.append((args, kwargs))
 
-        monkeypatch.setattr(consumer, "write_dead_letter", spy)
+        monkeypatch.setattr(consumer.DeadLetterBatcher, "add", spy)
         fixture = SSEFixture(events)
         await fixture.start()
         monkeypatch.setattr(consumer, "STREAM_URL", fixture.url)
