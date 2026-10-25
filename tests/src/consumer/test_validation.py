@@ -167,9 +167,24 @@ def test_real_captured_edit_event_parses():
 
 def test_timestamp_epoch_int():
     assert validate_timestamp(1786626373) is None
-    assert validate_timestamp(0.0) is None  # 1970-01-01, valid past
     assert validate_timestamp(99999999999) == "timestamp_future"  # 5138-04-24
     assert validate_timestamp(["garbage"]) == "timestamp_unparseable"
+
+
+def test_timestamp_too_old_floor():
+    """M5: values below the 2001-01-01 floor are rejected — CH's
+    parseDateTime64BestEffort cannot parse negative epoch digit-strings ("-5"),
+    and one unparseable value errors the MATERIALIZED column for the WHOLE
+    1000-row insert block. Also matches recentchange semantics (the wiki did
+    not exist before 2001)."""
+    assert validate_timestamp(-5) == "timestamp_too_old"  # the audit's exact case
+    assert validate_timestamp(0.0) == "timestamp_too_old"  # 1970-01-01
+    assert validate_timestamp(978307199) == "timestamp_too_old"  # 2000-12-31T23:59:59Z
+    assert validate_timestamp(978307200) is None  # boundary: 2001-01-01T00:00:00Z
+    assert validate_timestamp("2000-12-31T23:59:59Z") == "timestamp_too_old"
+    assert validate_timestamp("2001-01-01T00:00:00Z") is None
+    # total: the floor must not re-introduce an escape hatch
+    assert validate_timestamp(float("-inf")) == "timestamp_unparseable"
 
 
 def test_timestamp_total_no_escape():

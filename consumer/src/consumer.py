@@ -22,7 +22,7 @@ from clickhouse_connect import get_async_client
 from pydantic import ValidationError
 
 from src.batcher import EventBatcher
-from src.dead_letter import write_dead_letter
+from src.dead_letter import DeadLetterBatcher
 from src.heartbeat import heartbeat_loop
 from src.models import WikiEvent, validate_timestamp
 from src.sse import SSEParser
@@ -48,6 +48,16 @@ logger = logging.getLogger("wikistream.consumer")
 # Idle-stats line cadence (seconds of stream silence before logging n=0).
 # Module constant so tests can zero it instead of faking the clock.
 IDLE_STATS_INTERVAL = 60.0
+
+# DL buffer age threshold: the flush timer's tick. Rows flush within this
+# window even when no further events arrive (quiet stream tail). Module
+# constant so tests can shrink it instead of faking the clock.
+DL_FLUSH_INTERVAL = 5.0
+
+# Ceiling on concurrent flush tasks (main + DL inserts share the client):
+# a stalled ClickHouse backpressures the loop at acquire instead of piling
+# up tasks.
+FLUSH_CONCURRENCY = 2
 
 
 def _wait_seconds(retry_ms: int | None, retry_after: int | None) -> float:
@@ -162,16 +172,18 @@ async def consume_forever(
 
     counters carries {total, dead_lettered, insert_failed, duplicates_skipped}
     so the orchestrator (and tests) can observe progress. durable_id advances
-    ONLY on durability: dead-letter writes (steps 1-3) or successful flushes
-    (step 6) — never for an id still sitting in an unflushed batch.
+    ONLY on durability: dead-letter flushes (steps 1-3) or successful batch
+    flushes (step 6) — never for an id still sitting in an unflushed batch.
     """
     batcher = EventBatcher()
+    dl_batcher = DeadLetterBatcher()
     durable_id = resumed_from
     last_saved_id: str | None = None
     last_saved_mono = time.monotonic()
     last_stats_log = time.monotonic()
     retry_ms: int | None = None
     pending_flushes: set[asyncio.Task] = set()
+    flush_sem = asyncio.Semaphore(FLUSH_CONCURRENCY)
 
     async def _flush_job() -> None:
         nonlocal durable_id, last_stats_log
@@ -201,8 +213,68 @@ async def consume_forever(
             last_stats_log = time.monotonic()
         except Exception as exc:
             logger.warning("flush_failed reason=%s", exc)
+        finally:
+            flush_sem.release()
 
-    async with httpx2.AsyncClient(timeout=httpx2.Timeout(None, connect=10.0)) as http:
+    async def _do_dl_flush() -> None:
+        """Land buffered DL rows; on success count + advance the cursor.
+
+        A DL flush that advances the cursor persists state IMMEDIATELY (no
+        debounce): if the durable cursor lagged landed DL rows, a restart
+        would replay those events and re-dead-letter them — the DL table is
+        a plain MergeTree with no idempotency key, so the replay window must
+        stay at the ~1ms state-write, not the 2s debounce.
+        """
+        nonlocal durable_id
+        try:
+            dropped, count, max_eid = await dl_batcher.flush(client)
+        except Exception as exc:
+            logger.warning("dl_flush_failed reason=%s", exc)
+            return
+        if dropped:
+            return  # at-most-once: cursor stays behind, replay re-runs them
+        counters["dead_lettered"] += count
+        if max_eid is not None:
+            durable_id = _max_id(durable_id, max_eid)
+            save_state(durable_id, counters["total"])
+
+    async def _dl_flush_job() -> None:
+        try:
+            await _do_dl_flush()
+        finally:
+            flush_sem.release()
+
+    async def _spawn_dl_flush() -> None:
+        await flush_sem.acquire()
+        dl_task = asyncio.create_task(_dl_flush_job())
+        pending_flushes.add(dl_task)
+        dl_task.add_done_callback(pending_flushes.discard)
+        # Yield so the spawned flush swaps the buffer before more adds land
+        # (same rhythm as the main flush spawn below — without this, the
+        # next add re-triggers flush_due and batches skew > max_rows).
+        await asyncio.sleep(0)
+
+    async def _dl_timer_job() -> None:
+        """Age trigger: flush buffered DL rows even when no event arrives
+        (quiet stream tail). Stop-aware wait, mirroring heartbeat_loop."""
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=DL_FLUSH_INTERVAL)
+            except TimeoutError:
+                pass
+            if stop.is_set():
+                break
+            if dl_batcher.pending_count:
+                await _do_dl_flush()
+
+    dl_timer = asyncio.create_task(_dl_timer_job())
+
+    # read=120: a silent upstream stall must time out into a reconnect —
+    # with read unbounded the loop blocks in aiter_bytes forever and only
+    # checks stop at chunk boundaries (which never arrive without bytes).
+    async with httpx2.AsyncClient(
+        timeout=httpx2.Timeout(None, connect=10.0, read=120.0)
+    ) as http:
         while not stop.is_set():
             headers = {
                 "Accept": "text/event-stream",
@@ -234,27 +306,28 @@ async def consume_forever(
                                     retry_ms = ev.retry
                                 ev_id = ev.id
                                 obj: object | None = None
-                                # Step 1: JSON validity. DL semantics are
-                                # buffered at-most-once (like main batch):
-                                # counter/cursor advance when DL insert is
-                                # accepted (write_dead_letter returns bool).
-                                # a failed write leaves the cursor behind so
-                                # the replay re-runs this event (the crash
-                                # window between a landed DL row and the cursor
-                                # advance is microseconds — acceptable).
+                                # Step 1: JSON validity. DL rows are buffered
+                                # (DeadLetterBatcher) and flushed as one
+                                # insert — the counter/cursor advance only
+                                # when a flush LANDS, so a dropped batch
+                                # leaves the cursor behind and the replay
+                                # re-runs these events. When a DL flush
+                                # advances the cursor, state is saved
+                                # immediately (no debounce): the durable
+                                # cursor must never lag landed DL rows or a
+                                # restart re-dead-letters them (no idempotency
+                                # key in the DL table).
                                 try:
                                     obj = json.loads(ev.data)
                                 except json.JSONDecodeError:
-                                    if await write_dead_letter(
-                                        client,
+                                    if dl_batcher.add(
                                         reason="validation:invalid_json",
                                         wiki="",
                                         title="",
                                         event=ev.data,
+                                        event_id=ev_id,
                                     ):
-                                        counters["dead_lettered"] += 1
-                                        if ev_id:
-                                            durable_id = _max_id(durable_id, ev_id)
+                                        await _spawn_dl_flush()
                                     continue
                                 # Step 2: timestamp validity.
                                 ts = (
@@ -265,16 +338,14 @@ async def consume_forever(
                                 ts_reason = validate_timestamp(ts)
                                 if ts_reason is not None:
                                     wiki, title = _dl_fields(obj)
-                                    if await write_dead_letter(
-                                        client,
+                                    if dl_batcher.add(
                                         reason=ts_reason,
                                         wiki=wiki,
                                         title=title,
                                         event=ev.data,
+                                        event_id=ev_id,
                                     ):
-                                        counters["dead_lettered"] += 1
-                                        if ev_id:
-                                            durable_id = _max_id(durable_id, ev_id)
+                                        await _spawn_dl_flush()
                                     continue
                                 # Step 3: schema validity.
                                 try:
@@ -287,16 +358,14 @@ async def consume_forever(
                                         else "validation:error"
                                     )
                                     wiki, title = _dl_fields(obj)
-                                    if await write_dead_letter(
-                                        client,
+                                    if dl_batcher.add(
                                         reason=reason,
                                         wiki=wiki,
                                         title=title,
                                         event=ev.data,
+                                        event_id=ev_id,
                                     ):
-                                        counters["dead_lettered"] += 1
-                                        if ev_id:
-                                            durable_id = _max_id(durable_id, ev_id)
+                                        await _spawn_dl_flush()
                                     continue
                                 # Step 4: dedup.
                                 if ev_id and batcher.seen(ev_id):
@@ -308,11 +377,12 @@ async def consume_forever(
                                 )
                                 # Step 6: flush when due.
                                 if flush_due:
-                                    # ponytail: fire-and-forget flush
-                                    # so SSE never awaits CH; ceiling =
-                                    # unbounded tasks if CH stalls,
-                                    # bounded in practice by 1000-row
-                                    # batches.
+                                    # Fire-and-forget flush so SSE never
+                                    # awaits CH; the semaphore caps concurrent
+                                    # flush tasks (CH stalls backpressure the
+                                    # loop at acquire instead of piling up
+                                    # tasks).
+                                    await flush_sem.acquire()
                                     flush_task = asyncio.create_task(_flush_job())
                                     pending_flushes.add(flush_task)
                                     flush_task.add_done_callback(
@@ -348,6 +418,12 @@ async def consume_forever(
                 reason = f"{type(exc).__name__}: {exc}"
             if pending_flushes:
                 await asyncio.gather(*pending_flushes, return_exceptions=True)
+            # Drain the DL buffer BEFORE the next connect: buffered rows land
+            # and advance the cursor here, so the reconnect's Last-Event-ID
+            # never replays events whose DL rows already landed (they would
+            # be re-dead-lettered — the DL table has no dedup).
+            if dl_batcher.pending_count:
+                await _do_dl_flush()
             logger.warning(
                 "reconnect reason=%s last_event_id=%s",
                 reason,
@@ -380,6 +456,9 @@ async def consume_forever(
                 "insert_failed events=%d reason=%s", flushed, "batch dropped"
             )
     save_state(durable_id, counters["total"])
+    dl_timer.cancel()
+    with suppress(asyncio.CancelledError):
+        await dl_timer
 
 
 def _dl_fields(obj: object) -> tuple[str, str]:

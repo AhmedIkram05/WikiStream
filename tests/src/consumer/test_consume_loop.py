@@ -3,9 +3,9 @@
 The real ch integration suites (test_malformed_to_dead_letter, kill/resume)
 already exercise consume_forever against live ClickHouse; these tests drive
 the same code paths with fakes so the ~90% overall gate is measurable in the
-hermetic unit job. httpx2.AsyncClient, get_async_client, write_dead_letter and
-heartbeat_loop are all monkeypatched; the EventBatcher is real (it has its own
-100%-covered suite).
+hermetic unit job. httpx2.AsyncClient, get_async_client and heartbeat_loop
+are all monkeypatched; the EventBatcher and DeadLetterBatcher are real (both
+have their own 100%-covered suites) and land rows through the FakeCh client.
 """
 
 import asyncio
@@ -13,6 +13,7 @@ import json
 import logging
 import runpy
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,18 +43,30 @@ def payload(**overrides) -> str:
 
 
 class FakeCh:
-    """Duck-typed clickhouse async client used by EventBatcher.flush."""
+    """Duck-typed clickhouse async client used by EventBatcher/DeadLetterBatcher."""
 
     def __init__(self, fail: bool = False):
         self.fail = fail
         self.calls: list = []
         self.rows = 0
+        self.dl_rows: list = []
 
     async def insert(self, table, data, column_names=None, settings=None):
         if self.fail:
             raise RuntimeError("boom")
         self.calls.append((table, len(data)))
         self.rows += len(data)
+        if table == "default.dead_letter":
+            self.dl_rows.extend(data)
+
+
+class DLFailingCh(FakeCh):
+    """CH up, but the dead_letter table rejects inserts (batch dropped)."""
+
+    async def insert(self, table, data, column_names=None, settings=None):
+        if table == "default.dead_letter":
+            raise RuntimeError("dl down")
+        await super().insert(table, data, column_names=column_names, settings=settings)
 
 
 class FakeResponse:
@@ -75,6 +88,7 @@ class FakeHTTP:
 
     def __init__(self, responses):
         self.responses = list(responses)
+        self.headers_seen: list = []
 
     async def __aenter__(self):
         return self
@@ -87,6 +101,7 @@ class FakeHTTP:
         # the call itself), matching httpx2's API. An async def here returns
         # a coroutine, which would TypeError inside async-with — swallowed by
         # consume_forever's except and silently zeroing every assertion.
+        self.headers_seen.append(headers or {})
         if len(self.responses) > 1:
             return _StreamCM(self.responses.pop(0))
         return _StreamCM(self.responses[0])
@@ -113,20 +128,6 @@ def stop():
     return asyncio.Event()
 
 
-@pytest.fixture
-def fake_dl(monkeypatch):
-    """write_dead_letter → configurable async fake (default: row lands)."""
-
-    async def dl(client, *, reason, wiki, title, event):
-        dl.calls.append((reason, wiki, title, event))
-        return dl.land
-
-    dl.calls = []
-    dl.land = True
-    monkeypatch.setattr(consumer, "write_dead_letter", dl)
-    return dl
-
-
 def patch_sleep(monkeypatch):
     """Break the reconnect wait: loop exits after the first reconnect."""
 
@@ -136,10 +137,16 @@ def patch_sleep(monkeypatch):
     monkeypatch.setattr(consumer, "_sleep_or_stop", no_wait)
 
 
-def patch_http(monkeypatch, responses):
-    monkeypatch.setattr(
-        consumer.httpx2, "AsyncClient", lambda **kw: FakeHTTP(responses)
-    )
+def patch_http(monkeypatch, responses, client_kwargs=None, instances=None):
+    def factory(**kw):
+        if client_kwargs is not None:
+            client_kwargs.append(kw)
+        http = FakeHTTP(responses)
+        if instances is not None:
+            instances.append(http)
+        return http
+
+    monkeypatch.setattr(consumer.httpx2, "AsyncClient", factory)
 
 
 def patch_state(monkeypatch, tmp_path):
@@ -275,7 +282,7 @@ def test_save_state_failure_logs(monkeypatch, tmp_path, caplog):
 
 
 def test_consume_happy_path_flush_and_state(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+    monkeypatch, tmp_path, counters, stop, caplog
 ):
     patch_sleep(monkeypatch)
     patch_http(
@@ -300,12 +307,10 @@ def test_consume_happy_path_flush_and_state(
     assert state["last_event_id"] == "1001"
     assert state["total"] == 1001
     assert "inserted events=1000 total=1000" in caplog.text
-    assert fake_dl.calls == []
+    assert ch.dl_rows == []
 
 
-def test_consume_bad_json_goes_dead_letter(
-    monkeypatch, tmp_path, counters, stop, fake_dl
-):
+def test_consume_bad_json_goes_dead_letter(monkeypatch, tmp_path, counters, stop):
     patch_sleep(monkeypatch)
     patch_http(monkeypatch, [FakeResponse(chunks=[frame("7", "{not json")])])
     patch_state(monkeypatch, tmp_path)
@@ -315,12 +320,12 @@ def test_consume_bad_json_goes_dead_letter(
 
     assert counters["dead_lettered"] == 1
     assert counters["total"] == 0
-    assert fake_dl.calls == [("validation:invalid_json", "", "", "{not json")]
+    assert ch.dl_rows[0][1:] == ["validation:invalid_json", "", "", "{not json"]
     assert consumer.load_state()["last_event_id"] == "7"
 
 
 def test_consume_bad_ts_and_non_dict_go_dead_letter(
-    monkeypatch, tmp_path, counters, stop, fake_dl
+    monkeypatch, tmp_path, counters, stop
 ):
     patch_sleep(monkeypatch)
     patch_http(
@@ -341,18 +346,17 @@ def test_consume_bad_ts_and_non_dict_go_dead_letter(
     run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["dead_lettered"] == 2
-    assert fake_dl.calls[0] == (
+    assert ch.dl_rows[0][1:] == [
         "timestamp_missing",
         "enwiki",
         "Test page",
         json.dumps(dict(VALID, timestamp=None)),
-    )
-    assert fake_dl.calls[1][0] == "timestamp_missing"
-    assert fake_dl.calls[1][1:3] == ("", "")  # _dl_fields non-dict branch
+    ]
+    assert ch.dl_rows[1][2:4] == ["", ""]  # _dl_fields non-dict branch (wiki, title)
 
 
 def test_consume_validation_error_goes_dead_letter(
-    monkeypatch, tmp_path, counters, stop, fake_dl
+    monkeypatch, tmp_path, counters, stop
 ):
     patch_sleep(monkeypatch)
     # title ABSENT (not None): pydantic reports "missing" only for a
@@ -366,26 +370,246 @@ def test_consume_validation_error_goes_dead_letter(
     run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["dead_lettered"] == 1
-    assert fake_dl.calls[0][0] == "validation:missing"
-    assert fake_dl.calls[0][1] == "enwiki"
+    assert ch.dl_rows[0][1] == "validation:missing"
+    assert ch.dl_rows[0][2] == "enwiki"
 
 
-def test_consume_dl_write_failure_keeps_cursor(
-    monkeypatch, tmp_path, counters, stop, fake_dl
-):
-    fake_dl.land = False
+def test_consume_dl_flush_failure_keeps_cursor(monkeypatch, tmp_path, counters, stop):
+    """DL flush dropped (at-most-once): no counter, no cursor advance — the
+    server replay re-runs the events (regenerates the DL rows)."""
     patch_sleep(monkeypatch)
     patch_http(monkeypatch, [FakeResponse(chunks=[frame("7", "{not json")])])
+    patch_state(monkeypatch, tmp_path)
+    ch = DLFailingCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["dead_lettered"] == 0
+    assert ch.dl_rows == []
+    assert consumer.load_state()["last_event_id"] is None  # cursor did NOT advance
+
+
+def test_consume_dl_row_without_id_advances_nothing(
+    monkeypatch, tmp_path, counters, stop
+):
+    """SSE frame without an id: DL row counted, but there is no cursor to
+    advance (covers the event_id=None branch + max_eid-None flush return)."""
+    patch_sleep(monkeypatch)
+    patch_http(monkeypatch, [FakeResponse(chunks=[b"data: {bad\n\n"])])
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh()
 
     run(consumer.consume_forever(ch, stop, None, counters))
 
-    assert counters["dead_lettered"] == 0
-    assert consumer.load_state()["last_event_id"] is None  # cursor did NOT advance
+    assert counters["dead_lettered"] == 1
+    assert consumer.load_state()["last_event_id"] is None
 
 
-def test_consume_duplicate_ids_skipped(monkeypatch, tmp_path, counters, stop, fake_dl):
+def test_consume_dl_burst_flushes_in_batches(monkeypatch, tmp_path, counters, stop):
+    """M1: a schema-drift burst must not await one insert per event — rows
+    buffer and flush max_rows at a time, fire-and-forget (250 rows → two
+    100-row task flushes + the 50-row reconnect-boundary drain)."""
+    patch_sleep(monkeypatch)
+    patch_http(
+        monkeypatch,
+        [FakeResponse(chunks=[b"".join(frame(str(i), "{bad") for i in range(1, 251))])],
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["dead_lettered"] == 250
+    dl_sizes = sorted(n for table, n in ch.calls if table == "default.dead_letter")
+    assert dl_sizes == [50, 100, 100]
+    assert len(ch.dl_rows) == 250
+    assert consumer.load_state()["last_event_id"] == "250"
+
+
+def test_consume_dl_spawn_fires_for_ts_and_schema_failures(
+    monkeypatch, tmp_path, counters, stop
+):
+    """Steps 2-3 spawn DL flushes too: 100 timestamp-failures fill the buffer
+    on the step-2 path, then 100 schema-failures on the step-3 path."""
+    patch_sleep(monkeypatch)
+    bad_ts = b"".join(frame(str(i), payload(timestamp=None)) for i in range(1, 101))
+    bad = dict(VALID)
+    bad.pop("title")
+    bad_schema = b"".join(frame(str(i), json.dumps(bad)) for i in range(101, 201))
+    patch_http(monkeypatch, [FakeResponse(chunks=[bad_ts + bad_schema])])
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["dead_lettered"] == 200
+    dl_sizes = [n for table, n in ch.calls if table == "default.dead_letter"]
+    assert dl_sizes == [100, 100]
+    reasons = [r[1] for r in ch.dl_rows]
+    assert reasons[:100] == ["timestamp_missing"] * 100
+    assert reasons[100:] == ["validation:missing"] * 100
+
+
+def test_consume_dl_timer_flushes_while_stream_holds_open(
+    monkeypatch, tmp_path, counters, stop
+):
+    """M1: DL rows must land even when no further event arrives (quiet stream
+    tail) — the timer flushes the buffer within DL_FLUSH_INTERVAL. Also pins
+    M3: the DL cursor advance saves state IMMEDIATELY, before any shutdown."""
+    monkeypatch.setattr(consumer, "DL_FLUSH_INTERVAL", 0.01)
+    patch_state(monkeypatch, tmp_path)
+
+    class HoldOpen(FakeResponse):
+        async def aiter_bytes(self):
+            yield frame("7", "{not json")
+            await stop.wait()  # stream stays open, silent: no chunk boundaries
+
+    patch_http(monkeypatch, [HoldOpen(chunks=[])])
+    ch = FakeCh()
+
+    async def scenario():
+        task = asyncio.create_task(consumer.consume_forever(ch, stop, None, counters))
+        try:
+            deadline = time.monotonic() + 5.0
+            while counters["dead_lettered"] == 0:
+                assert time.monotonic() < deadline, "timer never flushed the DL row"
+                await asyncio.sleep(0.01)
+            # M3: state persisted by the flush itself — no shutdown needed.
+            assert consumer.load_state()["last_event_id"] == "7"
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 5.0)
+
+    asyncio.run(scenario())
+
+
+def test_consume_dl_flush_job_exception_logs(
+    monkeypatch, tmp_path, counters, stop, caplog
+):
+    # _do_dl_flush's except: dl_batcher.flush() itself raising (never crash
+    # the consumer on a DL plumbing bug).
+    async def boom(self, client):
+        raise RuntimeError("dl exploded")
+
+    monkeypatch.setattr(consumer.DeadLetterBatcher, "flush", boom)
+    patch_sleep(monkeypatch)
+    patch_http(monkeypatch, [FakeResponse(chunks=[frame("7", "{not json")])])
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
+        run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert "dl_flush_failed reason=dl exploded" in caplog.text
+
+
+def test_consume_dl_advance_reaches_next_reconnect_header(
+    monkeypatch, tmp_path, counters, stop
+):
+    """M1+M3: a DL flush that lands rows advances the cursor BEFORE the
+    reconnect, so the next connect's Last-Event-ID covers the DL'd event and
+    the server never replays it back into the dead-letter table."""
+    waits = {"n": 0}
+
+    async def reconnect_then_stop(stop_ev, seconds):
+        waits["n"] += 1
+        return waits["n"] > 1  # 1st reconnect opens pass 2; 2nd exits
+
+    monkeypatch.setattr(consumer, "_sleep_or_stop", reconnect_then_stop)
+    instances = []
+    patch_http(
+        monkeypatch,
+        [FakeResponse(chunks=[frame("7", "{bad")]), FakeResponse(chunks=[])],
+        instances=instances,
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    first, second = instances[0].headers_seen
+    assert "Last-Event-ID" not in first
+    assert second["Last-Event-ID"] == "7"
+    assert counters["dead_lettered"] == 1  # landed once, not replayed
+
+
+def test_consume_pre_epoch_timestamp_dead_lettered(
+    monkeypatch, tmp_path, counters, stop
+):
+    """M5: a negative epoch parses in Python but CH's
+    parseDateTime64BestEffort cannot parse it — one such event used to error
+    the MATERIALIZED column and void the whole 1000-row insert block. The
+    floor rejects it at the validation gate."""
+    patch_sleep(monkeypatch)
+    patch_http(monkeypatch, [FakeResponse(chunks=[frame("7", payload(timestamp=-5))])])
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["dead_lettered"] == 1
+    assert counters["total"] == 0
+    assert [c for c in ch.calls if c[0] == "default.raw_events"] == []
+    assert ch.dl_rows[0][1] == "timestamp_too_old"
+    assert consumer.load_state()["last_event_id"] == "7"
+
+
+def test_consume_caps_concurrent_flush_tasks_at_two(
+    monkeypatch, tmp_path, counters, stop
+):
+    """M4: asyncio.Semaphore around flush task creation — a CH that is slow
+    (not dead) must not pile up unbounded flush tasks (3 flush-due batches →
+    at most 2 inserts in flight; the loop backpressures at acquire)."""
+    patch_sleep(monkeypatch)
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[b"".join(frame(str(i), payload()) for i in range(1, 3001))]
+            )
+        ],
+    )
+    patch_state(monkeypatch, tmp_path)
+
+    class SlowCh(FakeCh):
+        def __init__(self):
+            super().__init__()
+            self.in_flight = 0
+            self.max_in_flight = 0
+
+        async def insert(self, table, data, column_names=None, settings=None):
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            await asyncio.sleep(0.05)
+            self.in_flight -= 1
+            self.calls.append((table, len(data)))
+            self.rows += len(data)
+
+    ch = SlowCh()
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["total"] == 3000
+    assert ch.max_in_flight == 2
+
+
+def test_stream_client_has_read_timeout(monkeypatch, tmp_path, counters, stop):
+    """M4: explicit read timeout — a silent upstream stall unblocks into a
+    reconnect instead of wedging the read (and shutdown) forever."""
+    client_kwargs = []
+    patch_sleep(monkeypatch)
+    patch_http(monkeypatch, [FakeResponse(chunks=[])], client_kwargs=client_kwargs)
+    patch_state(monkeypatch, tmp_path)
+
+    run(consumer.consume_forever(FakeCh(), stop, None, counters))
+
+    timeout = client_kwargs[0]["timeout"]
+    assert timeout.connect == 10.0
+    assert timeout.read == 120.0
+    assert timeout.write is None  # unchanged: only connect/read are bounded
+    assert timeout.pool is None
+
+
+def test_consume_duplicate_ids_skipped(monkeypatch, tmp_path, counters, stop):
     patch_sleep(monkeypatch)
     patch_http(
         monkeypatch,
@@ -410,7 +634,7 @@ def test_consume_duplicate_ids_skipped(monkeypatch, tmp_path, counters, stop, fa
 
 
 def test_consume_flush_failure_counts_insert_failed(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+    monkeypatch, tmp_path, counters, stop, caplog
 ):
     patch_sleep(monkeypatch)
     patch_http(
@@ -434,7 +658,7 @@ def test_consume_flush_failure_counts_insert_failed(
 
 
 def test_consume_replays_dropped_batch_after_flush_failure(
-    monkeypatch, tmp_path, counters, stop, fake_dl
+    monkeypatch, tmp_path, counters, stop
 ):
     """H1 regression: after a failed flush the dropped ids are unmarked, so a
     server replay (same Last-Event-ID window, since the cursor never advanced)
@@ -476,7 +700,7 @@ def test_consume_replays_dropped_batch_after_flush_failure(
 
 
 def test_consume_flush_job_exception_logs_flush_failed(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+    monkeypatch, tmp_path, counters, stop, caplog
 ):
     # _flush_job's except (lines 202-203): flush() itself raising (not the
     # batch-dropped None-mid path the batcher handles internally).
@@ -510,7 +734,7 @@ def test_consume_flush_job_exception_logs_flush_failed(
 
 
 def test_consume_non_200_retry_after_reconnect(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+    monkeypatch, tmp_path, counters, stop, caplog
 ):
     patch_sleep(monkeypatch)
     patch_http(
@@ -530,7 +754,7 @@ def test_consume_non_200_retry_after_reconnect(
 
 
 def test_consume_transport_exception_reconnects(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+    monkeypatch, tmp_path, counters, stop, caplog
 ):
     patch_sleep(monkeypatch)
     patch_http(
@@ -553,7 +777,7 @@ def test_consume_transport_exception_reconnects(
 
 
 def test_consume_stop_at_chunk_boundary_final_flush(
-    monkeypatch, tmp_path, counters, stop, fake_dl
+    monkeypatch, tmp_path, counters, stop
 ):
     patch_sleep(monkeypatch)
 
@@ -578,7 +802,7 @@ def test_consume_stop_at_chunk_boundary_final_flush(
 
 
 def test_consume_stop_before_next_chunk_breaks_loop(
-    monkeypatch, tmp_path, counters, stop, fake_dl
+    monkeypatch, tmp_path, counters, stop
 ):
     # Line 229: stop observed AT a chunk boundary (generator keeps yielding,
     # unlike test_consume_stop_at_chunk_boundary_final_flush which ends).
@@ -604,7 +828,7 @@ def test_consume_stop_before_next_chunk_breaks_loop(
 
 
 def test_consume_retry_frame_sets_retry_ms(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
+    monkeypatch, tmp_path, counters, stop, caplog
 ):
     patch_sleep(monkeypatch)
     patch_http(
@@ -628,9 +852,7 @@ def test_consume_retry_frame_sets_retry_ms(
     assert "reconnect reason=stream ended" in caplog.text
 
 
-def test_consume_60s_idle_stats_line(
-    monkeypatch, tmp_path, counters, stop, fake_dl, caplog
-):
+def test_consume_60s_idle_stats_line(monkeypatch, tmp_path, counters, stop, caplog):
     patch_sleep(monkeypatch)
     patch_http(monkeypatch, [FakeResponse(chunks=[frame("1", payload())])])
     patch_state(monkeypatch, tmp_path)

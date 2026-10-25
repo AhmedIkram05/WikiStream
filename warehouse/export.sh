@@ -86,9 +86,11 @@ for entry in "${TABLES[@]}"; do
   mkdir -p "$STAGING_TMP/$key"
   object="$STAGING_TMP/$key/${STAMP}-${RUN_ID}.jsonl"
 
-  docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream \
-    --password "$CLICKHOUSE_PASSWORD" --format JSONEachRow \
-    < <(sed "s/{START}/$START/; s/{END}/$END/" "sql/$sqlfile") > "$object"
+  # Password via stdin (`--password` with no value, like backup.sh): keeps it
+  # out of the docker CLI argv, where any OS-login user could read it via ps.
+  printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client \
+    --user wikistream --password --format JSONEachRow \
+    --query "$(sed "s/{START}/$START/; s/{END}/$END/" "sql/$sqlfile")" > "$object"
 
   rows="$(wc -l < "$object" | tr -d ' ')"
   if [ -s "$object" ]; then

@@ -157,11 +157,27 @@ def test_export_default_trailing_two_hour_window(shell):
     assert row["rows_raw_sample"] == 3
     log = shell.log.read_text()
     # 9 bq calls: 4 export loads + 3 merges + 1 reload + 1 export_runs load
-    # (merges run as `bq --quiet query`, so count the "query" token, not "bq query")
+    # (merges run as `bq --quiet query`, so count "query" on bq lines only —
+    # docker lines legitimately carry --query flags since the M2
+    # stdin-password fix moved the CH SQL out of stdin and into --query)
     assert log.count("bq load") == 5
-    assert log.count("query") == 4
+    assert (
+        sum(line.count("query") for line in log.splitlines() if line.startswith("bq"))
+        == 4
+    )
     assert "--schema=schemas/kpi_edits_hourly.json" in log
     assert "wikistream.kpi_edits_hourly_staging" in log
+
+
+def test_export_password_never_in_docker_argv(shell):
+    """M2: the ClickHouse password travels via stdin (`--password` with no
+    value, like backup.sh) — never in docker/clickhouse-client argv, where
+    any OS-login user could read it via ps. The stub logs every argv."""
+    proc = shell.run(WAREHOUSE / "export.sh")
+    assert proc.returncode == 0, proc.stderr
+    log = shell.log.read_text()
+    assert "clickhouse-client" in log  # the calls happened
+    assert "stub-pass" not in log, "password leaked into a child-process argv"
 
 
 def test_export_explicit_window_passthrough(shell):
@@ -194,3 +210,5 @@ def test_backup_guard_prune_before_snapshot_and_keep_last_two(shell):
         "backup-20260909-000000",
         "backup-20260910-100000",
     ]
+    # M2 (backup.sh set the pattern): password via stdin, never in argv.
+    assert "stub-pass" not in shell.log.read_text()

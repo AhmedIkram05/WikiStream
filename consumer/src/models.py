@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _FUTURE_TOLERANCE = timedelta(minutes=5)
 
+# No real recentchange predates 2001; CH's parseDateTime64BestEffort cannot
+# parse negative/very-small epoch digit-strings ("5" yes, "-5" no), and one
+# unparseable value errors the MATERIALIZED column for the WHOLE insert
+# block — so anything older is dead-lettered, never inserted.
+_MIN_TIMESTAMP = datetime(2001, 1, 1, tzinfo=timezone.utc)
+
 
 class EventLength(BaseModel):
     new: int = 0
@@ -53,8 +59,8 @@ def validate_timestamp(
 
     Accepts ISO-8601 strings (fromisoformat; py3.13 handles trailing "Z") and
     integer/float epoch seconds (the real wire shape). Reasons (exact):
-    "timestamp_missing" | "timestamp_unparseable" | "timestamp_future".
-    now defaults to datetime.now(timezone.utc).
+    "timestamp_missing" | "timestamp_unparseable" | "timestamp_too_old" |
+    "timestamp_future". now defaults to datetime.now(timezone.utc).
     """
     if ts is None or (isinstance(ts, str) and ts.strip() == ""):
         return "timestamp_missing"
@@ -78,6 +84,8 @@ def validate_timestamp(
         return "timestamp_unparseable"
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
+    if parsed < _MIN_TIMESTAMP:
+        return "timestamp_too_old"
     if (
         parsed
         > (now if now is not None else datetime.now(timezone.utc)) + _FUTURE_TOLERANCE
