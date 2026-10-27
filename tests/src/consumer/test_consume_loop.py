@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from src import consumer
+from src import cursors
 
 VALID = {
     "id": "1",
@@ -194,25 +195,25 @@ def test_sleep_or_stop_real():
     run(check())
 
 
-def test_cursor_ts_edges_consumer_copy():
-    assert consumer._cursor_ts("[not json") == 0
-    assert consumer._cursor_ts(123) == 0
-    assert consumer._cursor_ts('{"topic": "eqiad"}') == 0
-    assert consumer._cursor_ts('[1, 2, "x"]') == 0
-    assert consumer._cursor_ts('[{"offset": -1}, {"timestamp": 5}]') == 5
-    assert consumer._cursor_ts('[{"timestamp": 0}, {"offset": 1}]') == 1
+def test_cursor_ts_edges():
+    assert cursors._cursor_ts("[not json") == 0
+    assert cursors._cursor_ts(123) == 0
+    assert cursors._cursor_ts('{"topic": "eqiad"}') == 0
+    assert cursors._cursor_ts('[1, 2, "x"]') == 0
+    assert cursors._cursor_ts('[{"offset": -1}, {"timestamp": 5}]') == 5
+    assert cursors._cursor_ts('[{"timestamp": 0}, {"offset": 1}]') == 1
 
 
-def test_max_id_edges_consumer_copy():
-    assert consumer._max_id(None, "b") == "b"
-    assert consumer._max_id("a", None) == "a"
-    assert consumer._max_id("5", "10") == "10"
-    assert consumer._max_id("10", "10") == "10"
-    assert consumer._max_id("[", "[x") == "["
-    assert consumer._max_id("b", "a") == "b"  # plain-string fallback (line 116)
-    assert consumer._max_id("a", "b") == "b"
+def test_max_id_edges():
+    assert cursors._max_id(None, "b") == "b"
+    assert cursors._max_id("a", None) == "a"
+    assert cursors._max_id("5", "10") == "10"
+    assert cursors._max_id("10", "10") == "10"
+    assert cursors._max_id("[", "[x") == "["
+    assert cursors._max_id("b", "a") == "b"  # plain-string fallback
+    assert cursors._max_id("a", "b") == "b"
     assert (
-        consumer._max_id('[{"offset": -1}]', '[{"timestamp": 7}]')
+        cursors._max_id('[{"offset": -1}]', '[{"timestamp": 7}]')
         == '[{"timestamp": 7}]'
     )
 
