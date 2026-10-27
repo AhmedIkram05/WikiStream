@@ -135,6 +135,19 @@ def test_flush_after_clean_frame_resets():
     assert events[0].data == "b"
 
 
+def test_long_line_split_across_many_chunks():
+    parser = SSEParser()
+    payload = "x" * 10_000
+    raw = f"data: {payload}\n\n".encode()
+    # many small feeds: the scan must resume at the partial-frame boundary,
+    # not re-read the accumulated line from byte 0 on every feed()
+    events = []
+    for k in range(0, len(raw), 512):
+        events += parser.feed(raw[k : k + 512])
+    assert len(events) == 1
+    assert events[0].data == payload
+
+
 def test_multibyte_utf8_split_across_chunks():
     parser = SSEParser()
     raw = "data: café ☕\n\n".encode()
