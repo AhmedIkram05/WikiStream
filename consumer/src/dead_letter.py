@@ -17,7 +17,7 @@ replay re-runs those events).
 import logging
 from datetime import datetime, timezone
 
-from src.batcher import _max_id
+from src.cursors import _max_id
 
 logger = logging.getLogger("wikistream.dead_letter")
 

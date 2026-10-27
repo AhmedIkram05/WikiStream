@@ -24,6 +24,11 @@ class SSEParser:
         # multi-byte char split across chunks decodes cleanly.
         self._decoder = codecs.getincrementaldecoder("utf-8")()
         self._buffer = ""
+        # Scan-resume offset into _buffer: everything before it is known
+        # terminator-free (or is the held trailing CR awaiting its LF), so
+        # feed() resumes at the partial-frame boundary instead of re-scanning
+        # the accumulated line from byte 0.
+        self._scan = 0
         self._reset_event()
 
     def feed(self, chunk: bytes) -> list[SSEEvent]:
@@ -36,6 +41,7 @@ class SSEParser:
         # garbage on every reconnect) and reset for a fresh stream.
         self._buffer = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")()
+        self._scan = 0
         self._reset_event()
         return []
 
@@ -51,8 +57,8 @@ class SSEParser:
         buf = self._buffer
         i = 0
         n = len(buf)
+        j = self._scan  # resume where the previous scan stopped
         while i < n:
-            j = i
             while j < n and buf[j] not in "\r\n":
                 j += 1
             if j == n:
@@ -63,6 +69,7 @@ class SSEParser:
             if buf[j] == "\r" and j + 1 < n and buf[j + 1] == "\n":
                 j += 1  # CRLF counts as one terminator
             i = j + 1
+            j = i  # next line starts unscanned
             if line:
                 self._feed_line(line)
             else:
@@ -70,6 +77,7 @@ class SSEParser:
                 if event is not None:
                     events.append(event)
         self._buffer = buf[i:]
+        self._scan = j - i
         return events
 
     def _feed_line(self, line: str) -> None:

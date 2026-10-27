@@ -3,7 +3,8 @@
 import asyncio
 from datetime import datetime, timezone
 
-from src.batcher import EventBatcher, _cursor_ts, _max_id
+from src.batcher import EventBatcher
+from src.cursors import _cursor_ts, _max_id
 
 
 class FakeClient:
@@ -92,8 +93,6 @@ def test_flush_max_id_math():
 def test_flush_max_id_kafka_composite():
     """Kafka composite cursor ids: array order varies per event (eqiad-first
     vs codfw-first), so the max must be by partition timestamp, not string."""
-    from src.batcher import _cursor_ts
-
     # noqa: E501 — JSON fixtures; splitting would break string literals
     old = '[{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786629538451},{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1}]'  # noqa: E501
     new_eqiad_first = '[{"topic":"eqiad.mediawiki.recentchange","partition":0,"timestamp":1786692862935},{"topic":"codfw.mediawiki.recentchange","partition":0,"offset":-1}]'  # noqa: E501
