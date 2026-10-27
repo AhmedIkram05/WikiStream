@@ -367,9 +367,9 @@ async def consume_forever(
                                         counters["duplicates_skipped"],
                                         resumed_from or "none",
                                     )
-                                # Step 8: debounced durable save.
-                                # ponytail: kept sync — local atomic write
-                                # ~1ms every 2s, no race like threaded saves.
+                                # Step 8: debounced durable save (kept sync:
+                                # ~1ms atomic local write — no race, unlike
+                                # threaded saves).
                                 now_mono = time.monotonic()
                                 if (
                                     durable_id != last_saved_id
