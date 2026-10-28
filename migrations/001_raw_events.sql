@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS default.raw_events
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(inserted_at)
+-- The hash co-locates same-timestamp rows by event (compression/query locality); it dedups nothing —
+-- MergeTree keeps every inserted row; the consumer's ~20-min dedup ring absorbs SSE replays.
 ORDER BY (inserted_at, sipHash64(event))
 TTL inserted_at + INTERVAL 1 DAY
 SETTINGS max_suspicious_broken_parts = 1000
