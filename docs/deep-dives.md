@@ -197,6 +197,7 @@ Sampling uses `rand() < int(0x100000000 * rate)` - `%`-based sampling breaks thr
 | Pruning | keep-last-2 locally + GCS bucket lifecycle (Delete, age 2 days) |
 | Cost | ~3.4s CPU per backup |
 | Restore | **Verified once, exactly:** restored `backup-20260813-165326` from GCS → `restore_check.raw_events` `count() WHERE inserted_at <= 16:53:28.084` = **4,514,837 == 4,514,837 exact** |
+| Caveat | `raw_events` TTL is 1 day (`001_raw_events.sql`), so restoring a backup older than ~24h leaves `raw_events` near-empty once the next TTL merge runs — such restores only recover `dead_letter` / `pipeline_health` (the verified restore above was same-day). |
 
 <p align="center">
   <img src="../assets/storage-buckets-gcp.png" alt="GCS storage buckets" width="760"/>
