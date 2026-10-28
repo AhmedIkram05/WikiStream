@@ -11,6 +11,7 @@ USING (
     GROUP BY day, wiki
   ),
   with_prev AS (
+    -- lag gap semantics: a wiki's zero-edit days have no row, so after an edit gap prev_day_edits is the last edited day (2+ days back) — deliberate, no fill.
     SELECT day, wiki, edits, bytes_delta, LAG(edits) OVER (PARTITION BY wiki ORDER BY day) AS prev_day_edits
     FROM daily
   )
