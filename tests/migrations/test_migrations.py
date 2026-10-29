@@ -93,6 +93,8 @@ def reset():
     ):
         query(f"DROP TABLE IF EXISTS default.{t}")
     query("DROP TABLE IF EXISTS default.dead_letter")
+    query("DROP TABLE IF EXISTS default.dead_letter_new")
+    query("DROP TABLE IF EXISTS default.dead_letter_old")
     query("DROP TABLE IF EXISTS default.pipeline_health")
     query("DROP TABLE IF EXISTS default.raw_events")
     query("DROP TABLE IF EXISTS default.raw_events_v1")
@@ -282,6 +284,21 @@ def test_dead_letter_migration():
     show = scalar("SHOW CREATE TABLE default.dead_letter")
     assert "TOINTERVALDAY(90)" in show.upper(), f"TTL missing from DDL: {show}"
 
+    # B8: the 009-012 swap ran on the fresh empty table — dead_letter must
+    # now be the daily-partitioned shape (cheap TTL eviction), same name.
+    partition = scalar(
+        "SELECT partition_key FROM system.tables"
+        " WHERE database = 'default' AND name = 'dead_letter'"
+    )
+    assert partition == "toYYYYMMDD(inserted_at)", (
+        f"unexpected partition key: {partition}"
+    )
+    swap_leftovers = scalar(
+        "SELECT count() FROM system.tables WHERE database = 'default'"
+        " AND name IN ('dead_letter_new', 'dead_letter_old')"
+    )
+    assert swap_leftovers == "0", "009-012 left swap tables behind"
+
     query(
         "INSERT INTO default.dead_letter (inserted_at, reason, wiki, title, event)"
         " VALUES (now(), 'test_reason', 'enwiki', 'Test Page', '{\"raw\":true}')"
@@ -295,6 +312,61 @@ def test_dead_letter_migration():
         "Test Page",
         '{"raw":true}',
     ], row
+
+    reset()
+
+
+@pytest.mark.ch
+def test_dead_letter_partition_swap_backfill():
+    # B8 end-to-end against a PRE-EXISTING unpartitioned dead_letter (the
+    # deployed 007 shape), following test_legacy_migration's pre-create
+    # pattern: seed rows BEFORE apply, then verify the copy + atomic swap
+    # preserved them, deduped a replayed duplicate, and left no leftovers.
+    reset()
+    query(
+        "CREATE TABLE default.dead_letter ("
+        "  inserted_at DateTime64(3, 'UTC'), reason String, wiki String,"
+        "  title String, event String"
+        ") ENGINE = MergeTree ORDER BY (inserted_at, sipHash64(event))"
+        " TTL inserted_at + INTERVAL 90 DAY"
+    )
+    # Two DISTINCT seeded rows — the copy must be lossless. (The 010
+    # anti-join is re-run protection — 002 semantics — not intra-batch
+    # dedup; both rows survive a single copy pass.)
+    query(
+        "INSERT INTO default.dead_letter (inserted_at, reason, wiki, title, event)"
+        " VALUES (toDateTime64('2026-10-20 12:00:00.000', 3, 'UTC'),"
+        " 'old_reason', 'enwiki', 'Old Page', '{\"seed\":1}'),"
+        " (toDateTime64('2026-10-25 09:30:00.000', 3, 'UTC'),"
+        " 'spam_reason', 'dewiki', 'Other Page', '{\"seed\":2}')"
+    )
+    apply_ok()
+
+    count = scalar("SELECT count() FROM default.dead_letter")
+    assert count == "2", f"copy not lossless: {count} rows"
+    row = scalar(
+        "SELECT reason, wiki, title, event FROM default.dead_letter"
+        " WHERE event = '{\"seed\":1}' FORMAT TSV"
+    )
+    assert row.split("\t") == [
+        "old_reason",
+        "enwiki",
+        "Old Page",
+        '{"seed":1}',
+    ], row
+    partition = scalar(
+        "SELECT partition_key FROM system.tables"
+        " WHERE database = 'default' AND name = 'dead_letter'"
+    )
+    assert partition == "toYYYYMMDD(inserted_at)", (
+        f"unexpected partition key: {partition}"
+    )
+    for name in ("dead_letter_new", "dead_letter_old"):
+        exists = scalar(
+            "SELECT count() FROM system.tables"
+            f" WHERE database = 'default' AND name = '{name}'"
+        )
+        assert exists == "0", f"{name} still present after swap"
 
     reset()
 
@@ -349,3 +421,58 @@ def test_bootstrap_user():
     # The CI/local wikistream user (migrations/bootstrap-user.dev.sql) can
     # connect and query — canary for the analytics-tests bootstrap step.
     assert scalar("SELECT 1") == "1"
+
+
+def test_dead_letter_partition_migration_shape():
+    """B8 file-shape contract — no ClickHouse needed (runs in the unit gate).
+
+    The append-only dead_letter repartition must: keep the consumer-facing
+    table name (consumer writes default.dead_letter unchanged), create the
+    replacement with the daily partition key + unchanged 007 columns/ORDER
+    BY/TTL, copy from the live table, atomically swap names, and drop the
+    old table — one statement per file (runner convention: each file is a
+    single POST body), every step guarded for wiped-bookkeeping replays.
+    """
+
+    def read(name: str) -> str:
+        path = REPO_ROOT / "migrations" / name
+        assert path.exists(), f"missing migration file: {name}"
+        return path.read_text()
+
+    for name in (
+        "009_dead_letter_partitioned.sql",
+        "010_backfill_dead_letter.sql",
+        "011_dead_letter_swap.sql",
+        "012_drop_dead_letter_old.sql",
+    ):
+        body = read(name)
+        assert body.startswith("-- guard: "), f"{name}: guard must be line 1"
+
+    create = read("009_dead_letter_partitioned.sql")
+    assert "CREATE TABLE IF NOT EXISTS default.dead_letter_new" in create
+    assert "PARTITION BY toYYYYMMDD(inserted_at)" in create
+    assert "TTL inserted_at + INTERVAL 90 DAY" in create
+    # Replacement shape must match 007 exactly apart from the partitioning.
+    old = read("007_dead_letter.sql")
+    for col in (
+        "inserted_at DateTime64(3, 'UTC')",
+        "reason String",
+        "wiki String",
+        "title String",
+        "event String",
+    ):
+        assert col in old and col in create, f"column drift vs 007: {col}"
+    assert "ORDER BY (inserted_at, sipHash64(event))" in create
+
+    backfill = read("010_backfill_dead_letter.sql")
+    assert "INSERT INTO default.dead_letter_new" in backfill
+    assert "FROM default.dead_letter AS v" in backfill
+
+    swap = read("011_dead_letter_swap.sql")
+    assert (
+        "RENAME TABLE default.dead_letter TO default.dead_letter_old, "
+        "default.dead_letter_new TO default.dead_letter" in swap
+    ), "swap must rename both sides in one atomic statement"
+
+    drop = read("012_drop_dead_letter_old.sql")
+    assert "DROP TABLE IF EXISTS default.dead_letter_old" in drop
