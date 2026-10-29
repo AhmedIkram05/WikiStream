@@ -47,7 +47,8 @@ services:
       - ${STATE_DIR:-${CH_DATA_DIR:-./ch-data}/../state}:/state
     # Phase 4B: freshness probe. `uv run` (not bare python) — the image's
     # deps live in .venv; system python has no clickhouse_connect. On stale
-    # data healthcheck.py SIGTERMs PID 1 (uv), the container exits and
+    # data WITH no fresh consumer heartbeat (wedge, not upstream outage)
+    # healthcheck.py SIGTERMs PID 1 (uv), the container exits and
     # restart: unless-stopped resumes it (ADR-004 wedge detector).
     healthcheck:
       test: ["CMD", "uv", "run", "python", "-m", "src.healthcheck"]
