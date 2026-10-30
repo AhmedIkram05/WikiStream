@@ -638,6 +638,9 @@ def test_consume_flush_failure_counts_insert_failed(
     monkeypatch, tmp_path, counters, stop, caplog
 ):
     patch_sleep(monkeypatch)
+    # No in-place retry: a permanent outage abandons on the first failure,
+    # exercising the insert_failed + reconnect-replay fallback.
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", ())
     patch_http(
         monkeypatch,
         [
@@ -672,6 +675,9 @@ def test_consume_replays_dropped_batch_after_flush_failure(
         return waits["n"] > 1  # 1st reconnect opens pass 2; 2nd exits
 
     monkeypatch.setattr(consumer, "_sleep_or_stop", reconnect_then_stop)
+    # No in-place retry: the first-pass failure is dropped (unmarked) and the
+    # reconnect replay re-lands the ids.
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", ())
 
     class OnceFailingCh(FakeCh):
         """CH blip: first insert fails, later inserts succeed."""
@@ -698,6 +704,109 @@ def test_consume_replays_dropped_batch_after_flush_failure(
     assert counters["total"] == 1000
     assert ch.rows == 1000
     assert consumer.load_state()["last_event_id"] == "1000"  # cursor: success only
+
+
+def test_consume_retry_in_place_recovers_without_reconnect(
+    monkeypatch, tmp_path, counters, stop, caplog
+):
+    """P0: a transient insert failure is retried in place (rows re-queued), so
+    the batch lands without waiting for a reconnect."""
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", (0.0,))  # one retry
+    calls = {"n": 0}
+
+    async def backoff_then_stop(stop_ev, seconds):
+        calls["n"] += 1
+        return calls["n"] > 1  # 1st = retry backoff (proceed); 2nd = reconnect exit
+
+    monkeypatch.setattr(consumer, "_sleep_or_stop", backoff_then_stop)
+
+    class OnceFailingCh(FakeCh):
+        async def insert(self, table, data, column_names=None, settings=None):
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("boom")
+            self.calls.append((table, len(data)))
+            self.rows += len(data)
+
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[b"".join(frame(str(i), payload()) for i in range(1, 1001))]
+            )
+        ],
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = OnceFailingCh(fail=True)
+
+    with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
+        run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["insert_failed"] == 0  # recovered in place, nothing dropped
+    assert counters["total"] == 1000
+    assert ch.rows == 1000
+    assert "insert_retry events=1000 attempt=1" in caplog.text
+    assert consumer.load_state()["last_event_id"] == "1000"
+
+
+def test_dl_flush_does_not_advance_past_pending_main(
+    monkeypatch, tmp_path, counters, stop
+):
+    """P1: a landed DL row (id 5) must not drag the cursor past a main batch
+    (ids 1-3) that is still pending — a reconnect would then skip 1-3."""
+    monkeypatch.setattr(consumer, "DL_FLUSH_INTERVAL", 0.01)
+    patch_state(monkeypatch, tmp_path)
+
+    class HoldOpen(FakeResponse):
+        async def aiter_bytes(self):
+            for i in (1, 2, 3):
+                yield frame(str(i), payload())
+            yield frame("5", "{bad")
+            await stop.wait()
+
+    patch_http(monkeypatch, [HoldOpen(chunks=[])])
+    ch = FakeCh()
+
+    async def scenario():
+        task = asyncio.create_task(consumer.consume_forever(ch, stop, None, counters))
+        try:
+            deadline = time.monotonic() + 5.0
+            while counters["dead_lettered"] == 0:
+                assert time.monotonic() < deadline, "DL timer never flushed"
+                await asyncio.sleep(0.01)
+            # DL row landed, but main 1-3 is unflushed: no cursor was persisted
+            # at all (a jump to "5" — the old behaviour — would have saved it).
+            assert consumer.load_state() is None
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 5.0)
+        # Final flush lands main 1-3 → cursor 3, never 5.
+        assert consumer.load_state()["last_event_id"] == "3"
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_lands_buffered_dl_rows_before_state(
+    monkeypatch, tmp_path, counters, stop
+):
+    """P1: a DL row buffered at shutdown still lands and the cursor advances,
+    so save_state never strands it (a restart's replay would skip it)."""
+    monkeypatch.setattr(consumer, "DL_FLUSH_INTERVAL", 3600.0)  # timer parked
+
+    class StopAfterBad(FakeResponse):
+        async def aiter_bytes(self):
+            yield frame("7", "{bad")
+            stop.set()  # observed at the next chunk boundary → clean exit
+            yield frame("8", payload())
+
+    patch_http(monkeypatch, [StopAfterBad(chunks=[])])
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["dead_lettered"] == 1  # buffered row landed at exit
+    assert consumer.load_state()["last_event_id"] == "7"
 
 
 def test_consume_flush_job_exception_logs_flush_failed(

@@ -192,12 +192,16 @@ def test_kill_mid_batch_persists_last_durable_not_last_seen(tmp_path, monkeypatc
     for i in range(11, 21):
         batcher.add(("t", "d"), str(i))
     assert asyncio.run(batcher.flush(FakeClient(fail=True))) == (None, 10)
+    assert batcher.pending_count == 10  # re-queued; abandon() is the give-up
+    batcher.abandon()
     assert batcher.pending_count == 0
 
     state_dir = tmp_path / "state"
     state_file = state_dir / "consumer_state.json"
     monkeypatch.setattr(consumer, "STATE_DIR", str(state_dir))
     monkeypatch.setattr(consumer, "STATE_FILE", str(state_file))
+    # No in-place retry: assert the reconnect-replay fallback path.
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", ())
     events: list[tuple[str | None, str]] = [(str(i), EVENT) for i in range(11, 21)]
     counters = _counters()
 
@@ -230,6 +234,8 @@ def test_flush_failure_no_dead_letter(tmp_path, monkeypatch):
     events: list[tuple[str | None, str]] = [(str(i), EVENT) for i in range(1, 6)]
     counters = _counters()
     calls = []
+    # No in-place retry: a permanent outage abandons on the first failure.
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", ())
 
     async def scenario():
         async def spy(self, *args, **kwargs):

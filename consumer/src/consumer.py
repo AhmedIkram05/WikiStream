@@ -60,6 +60,13 @@ DL_FLUSH_INTERVAL = 5.0
 # up tasks.
 FLUSH_CONCURRENCY = 2
 
+# Bounded in-place retry for a failed main-batch insert: rows are re-queued by
+# EventBatcher.flush and re-attempted after these backoff delays before the
+# batch is abandoned (dropped + unmarked, counted as insert_failed). Kept
+# short so the shutdown drain stays inside main()'s 10s budget. Empty
+# schedule disables retry (tests that exercise the reconnect-replay fallback).
+FLUSH_RETRY_SCHEDULE = (0.5, 1.0, 2.0)
+
 
 def _wait_seconds(retry_ms: int | None, retry_after: int | None) -> float:
     """Reconnect wait: SSE retry hint is the floor (1s default), Retry-After
@@ -122,6 +129,10 @@ def save_state(last_event_id: str | None, total: int) -> None:
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
+            # fsync before replace: without it a power loss can leave the
+            # renamed file empty/stale, losing the cursor → mass replay.
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, STATE_FILE)
     except Exception as exc:
         logger.warning("state_save_failed reason=%s", exc)
@@ -143,6 +154,13 @@ async def consume_forever(
     batcher = EventBatcher()
     dl_batcher = DeadLetterBatcher()
     durable_id = resumed_from
+    # Highest id successfully flushed by the MAIN batcher, plus whether the
+    # main batcher has ever buffered a row. A DL flush may never move
+    # durable_id past main_high_water once main has been seen (a pending,
+    # in-flight or dropped main batch may hold lower ids); DL-only traffic has
+    # no such gap. See _do_dl_flush.
+    main_high_water: str | None = None
+    main_seen = False
     last_saved_id: str | None = None
     last_saved_mono = time.monotonic()
     last_stats_log = time.monotonic()
@@ -150,32 +168,61 @@ async def consume_forever(
     pending_flushes: set[asyncio.Task] = set()
     flush_sem = asyncio.Semaphore(FLUSH_CONCURRENCY)
 
-    async def _flush_job() -> None:
-        nonlocal durable_id, last_stats_log
-        try:
+    async def _flush_main(honor_stop: bool) -> None:
+        """Flush the main batch with bounded in-place retry.
+
+        EventBatcher.flush re-queues rows on failure, so we retry after each
+        backoff in FLUSH_RETRY_SCHEDULE; only when the schedule is exhausted
+        do we abandon the batch (drop + unmark, counted as insert_failed) so a
+        reconnect replay can still refill the dedup ring. honor_stop=True for
+        background flushes (a shutdown mid-retry leaves the rows for the final
+        flush); False for the final flush, which must not bail on the stop flag.
+        """
+        nonlocal durable_id, last_stats_log, main_high_water
+        attempt = 0
+        while True:
             mid, flushed = await batcher.flush(client)
+            if flushed == 0:
+                # Nothing pending: a concurrent flush task already drained the
+                # batch. Not a failure — do not retry or count it.
+                break
             if mid is not None:
                 counters["total"] += flushed
                 durable_id = _max_id(durable_id, mid)
-            else:
-                counters["insert_failed"] += flushed
+                main_high_water = _max_id(main_high_water, mid)
+                break
+            if attempt >= len(FLUSH_RETRY_SCHEDULE):
+                dropped = batcher.abandon()
+                counters["insert_failed"] += dropped
                 logger.warning(
-                    "insert_failed events=%d reason=%s",
-                    flushed,
-                    "batch dropped",
+                    "insert_failed events=%d reason=%s", dropped, "batch dropped"
                 )
-            logger.info(
-                "inserted events=%d total=%d "
-                "dead_lettered=%d insert_failed=%d "
-                "duplicates_skipped=%d resumed_from=%s",
-                flushed,
-                counters["total"],
-                counters["dead_lettered"],
-                counters["insert_failed"],
-                counters["duplicates_skipped"],
-                resumed_from or "none",
-            )
-            last_stats_log = time.monotonic()
+                break
+            delay = FLUSH_RETRY_SCHEDULE[attempt]
+            attempt += 1
+            logger.warning("insert_retry events=%d attempt=%d", flushed, attempt)
+            if honor_stop:
+                if await _sleep_or_stop(stop, delay):
+                    # Shutdown mid-retry: leave rows queued for the final flush.
+                    break
+            else:
+                await asyncio.sleep(delay)
+        logger.info(
+            "inserted events=%d total=%d "
+            "dead_lettered=%d insert_failed=%d "
+            "duplicates_skipped=%d resumed_from=%s",
+            flushed,
+            counters["total"],
+            counters["dead_lettered"],
+            counters["insert_failed"],
+            counters["duplicates_skipped"],
+            resumed_from or "none",
+        )
+        last_stats_log = time.monotonic()
+
+    async def _flush_job() -> None:
+        try:
+            await _flush_main(honor_stop=True)
         except Exception as exc:
             logger.warning("flush_failed reason=%s", exc)
         finally:
@@ -199,8 +246,23 @@ async def consume_forever(
         if dropped:
             return  # at-most-once: cursor stays behind, replay re-runs them
         counters["dead_lettered"] += count
-        if max_eid is not None:
-            durable_id = _max_id(durable_id, max_eid)
+        if max_eid is None:
+            return
+        # A DL row must never drag the cursor past the main batcher's last
+        # SUCCESSFUL flush: if a main batch (e.g. ids 100-150) is pending or
+        # was dropped while a DL row (id 155) lands, moving the cursor to 155
+        # makes a reconnect's Last-Event-ID skip 100-150 forever. DL-only
+        # traffic (no main rows ever buffered) has no such gap, so max_eid is
+        # safe there.
+        if not main_seen:
+            bound = max_eid
+        else:
+            bound = main_high_water
+        if bound is None:
+            return
+        advanced = _max_id(durable_id, bound)
+        if advanced != durable_id:
+            durable_id = advanced
             save_state(durable_id, counters["total"])
 
     async def _dl_flush_job() -> None:
@@ -337,6 +399,7 @@ async def consume_forever(
                                     counters["duplicates_skipped"] += 1
                                     continue
                                 # Step 5: add to batch.
+                                main_seen = True
                                 flush_due = batcher.add(
                                     (datetime.now(UTC), ev.data), ev_id
                                 )
@@ -398,28 +461,24 @@ async def consume_forever(
                 break
 
     # Connection loop exited (stop set): FINAL FLUSH — zero loss on shutdown.
+    # honor_stop=False: the stop flag is already set, so the retry backoff must
+    # not bail out of the drain. Wrapped like _flush_job so a CH outage here
+    # still reaches save_state and never leaks the dl_timer task.
     if pending_flushes:
         await asyncio.gather(*pending_flushes, return_exceptions=True)
     if batcher.pending_count:
-        mid, flushed = await batcher.flush(client)
-        if mid is not None:
-            counters["total"] += flushed
-            durable_id = _max_id(durable_id, mid)
-            logger.info(
-                "inserted events=%d total=%d dead_lettered=%d insert_failed=%d "
-                "duplicates_skipped=%d resumed_from=%s",
-                flushed,
-                counters["total"],
-                counters["dead_lettered"],
-                counters["insert_failed"],
-                counters["duplicates_skipped"],
-                resumed_from or "none",
-            )
-        else:
-            counters["insert_failed"] += flushed
-            logger.warning(
-                "insert_failed events=%d reason=%s", flushed, "batch dropped"
-            )
+        try:
+            await _flush_main(honor_stop=False)
+        except Exception as exc:
+            logger.warning("flush_failed reason=%s", exc)
+    # Drain the dead-letter buffer BEFORE save_state: save_state advances the
+    # cursor, so an unflushed DL batch would be stranded (a restart's replay is
+    # skipped). Bounded: a DL insert failure drops the batch, so this is at
+    # most one real attempt per pending batch.
+    for _ in range(2):
+        if not dl_batcher.pending_count:
+            break
+        await _do_dl_flush()
     save_state(durable_id, counters["total"])
     dl_timer.cancel()
     with suppress(asyncio.CancelledError):
