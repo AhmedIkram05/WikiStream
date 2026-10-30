@@ -231,8 +231,11 @@ emit_log
 _P5_VALUE=0.0; [ "$status" = "ok" ] && _P5_VALUE=1.0
 _P5_DETAIL=$(printf '{"status":"%s","window_start":"%s","window_end":"%s"}' "$status" "$WINDOW_START" "$WINDOW_END" | sed "s/'/\\\\'/g")
 # Password via stdin (`--password` with no value, like backup.sh) — same argv
-# hygiene as the compare_table queries above.
-printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream --password \
+# hygiene as the compare_table queries above. No `-i` here: clickhouse-client
+# treats attached stdin as external INSERT data alongside the inlined VALUES,
+# and the server's async_insert rejects both at once (Code 48) — the verdict
+# never lands. The compare lines above keep `-i`; they only SELECT.
+printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream --password \
   --query "INSERT INTO default.pipeline_health (ts, source, metric, value, detail) VALUES (now(), 'parity', 'result', $_P5_VALUE, '$_P5_DETAIL')" \
   || { echo "[$(date -u)] parity: pipeline_health write failed" >&2; }
 
