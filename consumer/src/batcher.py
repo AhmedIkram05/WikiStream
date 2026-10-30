@@ -1,11 +1,11 @@
 """Batching + dedup for raw event inserts (plan §4A).
 
 EventBatcher accumulates rows until size/age thresholds are met, then flushes
-them in one async_insert to default.raw_events. At-most-once: a failed flush
-DROPS the batch (counted by the caller) — the stream is the source of truth
-and replay refills the dedup ring after a kill or a failed flush, so
-duplicates are cheap and losses are the thing to avoid (Q1: one row per
-event, best-effort).
+them in one async_insert to default.raw_events. A failed flush RE-QUEUES the
+batch (rows stay pending) so the caller can retry in place; the caller drops
+the batch via abandon() only after giving up, which releases the dedup marks
+so replay can refill the ring. At-most-once either way: duplicates are cheap
+and losses are the thing to avoid (Q1: one row per event, best-effort).
 
 Dedup ring is memory-only (capacity 50_000 ≈ 20 min at ~44 ev/s): after a
 kill (or a dropped batch) the server's replay (Last-Event-ID) refills it; the
@@ -101,9 +101,10 @@ class EventBatcher:
         """Flush pending rows; returns (max_event_id, count).
 
         max_event_id = maximum event id in the batch (None if the batch had
-        no ids). On ANY exception the batch is DROPPED (at-most-once), its
-        ids are unmarked so a later server replay can refill them, and
-        (None, len) is returned — the caller logs and counts the loss.
+        no ids). On ANY exception the rows are RE-QUEUED (kept pending, marks
+        intact) and (None, len) is returned so the caller can retry in place;
+        a caller that gives up must call abandon() to drop the batch and
+        release its ids for a later server replay.
         """
         if not self._pending:
             return (None, 0)
@@ -123,6 +124,25 @@ class EventBatcher:
             )
         except Exception as exc:
             logger.warning("flush_failed reason=%s", exc)
-            self._unmark_batch(batch_ids)
+            # Re-queue at the FRONT (rows added during the await stay behind).
+            # Dropping here would lose the batch: the live SSE connection
+            # never replays a mid-session failure, only a reconnect does.
+            self._pending = pending + self._pending
+            self._pending_ids = batch_ids + self._pending_ids
+            self._batch_max_id = _max_id(self._batch_max_id, batch_max)
+            self._first_added_at = self._now()
             return (None, len(pending))
         return (batch_max, len(pending))
+
+    def abandon(self) -> int:
+        """Give up on the pending batch: drop it and release its ids from the
+        dedup ring so a later server replay (Last-Event-ID) can re-add them.
+        Returns the number of rows dropped.
+        """
+        count = len(self._pending)
+        self._unmark_batch(self._pending_ids)
+        self._pending = []
+        self._pending_ids = []
+        self._first_added_at = None
+        self._batch_max_id = None
+        return count

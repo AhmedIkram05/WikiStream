@@ -114,25 +114,57 @@ def test_flush_max_id_kafka_composite():
     assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
 
 
-def test_failed_flush_drops_rows():
+def test_failed_flush_requeues_rows():
     fake = FakeClient(fail=True)
     b = EventBatcher(now=constant_clock)
     for event_id in ["1", "2", "3"]:
         b.add(("t", "d"), event_id)
     assert asyncio.run(b.flush(fake)) == (None, 3)
-    assert b.pending_count == 0
+    assert b.pending_count == 3  # re-queued for in-place retry, not dropped
     b.add(("t", "d"), "4")
-    assert b.pending_count == 1
+    assert b.pending_count == 4
+    assert b.abandon() == 4
+    assert b.pending_count == 0
 
 
-def test_failed_flush_unmarks_ids_for_replay():
-    """A dropped batch's ids must leave the dedup ring, or a later server
-    replay (Last-Event-ID) hits seen() and the rows are lost until restart."""
+def test_failed_flush_then_retry_lands_same_rows():
+    """P0: a transient failure re-queues the rows so a second flush lands them
+    in ONE insert (no drop, no duplication)."""
+
+    class OnceFail:
+        def __init__(self):
+            self.fail = True
+            self.calls = []
+
+        async def insert(self, table, **kwargs):
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("ch blip")
+            self.calls.append({"table": table, **kwargs})
+
+    fake = OnceFail()
+    b = EventBatcher(now=constant_clock)
+    for event_id in ["1", "2", "3"]:
+        b.add(("t", "d"), event_id)
+    assert asyncio.run(b.flush(fake)) == (None, 3)
+    assert b.pending_count == 3
+    assert asyncio.run(b.flush(fake)) == ("3", 3)
+    assert fake.calls[0]["data"] == [("t", "d")] * 3
+    assert b.pending_count == 0
+
+
+def test_failed_flush_keeps_marks_until_abandon():
+    """A failed flush keeps the re-queued rows AND their dedup marks (so the
+    retry is not duplicated); only abandon() releases the ids — that is what
+    lets a later server replay (Last-Event-ID) re-add them."""
     fake = FakeClient(fail=True)
     b = EventBatcher(now=constant_clock)
     for event_id in ["1", "2", "3"]:
         b.add(("t", "d"), event_id)
     assert asyncio.run(b.flush(fake)) == (None, 3)
+    assert all(b.seen(event_id) for event_id in ("1", "2", "3"))  # still queued
+
+    assert b.abandon() == 3
     assert all(b.seen(event_id) is False for event_id in ("1", "2", "3"))
 
     # Same ids replay → re-added, and the retry flush lands them.
@@ -144,27 +176,30 @@ def test_failed_flush_unmarks_ids_for_replay():
     assert all(b.seen(event_id) for event_id in ("1", "2", "3"))
 
 
-def test_failed_flush_no_ids_skips_unmark():
-    """A dropped batch with only None event ids has an empty _pending_ids, so
-    _unmark_batch must take its no-ids early return (and the ring stays empty)."""
+def test_failed_flush_no_ids_requeues_then_abandon_clears():
+    """A failed batch with only None event ids has an empty _pending_ids, so
+    abandon()'s _unmark_batch takes its no-ids early return (ring stays empty)."""
     fake = FakeClient(fail=True)
     b = EventBatcher(now=constant_clock)
     for _ in range(3):
         b.add(("t", "d"), None)
     assert asyncio.run(b.flush(fake)) == (None, 3)
+    assert b.pending_count == 3
+    assert b.abandon() == 3
     assert b.pending_count == 0
     assert not b._ring and not b._ring_set
 
 
 def test_unmark_survives_ring_eviction():
-    """Ids already evicted from a full ring must not break the unmark rebuild
-    (ring and set mirror stay in sync with maxlen preserved)."""
+    """Ids already evicted from a full ring must not break abandon()'s unmark
+    rebuild (ring and set mirror stay in sync with maxlen preserved)."""
     fake = FakeClient(fail=True)
     b = EventBatcher(dedup_capacity=3, now=constant_clock)
     for event_id in ["1", "2", "3", "4", "5"]:
         b.add(("t", "d"), event_id)
     assert b.seen("1") is False and b.seen("2") is False  # evicted at add-time
     assert asyncio.run(b.flush(fake)) == (None, 5)
+    assert b.abandon() == 5
     assert b.seen("3") is False and b.seen("4") is False and b.seen("5") is False
     for event_id in ["6", "7", "8", "9"]:
         b.add(("t", "d"), event_id)
