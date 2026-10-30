@@ -505,7 +505,7 @@ def test_merge_sql_idempotent_shape():
 
 def test_rollup_daily_shape():
     """Gold rollup contract (no live BQ needed): S.-qualified INSERT (no
-    ambiguous bare refs), LAG() over an extra lookback day so the window
+    ambiguous bare refs), LAG() over the FULL prior calendar day so the window
     boundary row gets a real prev_day_edits, and only window days merged —
     including on the target side: the ON clause needs the constant day-range
     predicate or BigQuery rejects the MERGE (require_partition_filter)."""
@@ -516,7 +516,9 @@ def test_rollup_daily_shape():
     )
     assert "{START}" not in sub and "{END}" not in sub
     assert "LAG(edits)" in sub
-    assert "TIMESTAMP_SUB(TIMESTAMP(" in sub  # extra lookback day for LAG
+    # Midnight of the day before {START}: a {START}-1day scan would give LAG a
+    # partial prior day when {START} is mid-day.
+    assert "TIMESTAMP(DATE_SUB(DATE(TIMESTAMP(" in sub
     on_clause = sub.split("ON", 1)[1].split("WHEN", 1)[0]
     assert "T.day >= DATE(TIMESTAMP(" in on_clause, (
         "MERGE ON clause lost its day-range lower bound"

@@ -1,12 +1,15 @@
--- Daily gold rollup: hourly -> daily MERGE (idempotent). Scans one extra day
--- before {START} so LAG() sees the day preceding the window; only window days
--- are merged, so the boundary row's prev_day_edits is correct on re-runs.
+-- Daily gold rollup: hourly -> daily MERGE (idempotent). Scans from MIDNIGHT
+-- of the day before {START} (not {START} - 1 day) so LAG() sees the FULL
+-- preceding calendar day: with {START} mid-day, a {START}-1day scan would
+-- contribute only the prior day's tail hours and dod_growth_pct would be
+-- computed against a partial prior day. Only window days are merged, so the
+-- boundary row's prev_day_edits stays correct on re-runs.
 MERGE wikistream.kpi_daily T
 USING (
   WITH daily AS (
     SELECT DATE(hour) AS day, wiki, SUM(edits) AS edits, SUM(bytes_delta) AS bytes_delta
     FROM wikistream.kpi_edits_hourly
-    WHERE hour >= TIMESTAMP_SUB(TIMESTAMP('{START}'), INTERVAL 1 DAY)
+    WHERE hour >= TIMESTAMP(DATE_SUB(DATE(TIMESTAMP('{START}')), INTERVAL 1 DAY))
       AND hour < TIMESTAMP('{END}')
     GROUP BY day, wiki
   ),
