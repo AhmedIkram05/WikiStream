@@ -1,8 +1,8 @@
 -- Idempotent reload of one window: export.sh loads the window into
 -- kpi_edits_hourly_staging, then MERGEs it here. Re-runs upsert the same
 -- (hour, wiki, is_bot) keys instead of appending duplicates.
--- ponytail: upsert-only, no BY SOURCE DELETE — a shrunk window leaves stale
--- keys; windows only grow in practice, add it if full convergence is needed.
+-- Upsert-only (no BY SOURCE DELETE): a shrunk window leaves stale keys;
+-- windows only grow in practice — add DELETE convergence if that changes.
 MERGE wikistream.kpi_edits_hourly T
 USING (
   SELECT hour, wiki, is_bot, edits, bytes_delta
