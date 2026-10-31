@@ -22,7 +22,7 @@ from clickhouse_connect import get_async_client
 from pydantic import ValidationError
 
 from src.batcher import EventBatcher
-from src.cursors import _max_id
+from src.cursors import _max_id, _min_id
 from src.dead_letter import DeadLetterBatcher
 from src.heartbeat import heartbeat_loop
 from src.models import WikiEvent, validate_timestamp
@@ -161,6 +161,14 @@ async def consume_forever(
     # no such gap. See _do_dl_flush.
     main_high_water: str | None = None
     main_seen = False
+    # Mirror guard (main -> DL): while a DL row carrying an id is buffered but
+    # not yet landed (or was dropped), a successful MAIN flush must not advance
+    # durable_id past it, or a restart's Last-Event-ID replay would skip that DL
+    # row forever (a loss, not the DL->main direction's duplicate). dl_hold_id
+    # is the durable watermark captured before the first unlanded DL row; a
+    # None hold means nothing was durable yet, so no advance is allowed.
+    dl_pending = False
+    dl_hold_id: str | None = None
     last_saved_id: str | None = None
     last_saved_mono = time.monotonic()
     last_stats_log = time.monotonic()
@@ -188,7 +196,12 @@ async def consume_forever(
                 break
             if mid is not None:
                 counters["total"] += flushed
-                durable_id = _max_id(durable_id, mid)
+                # Advance only up to an unlanded DL row (mirror of the
+                # DL->main clamp in _do_dl_flush): a landed main batch must not
+                # skip a DL row that has not landed or was dropped.
+                target = _min_id(mid, dl_hold_id) if dl_pending else mid
+                if target is not None:
+                    durable_id = _max_id(durable_id, target)
                 main_high_water = _max_id(main_high_water, mid)
                 break
             if attempt >= len(FLUSH_RETRY_SCHEDULE):
@@ -233,19 +246,28 @@ async def consume_forever(
 
         A DL flush that advances the cursor persists state IMMEDIATELY (no
         debounce): if the durable cursor lagged landed DL rows, a restart
-        would replay those events and re-dead-letter them — the DL table is
-        a plain MergeTree with no idempotency key, so the replay window must
+        would replay those events and re-dead-letter them — the landed ring
+        only suppresses that within this process, so the replay window must
         stay at the ~1ms state-write, not the 2s debounce.
         """
-        nonlocal durable_id
+        nonlocal durable_id, dl_pending, dl_hold_id
         try:
             dropped, count, max_eid = await dl_batcher.flush(client)
         except Exception as exc:
             logger.warning("dl_flush_failed reason=%s", exc)
             return
         if dropped:
-            return  # at-most-once: cursor stays behind, replay re-runs them
+            # at-most-once: cursor stays behind, replay re-runs them, and the
+            # mirror hold stays frozen so a successful main flush cannot skip
+            # these unlanded rows.
+            return
         counters["dead_lettered"] += count
+        # Rows landed: release the mirror hold once the buffer is empty; during
+        # a burst (rows added while the insert awaited) re-freeze at the
+        # current watermark so the new unlanded rows stay protected.
+        if dl_batcher.pending_count == 0:
+            dl_pending = False
+            dl_hold_id = None
         if max_eid is None:
             return
         # A DL row must never drag the cursor past the main batcher's last
@@ -258,12 +280,37 @@ async def consume_forever(
             bound = max_eid
         else:
             bound = main_high_water
+        if dl_pending:
+            # ... and while any DL row is still unlanded, do not advance past
+            # the frozen watermark (mirror of the main->DL guard).
+            bound = _min_id(bound, dl_hold_id)
         if bound is None:
             return
         advanced = _max_id(durable_id, bound)
         if advanced != durable_id:
             durable_id = advanced
             save_state(durable_id, counters["total"])
+
+    async def _dl_add(
+        *, reason: str, wiki: str, title: str, event: str, event_id: str | None
+    ) -> None:
+        """Buffer a DL row; freeze the cursor watermark on the first one.
+
+        A replay whose cursor was clamped (main pending/dropped) can re-deliver
+        an event whose DL row already landed — the landed ring skips that
+        re-insert. While a DL row carrying an id is unlanded, the mirror hold
+        (dl_hold_id) stops a successful main flush from advancing past it.
+        """
+        nonlocal dl_pending, dl_hold_id
+        if dl_batcher.landed(event_id):
+            return  # already landed in this process — replay duplicate
+        if event_id is not None and not dl_pending:
+            dl_pending = True
+            dl_hold_id = durable_id
+        if dl_batcher.add(
+            reason=reason, wiki=wiki, title=title, event=event, event_id=event_id
+        ):
+            await _spawn_dl_flush()
 
     async def _dl_flush_job() -> None:
         try:
@@ -338,23 +385,19 @@ async def consume_forever(
                                 # insert — the counter/cursor advance only
                                 # when a flush LANDS, so a dropped batch
                                 # leaves the cursor behind and the replay
-                                # re-runs these events. When a DL flush
-                                # advances the cursor, state is saved
-                                # immediately (no debounce): the durable
-                                # cursor must never lag landed DL rows or a
-                                # restart re-dead-letters them (no idempotency
-                                # key in the DL table).
+                                # re-runs these events. _dl_add skips an id
+                                # whose DL row already landed (the landed
+                                # ring) and freezes the main->DL cursor guard.
                                 try:
                                     obj = json.loads(ev.data)
                                 except json.JSONDecodeError:
-                                    if dl_batcher.add(
+                                    await _dl_add(
                                         reason="validation:invalid_json",
                                         wiki="",
                                         title="",
                                         event=ev.data,
                                         event_id=ev_id,
-                                    ):
-                                        await _spawn_dl_flush()
+                                    )
                                     continue
                                 # Step 2: timestamp validity.
                                 ts = (
@@ -365,14 +408,13 @@ async def consume_forever(
                                 ts_reason = validate_timestamp(ts)
                                 if ts_reason is not None:
                                     wiki, title = _dl_fields(obj)
-                                    if dl_batcher.add(
+                                    await _dl_add(
                                         reason=ts_reason,
                                         wiki=wiki,
                                         title=title,
                                         event=ev.data,
                                         event_id=ev_id,
-                                    ):
-                                        await _spawn_dl_flush()
+                                    )
                                     continue
                                 # Step 3: schema validity.
                                 try:
@@ -385,14 +427,13 @@ async def consume_forever(
                                         else "validation:error"
                                     )
                                     wiki, title = _dl_fields(obj)
-                                    if dl_batcher.add(
+                                    await _dl_add(
                                         reason=reason,
                                         wiki=wiki,
                                         title=title,
                                         event=ev.data,
                                         event_id=ev_id,
-                                    ):
-                                        await _spawn_dl_flush()
+                                    )
                                     continue
                                 # Step 4: dedup.
                                 if ev_id and batcher.seen(ev_id):

@@ -106,3 +106,38 @@ def test_rows_without_event_id_flush_with_none_max_id():
     assert dl.add(reason="r", wiki="", title="", event="e", event_id=None) is False
     dropped, count, max_id = asyncio.run(dl.flush(FakeClient()))
     assert (dropped, count, max_id) == (False, 1, None)
+
+
+def test_landed_marks_only_after_successful_flush():
+    """A landed row's id is remembered; a dropped or never-flushed row is not."""
+    dl = DeadLetterBatcher()
+    dl.add(reason="r", wiki="", title="", event="e", event_id="7")
+    assert dl.landed("7") is False  # buffered, not yet landed
+    asyncio.run(dl.flush(FakeClient()))
+    assert dl.landed("7") is True
+
+    failed = DeadLetterBatcher()
+    failed.add(reason="r", wiki="", title="", event="e", event_id="8")
+    asyncio.run(failed.flush(FakeClient(fail=True)))
+    assert failed.landed("8") is False  # dropped: replay must re-run it
+
+
+def test_landed_none_and_idless_rows_never_mark():
+    dl = DeadLetterBatcher()
+    assert dl.landed(None) is False
+    dl.add(reason="r", wiki="", title="", event="e", event_id=None)
+    asyncio.run(dl.flush(FakeClient()))
+    assert dl.landed("anything") is False
+
+
+def test_landed_ring_evicts_oldest_and_ignores_duplicate_marks():
+    dl = DeadLetterBatcher(dedup_capacity=2)
+    for eid in ("1", "2", "3"):
+        dl.add(reason="r", wiki="", title="", event="e", event_id=eid)
+        asyncio.run(dl.flush(FakeClient()))
+    assert dl.landed("1") is False  # evicted
+    assert dl.landed("2") and dl.landed("3")
+    # re-marking an existing id must not desync ring and set
+    dl.add(reason="r", wiki="", title="", event="e", event_id="2")
+    asyncio.run(dl.flush(FakeClient()))
+    assert len(dl._landed) == len(dl._landed_set) == 2
