@@ -121,3 +121,24 @@ def test_row_bounds_violation_fails(capsys, monkeypatch):
     v = _verdict(capsys)
     assert v["success"] is False
     assert "outside [100, 200]" in v["error"]
+
+
+def test_engine_failure_emits_json_verdict(capsys, monkeypatch):
+    """A GX engine exception must still print ONE JSON verdict line (no raw
+    traceback) carrying expectations_failed detail for the atexit write."""
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "test")
+    monkeypatch.setenv("GX_ROW_MIN", "1")
+    monkeypatch.setenv("GX_ROW_MAX", "500")
+    _patch_client(monkeypatch, client=_FakeClient(n=10))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("gx engine down")
+
+    monkeypatch.setattr("gx.suite.gx.get_context", boom)
+
+    assert main() == 1
+    v = _verdict(capsys)
+    assert v["success"] is False
+    assert v["expectations_failed"] == 1
+    assert "gx engine down" in v["error"]
+    assert v["row_count"] == 10
