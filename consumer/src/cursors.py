@@ -45,3 +45,17 @@ def _max_id(a: str | None, b: str | None) -> str | None:
     if a.startswith("[") or b.startswith("["):
         return a if _cursor_ts(a) >= _cursor_ts(b) else b
     return a if a >= b else b
+
+
+def _min_id(a: str | None, b: str | None) -> str | None:
+    """Smaller of two ids, mirroring _max_id. None means "no id known", i.e.
+    −∞, so any pair containing a None collapses to None. Used to clamp a
+    cursor advance at an unlanded dead-letter row's watermark: a None hold
+    means nothing was durable yet, so no advance is allowed."""
+    if a is None or b is None:
+        return None
+    if a.isdigit() and b.isdigit():
+        return a if int(a) <= int(b) else b
+    if a.startswith("[") or b.startswith("["):
+        return a if _cursor_ts(a) <= _cursor_ts(b) else b
+    return a if a <= b else b

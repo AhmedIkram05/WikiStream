@@ -218,6 +218,18 @@ def test_max_id_edges():
     )
 
 
+def test_min_id_edges():
+    # None is -∞: any pair containing it collapses to None (no advance).
+    assert cursors._min_id(None, "b") is None
+    assert cursors._min_id("a", None) is None
+    assert cursors._min_id("5", "10") == "5"
+    assert cursors._min_id("10", "10") == "10"
+    assert cursors._min_id("b", "a") == "a"  # plain-string fallback
+    assert (
+        cursors._min_id('[{"offset": -1}]', '[{"timestamp": 7}]') == '[{"offset": -1}]'
+    )
+
+
 def test_dl_fields():
     assert consumer._dl_fields({"wiki": "enwiki", "title": "T"}) == ("enwiki", "T")
     assert consumer._dl_fields({"wiki": None, "title": "T"}) == ("", "T")
@@ -784,6 +796,66 @@ def test_dl_flush_does_not_advance_past_pending_main(
         assert consumer.load_state()["last_event_id"] == "3"
 
     asyncio.run(scenario())
+
+
+def test_main_flush_does_not_skip_unlanded_dl_row(
+    monkeypatch, tmp_path, counters, stop
+):
+    """P2 mirror of the DL->main clamp: a successful main flush must not
+    advance the cursor past a DL row that has not landed (or was dropped), or
+    a restart's replay would skip that DL row forever."""
+    patch_sleep(monkeypatch)
+    # DL insert always fails (batch dropped) while main inserts succeed.
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(
+                chunks=[
+                    frame("1", "{bad"),
+                    b"".join(frame(str(i), payload()) for i in range(2, 1002)),
+                ]
+            )
+        ],
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = DLFailingCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    # Main rows all landed, but the cursor is frozen at None behind the
+    # unlanded DL row 1 — NOT "1001" (which the unguarded main flush saved).
+    assert counters["total"] == 1000
+    assert counters["dead_lettered"] == 0  # dropped at-most-once
+    assert ch.dl_rows == []
+    assert consumer.load_state()["last_event_id"] is None
+
+
+def test_dl_replay_of_landed_row_is_not_reinserted(
+    monkeypatch, tmp_path, counters, stop
+):
+    """P2 idempotency: a server replay of an already-landed DL row (the cursor
+    was clamped) must not re-dead-letter it — the landed ring suppresses it."""
+    waits = {"n": 0}
+
+    async def reconnect_then_stop(stop_ev, seconds):
+        waits["n"] += 1
+        return waits["n"] > 1  # 1st reconnect opens pass 2; 2nd exits
+
+    monkeypatch.setattr(consumer, "_sleep_or_stop", reconnect_then_stop)
+    patch_http(
+        monkeypatch,
+        [
+            FakeResponse(chunks=[frame("7", "{bad")]),
+            FakeResponse(chunks=[frame("7", "{bad")]),
+        ],
+    )
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert counters["dead_lettered"] == 1  # landed once, replay suppressed
+    assert len(ch.dl_rows) == 1
 
 
 def test_shutdown_lands_buffered_dl_rows_before_state(

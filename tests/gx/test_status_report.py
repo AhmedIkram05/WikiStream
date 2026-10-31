@@ -6,6 +6,7 @@ live insert and the fake-client insert-failure test are ch-marked so the
 """
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -28,7 +29,9 @@ from gx.suite import report_status
 
 HOST = "localhost"
 PORT = 8123
-PASSWORD = "wikistream_dev_password"
+# CI's live ch job exports CH_PASSWORD; no credential literal in source so
+# secret scanners stay quiet. The local `-m "not ch"` run never connects.
+PASSWORD = os.getenv("CH_PASSWORD", "")
 
 # Mirrors migrations/008_pipeline_health.sql so the live test is self-sufficient
 # regardless of whether the migrations ch suite ran first in this pytest run.

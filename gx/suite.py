@@ -198,67 +198,88 @@ def main() -> int:
         print(json.dumps(verdict))
         return 1
 
-    ctx = gx.get_context()
-    ctx.add_datasource(
-        name="runtime_ds",
-        class_name="Datasource",
-        execution_engine={
-            "class_name": "SqlAlchemyExecutionEngine",
-            "connection_string": (
-                f"clickhouse://{quote(user, safe='')}:{quote(password, safe='')}"
-                f"@{host}:{port}/default"
-            ),
-        },
-        data_connectors={
-            "default_runtime_data_connector_name": {
-                "class_name": "RuntimeDataConnector",
-                "batch_identifiers": ["default_identifier_name"],
-            }
-        },
-    )
-    batch_request = RuntimeBatchRequest(
-        datasource_name="runtime_ds",
-        data_connector_name="default_runtime_data_connector_name",
-        data_asset_name=table,
-        runtime_parameters={
-            "query": WINDOW_SQL.format(
-                table=table,
-                start=start_s,
-                end=end_s,
-                sample=(
-                    "" if sample_rate >= 1.0 else f" AND rand() < {sample_threshold}"
+    # The engine path is wrapped so any datasource/validator/validate failure
+    # still honours this file's one-JSON-line contract (the hourly log is
+    # parsed by Phase 5 alerts) and emits a meaningful verdict: the atexit
+    # handler then writes value 0.0 WITH expectations_failed detail, instead
+    # of a bare 0.0 after a raw traceback.
+    try:
+        ctx = gx.get_context()
+        ctx.add_datasource(
+            name="runtime_ds",
+            class_name="Datasource",
+            execution_engine={
+                "class_name": "SqlAlchemyExecutionEngine",
+                "connection_string": (
+                    f"clickhouse://{quote(user, safe='')}:{quote(password, safe='')}"
+                    f"@{host}:{port}/default"
                 ),
-            )
-        },
-        batch_identifiers={"default_identifier_name": "default_identifier"},
-    )
-    validator = ctx.get_validator(batch_request=batch_request)
-    for column in (
-        "wiki",
-        "title",
-        "event_type",
-        "is_bot",
-        "length_new",
-        "event_timestamp",
-    ):
-        validator.expect_column_values_to_not_be_null(column=column)
-    validator.expect_column_values_to_be_in_set(
-        column="event_type", value_set=["edit", "new", "log", "categorize"]
-    )
-    validator.expect_column_median_to_be_between(
-        column="lag_seconds", min_value=None, max_value=300
-    )
-    validator.expect_column_max_to_be_between(
-        column="skew_seconds", min_value=None, max_value=300
-    )
-    validator.expect_column_unique_value_count_to_be_between(
-        column="wiki", min_value=101, max_value=None
-    )
-    validator.expect_column_mean_to_be_between(
-        column="is_bot", min_value=0.05, max_value=0.95
-    )
+            },
+            data_connectors={
+                "default_runtime_data_connector_name": {
+                    "class_name": "RuntimeDataConnector",
+                    "batch_identifiers": ["default_identifier_name"],
+                }
+            },
+        )
+        batch_request = RuntimeBatchRequest(
+            datasource_name="runtime_ds",
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name=table,
+            runtime_parameters={
+                "query": WINDOW_SQL.format(
+                    table=table,
+                    start=start_s,
+                    end=end_s,
+                    sample=(
+                        ""
+                        if sample_rate >= 1.0
+                        else f" AND rand() < {sample_threshold}"
+                    ),
+                )
+            },
+            batch_identifiers={"default_identifier_name": "default_identifier"},
+        )
+        validator = ctx.get_validator(batch_request=batch_request)
+        for column in (
+            "wiki",
+            "title",
+            "event_type",
+            "is_bot",
+            "length_new",
+            "event_timestamp",
+        ):
+            validator.expect_column_values_to_not_be_null(column=column)
+        validator.expect_column_values_to_be_in_set(
+            column="event_type", value_set=["edit", "new", "log", "categorize"]
+        )
+        validator.expect_column_median_to_be_between(
+            column="lag_seconds", min_value=None, max_value=300
+        )
+        validator.expect_column_max_to_be_between(
+            column="skew_seconds", min_value=None, max_value=300
+        )
+        validator.expect_column_unique_value_count_to_be_between(
+            column="wiki", min_value=101, max_value=None
+        )
+        validator.expect_column_mean_to_be_between(
+            column="is_bot", min_value=0.05, max_value=0.95
+        )
 
-    result = validator.validate()
+        result = validator.validate()
+    except Exception as exc:
+        verdict = {
+            "success": False,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "run_id": run_id,
+            "expectations_passed": 0,
+            "expectations_failed": 1,
+            "row_count": row_count,
+            "error": str(exc),
+        }
+        print(json.dumps(verdict))
+        return 1
     results = list(result.results)
     passed = sum(1 for r in results if r.success)
     failed = len(results) - passed
