@@ -476,3 +476,62 @@ def test_dead_letter_partition_migration_shape():
 
     drop = read("012_drop_dead_letter_old.sql")
     assert "DROP TABLE IF EXISTS default.dead_letter_old" in drop
+
+
+def test_dead_letter_dedup_migration_shape():
+    """ReplacingMergeTree dedup migration file-shape contract — no ClickHouse.
+
+    The append-only cross-restart dedup must: keep the 5 columns unchanged
+    (the consumer's insert path stays untouched), switch the engine to
+    ReplacingMergeTree, key ORDER BY on a deterministic CONTENT fingerprint
+    that excludes inserted_at (which differs across replays), keep the UTC-day
+    partition and the cheap 90-day TTL, then copy/swap/drop like 009-012.
+    One statement per file (apply.sh convention); guard on line 1.
+    """
+
+    def read(name: str) -> str:
+        path = REPO_ROOT / "migrations" / name
+        assert path.exists(), f"missing migration file: {name}"
+        return path.read_text()
+
+    files = (
+        "013_dead_letter_dedup.sql",
+        "014_backfill_dead_letter_dedup.sql",
+        "015_dead_letter_dedup_swap.sql",
+        "016_drop_dead_letter_dedup_old.sql",
+    )
+    for name in files:
+        assert read(name).startswith("-- guard: "), f"{name}: guard must be line 1"
+
+    create = read("013_dead_letter_dedup.sql")
+    assert "CREATE TABLE IF NOT EXISTS default.dead_letter_new" in create
+    assert "ENGINE = ReplacingMergeTree" in create
+    assert "PARTITION BY toYYYYMMDD(inserted_at)" in create
+    assert "ORDER BY sipHash64(reason, wiki, title, event)" in create
+    assert "TTL inserted_at + INTERVAL 90 DAY" in create
+    # Deterministic key: inserted_at must NOT be part of the dedup ORDER BY.
+    order_by = create.split("ORDER BY", 1)[1].splitlines()[0]
+    assert "inserted_at" not in order_by, order_by
+    # Replacement shape must match 007 exactly apart from engine/key.
+    old = read("007_dead_letter.sql")
+    for col in (
+        "inserted_at DateTime64(3, 'UTC')",
+        "reason String",
+        "wiki String",
+        "title String",
+        "event String",
+    ):
+        assert col in old and col in create, f"column drift vs 007: {col}"
+
+    backfill = read("014_backfill_dead_letter_dedup.sql")
+    assert "INSERT INTO default.dead_letter_new" in backfill
+    assert "FROM default.dead_letter AS v" in backfill
+
+    swap = read("015_dead_letter_dedup_swap.sql")
+    assert (
+        "RENAME TABLE default.dead_letter TO default.dead_letter_old, "
+        "default.dead_letter_new TO default.dead_letter" in swap
+    ), "swap must rename both sides in one atomic statement"
+
+    drop = read("016_drop_dead_letter_dedup_old.sql")
+    assert "DROP TABLE IF EXISTS default.dead_letter_old" in drop
