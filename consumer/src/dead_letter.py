@@ -13,13 +13,15 @@ Flushes NEVER crash the consumer: any insert failure is logged and swallowed
 (the batch is dropped at-most-once; the cursor stays behind so the server
 replay re-runs those events).
 
-Idempotency (partial): the DL table is a plain MergeTree with no dedup key, so
-a replay of an already-landed row would land it twice. A bounded ring of LANDED
-event ids (populated only on a successful flush) lets the consumer skip
-re-dead-lettering those events. This covers the replay window within one
-process (the common case: a reconnect whose cursor was clamped behind a pending
-main batch); cross-restart duplicates remain — the complete fix is a
-ReplacingMergeTree key on the DL table, tracked as a follow-up.
+Idempotency: a bounded ring of LANDED event ids (populated only on a successful
+flush) lets the consumer skip re-dead-lettering an already-landed event — this
+covers the replay window within one process (the common case: a reconnect whose
+cursor was clamped behind a pending main batch). Cross-restart duplicates are
+now caught at the table: default.dead_letter is a ReplacingMergeTree keyed on
+the deterministic content fingerprint sipHash64(reason, wiki, title, event)
+(migrations 013-016), so a replay across a restart collapses at merge. Caveat:
+ReplacingMergeTree dedups only WITHIN a partition, so that guard is same-UTC-day
+only (see migrations/013_dead_letter_dedup.sql).
 """
 
 import logging

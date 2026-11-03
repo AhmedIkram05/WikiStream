@@ -22,8 +22,11 @@ Integration mechanics (verified against the real consumer):
 
 import asyncio
 import json
+import logging
 import time
 from contextlib import suppress
+
+import pytest
 
 from src.batcher import EventBatcher
 import src.consumer as consumer
@@ -142,12 +145,14 @@ def test_save_load_roundtrip(tmp_path, monkeypatch):
     assert isinstance(state["updated_at"], str) and state["updated_at"]
 
 
-def test_load_state_corrupt_returns_none(tmp_path, monkeypatch, caplog):
+def test_load_state_corrupt_raises(tmp_path, monkeypatch, caplog):
     state_file = tmp_path / "consumer_state.json"
     state_file.write_text("{this is not json")
     monkeypatch.setattr(consumer, "STATE_FILE", str(state_file))
 
-    assert consumer.load_state() is None
+    with caplog.at_level(logging.ERROR, logger="wikistream.consumer"):
+        with pytest.raises(consumer.StateLoadError):
+            consumer.load_state()
     assert "state_load_failed" in caplog.text
 
 

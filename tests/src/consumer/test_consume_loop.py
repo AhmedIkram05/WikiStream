@@ -244,17 +244,31 @@ def test_load_state_missing_file(monkeypatch, tmp_path):
     assert consumer.load_state() is None
 
 
-def test_load_state_bad_json_and_non_dict(monkeypatch, tmp_path, caplog):
+def test_load_state_corrupt_fails_loudly(monkeypatch, tmp_path, caplog):
+    # A corrupt/unreadable file must raise, never silently resume from the
+    # live tail (that would drop the crash-to-restart window).
     patch_state(monkeypatch, tmp_path)
     path = Path(consumer.STATE_FILE)
-    with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
+    with caplog.at_level(logging.ERROR, logger="wikistream.consumer"):
         path.write_text("not json")
-        assert consumer.load_state() is None
+        with pytest.raises(consumer.StateLoadError):
+            consumer.load_state()
         assert "state_load_failed" in caplog.text
+        caplog.clear()
         path.write_text(json.dumps([1, 2, 3]))
-        assert consumer.load_state() is None
+        with pytest.raises(consumer.StateLoadError):
+            consumer.load_state()
+        caplog.clear()
         path.write_text(json.dumps("just a string"))
-        assert consumer.load_state() is None
+        with pytest.raises(consumer.StateLoadError):
+            consumer.load_state()
+
+
+def test_load_state_unreadable_fails_loudly(monkeypatch, tmp_path):
+    # A present-but-unreadable path (here: a directory) raises the same way.
+    monkeypatch.setattr(consumer, "STATE_FILE", str(tmp_path))
+    with pytest.raises(consumer.StateLoadError):
+        consumer.load_state()
 
 
 def test_load_state_type_coercion(monkeypatch, tmp_path):

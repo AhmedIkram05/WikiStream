@@ -8,6 +8,23 @@ instead of drifting between near-identical copies.
 """
 
 import json
+import logging
+
+logger = logging.getLogger("wikistream.cursors")
+
+# Once-per-category guard: the helpers below are called per event from the
+# batchers, so a changed upstream id format would otherwise emit one warning
+# per streamed event.
+_warned_unparsable: set[str] = set()
+
+
+def _warn_unparsable(s: str) -> None:
+    """WARNING naming the unparsable id shape, at most once per category."""
+    kind = "composite" if s.startswith("[") else "plain"
+    if kind in _warned_unparsable:
+        return
+    _warned_unparsable.add(kind)
+    logger.warning("cursor_id_unparsable kind=%s example=%r", kind, s[:64])
 
 
 def _cursor_ts(s: str) -> int:
@@ -33,9 +50,42 @@ def _cursor_ts(s: str) -> int:
     return best
 
 
+def _is_composite(s: str) -> bool:
+    """True when s is a parseable composite cursor array (a JSON list carrying
+    at least one integer timestamp/offset position)."""
+    try:
+        cursors = json.loads(s)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(cursors, list):
+        return False
+    return any(
+        isinstance(c, dict)
+        and any(isinstance(c.get(k), int) for k in ("timestamp", "offset"))
+        for c in cursors
+    )
+
+
+def _rank(s: str) -> int | None:
+    """Numeric rank for a well-formed id, else None (unparsable shape).
+
+    Well-formed = a Wikimedia digit-string (its value) or a parseable composite
+    cursor (its highest partition position). A None rank must never win a
+    comparison: treating an unknown id as the oldest value would silently rewind
+    the cursor into mass reprocessing on an upstream id-format change.
+    """
+    if s.isdigit():
+        return int(s)
+    if _is_composite(s):
+        return _cursor_ts(s)
+    return None
+
+
 def _max_id(a: str | None, b: str | None) -> str | None:
     """Larger of two ids: None-handling; numeric compare for digit-strings;
-    composite cursor ids (leading '[') compare by highest partition position."""
+    composite cursor ids (leading '[') compare by highest partition position.
+    An unparsable id never wins: keep the parseable side (never move backwards).
+    """
     if a is None:
         return b
     if b is None:
@@ -43,7 +93,16 @@ def _max_id(a: str | None, b: str | None) -> str | None:
     if a.isdigit() and b.isdigit():
         return a if int(a) >= int(b) else b
     if a.startswith("[") or b.startswith("["):
-        return a if _cursor_ts(a) >= _cursor_ts(b) else b
+        ra, rb = _rank(a), _rank(b)
+        if ra is None and rb is None:
+            return a
+        if ra is None:
+            _warn_unparsable(a)
+            return b
+        if rb is None:
+            _warn_unparsable(b)
+            return a
+        return a if ra >= rb else b
     return a if a >= b else b
 
 
@@ -57,5 +116,14 @@ def _min_id(a: str | None, b: str | None) -> str | None:
     if a.isdigit() and b.isdigit():
         return a if int(a) <= int(b) else b
     if a.startswith("[") or b.startswith("["):
-        return a if _cursor_ts(a) <= _cursor_ts(b) else b
+        ra, rb = _rank(a), _rank(b)
+        if ra is None and rb is None:
+            return a
+        if ra is None:
+            _warn_unparsable(a)
+            return b
+        if rb is None:
+            _warn_unparsable(b)
+            return a
+        return a if ra <= rb else b
     return a if a <= b else b
