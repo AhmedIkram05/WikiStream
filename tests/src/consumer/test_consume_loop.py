@@ -271,13 +271,42 @@ def test_load_state_unreadable_fails_loudly(monkeypatch, tmp_path):
         consumer.load_state()
 
 
-def test_load_state_type_coercion(monkeypatch, tmp_path):
+def test_load_state_non_string_id_fails_loudly(monkeypatch, tmp_path, caplog):
+    # A present-but-non-string id is corruption, not "unusable": raising keeps
+    # it consistent with the corrupt-file path instead of silently resuming
+    # from the live tail (which drops the crash-to-restart window).
     patch_state(monkeypatch, tmp_path)
     path = Path(consumer.STATE_FILE)
-    path.write_text(json.dumps({"last_event_id": 42, "total": "many"}))
+    for bad in (42, {"nested": "cursor"}, [1, 2], True, 3.14):
+        path.write_text(json.dumps({"last_event_id": bad}))
+        caplog.clear()
+        with caplog.at_level(logging.ERROR, logger="wikistream.consumer"):
+            with pytest.raises(consumer.StateLoadError) as exc:
+                consumer.load_state()
+        assert "last_event_id" in str(exc.value)
+        assert type(bad).__name__ in str(exc.value)
+        assert "state_load_failed" in caplog.text
+
+
+def test_load_state_total_coercion(monkeypatch, tmp_path):
+    # total is a display counter, not a cursor: a non-int still coerces to 0.
+    patch_state(monkeypatch, tmp_path)
+    path = Path(consumer.STATE_FILE)
+    path.write_text(json.dumps({"total": "many"}))
     state = consumer.load_state()
-    assert state["last_event_id"] is None
+    assert state is not None
+    assert state.get("last_event_id") is None  # missing key: no cursor yet
     assert state["total"] == 0
+
+
+def test_load_state_explicit_null_id_loads(monkeypatch, tmp_path):
+    # An explicit JSON null is "no cursor yet", not corruption: it must load.
+    patch_state(monkeypatch, tmp_path)
+    path = Path(consumer.STATE_FILE)
+    path.write_text(json.dumps({"last_event_id": None, "total": 0}))
+    state = consumer.load_state()
+    assert state is not None
+    assert state["last_event_id"] is None
 
 
 def test_load_state_roundtrip(monkeypatch, tmp_path):
