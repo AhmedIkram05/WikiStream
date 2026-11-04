@@ -113,7 +113,9 @@ def load_state() -> dict | None:
 
     A present-but-unreadable or corrupt file raises StateLoadError (logged at
     ERROR): a silent fallback to None would resume the consumer from the live
-    tail, dropping every event between the crash and the restart.
+    tail, dropping every event between the crash and the restart. A present but
+    non-string last_event_id is corruption for the same reason and raises too;
+    a missing key or an explicit null is "no cursor yet" and loads normally.
     """
     try:
         with open(STATE_FILE, encoding="utf-8") as fh:
@@ -126,8 +128,16 @@ def load_state() -> dict | None:
     if not isinstance(state, dict):
         logger.error("state_load_failed reason=not a JSON object")
         raise StateLoadError("durable state file is not a JSON object")
-    if not isinstance(state.get("last_event_id"), (str, type(None))):
-        state["last_event_id"] = None
+    last_event_id = state.get("last_event_id")
+    if last_event_id is not None and not isinstance(last_event_id, str):
+        logger.error(
+            "state_load_failed reason=invalid last_event_id type=%s",
+            type(last_event_id).__name__,
+        )
+        raise StateLoadError(
+            "durable state file has invalid last_event_id: "
+            f"expected string or null, got {type(last_event_id).__name__}"
+        )
     if not isinstance(state.get("total"), int):
         state["total"] = 0
     return state
