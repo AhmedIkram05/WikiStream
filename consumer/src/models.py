@@ -47,7 +47,7 @@ class WikiEvent(BaseModel):
         # Real recentchange events carry "timestamp" as INTEGER epoch seconds
         # (e.g. 1786626323), not an ISO string; convert to datetime here so
         # pydantic's datetime parsing only ever sees str (or junk it rejects).
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             return datetime.fromtimestamp(value, tz=timezone.utc)
         return value
 
