@@ -240,3 +240,8 @@ legacy-raw-events.tsv.gz
 
 # Consumer runtime state (Phase 4A): Last-Event-ID cursor + totals
 state/
+
+ch-data/
+ch-coverage.xml
+gx-coverage.xml
+gx.coverage
