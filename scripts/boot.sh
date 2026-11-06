@@ -43,7 +43,7 @@ ALTER USER IF EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASS
 # Log the SQL with the password redacted (/var/log/wikistream-startup.log is
 # world-readable); the client's stdout for CREATE/GRANT/ALTER is empty, so the
 # statement text here is what AC7 greps.
-echo "user bootstrap: $(echo "$BOOTSTRAP_SQL" | sed "s/${CH_PASSWORD}/<redacted>/g")"
+echo "user bootstrap: ${BOOTSTRAP_SQL//"$CH_PASSWORD"/<redacted>}"
 echo "$BOOTSTRAP_SQL" | docker compose exec -T clickhouse clickhouse-client --multiquery
 echo "user bootstrap ok"
 

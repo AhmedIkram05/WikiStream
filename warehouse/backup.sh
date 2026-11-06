@@ -51,7 +51,7 @@ NAME="backup-$(date -u +%Y%m%d-%H%M%S)"
 # failing backup would accumulate forever and wedge the disk. Keep the last 4
 # (the post-lift prune then tightens to 2 after a successful lift). `|| true`
 # so a glob miss (backups dir wiped) can't fail the script.
-ls -1d "$CH_DATA_DIR"/backups/backup-* 2>/dev/null | sort | head -n -4 | while read -r old; do
+find "$CH_DATA_DIR/backups" -maxdepth 1 -name 'backup-*' -type d 2>/dev/null | sort | head -n -4 | while read -r old; do
   rm -rf "$old"
   echo "[backup] guard-pruned $(basename "$old")"
 done || true
@@ -80,7 +80,7 @@ echo "[backup] lifted $CH_DATA_DIR/backups/$NAME -> $BACKUP_BUCKET/$NAME"
 # Prune local: keep the last 2 (names are UTC-sortable, so sort = chronological).
 # `|| true` so a glob miss (backups dir wiped) can't fail the script after a
 # successful lift under set -o pipefail.
-ls -1d "$CH_DATA_DIR"/backups/backup-* 2>/dev/null | sort | head -n -2 | while read -r old; do
+find "$CH_DATA_DIR/backups" -maxdepth 1 -name 'backup-*' -type d 2>/dev/null | sort | head -n -2 | while read -r old; do
   rm -rf "$old"
   echo "[backup] pruned $(basename "$old")"
 done || true
