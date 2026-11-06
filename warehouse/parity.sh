@@ -213,8 +213,7 @@ print("ok" if ok else "mismatch")
 PY
   )"
 
-  tvar="$verdict"
-  if [ "$verdict" != "ok" ]; then
+    if [ "$verdict" != "ok" ]; then
     echo "[parity] $name: CH/BQ mismatch (ch='$ch_out' bq='$bq_out')" >&2
     status=drift
   fi

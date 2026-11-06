@@ -32,10 +32,12 @@ class SSEParser:
         self._reset_event()
 
     def feed(self, chunk: bytes) -> list[SSEEvent]:
+        """Feed raw bytes; return all complete SSE events parsed so far."""
         self._buffer += self._decoder.decode(chunk)
         return self._parse()
 
     def flush(self) -> list[SSEEvent]:
+        """Discard any trailing partial frame at EOF per WHATWG and reset state."""
         # EOF: discard any trailing partial frame (WHATWG: an incomplete event
         # at EOF is not dispatched — emitting it would insert truncated JSON
         # garbage on every reconnect) and reset for a fresh stream.

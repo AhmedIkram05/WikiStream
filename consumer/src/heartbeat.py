@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_row(counters: dict, previous: dict | None, ts) -> tuple:
+    """Build one pipeline_health row with per-counter deltas since previous tick."""
     prev = previous or {}
     detail = {
         "inserted_delta": (
@@ -45,6 +46,7 @@ def build_row(counters: dict, previous: dict | None, ts) -> tuple:
 
 
 async def heartbeat_loop(client, counters, stop, interval: float = 15.0) -> None:
+    """Insert heartbeat rows until stop; failures logged, not raised."""
     previous = None
     while not stop.is_set():
         # Stop-aware wait: if shutdown fires mid-interval, wake promptly so the
