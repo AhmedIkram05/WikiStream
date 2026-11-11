@@ -7,6 +7,11 @@ resource "random_password" "ch_password" {
   special = false
 }
 
+resource "random_password" "ch_ro_password" {
+  length  = 24
+  special = false
+}
+
 resource "random_password" "gf_password" {
   length  = 24
   special = false
@@ -14,6 +19,18 @@ resource "random_password" "gf_password" {
 
 resource "google_secret_manager_secret" "clickhouse_password" {
   secret_id = "clickhouse-password"
+  project   = var.project_id
+  labels    = local.labels
+
+  replication {
+    auto {}
+  }
+}
+
+# Read-only ClickHouse identity for Grafana. Separate secret from the write
+# password so a Grafana compromise cannot reuse the consumer/migration creds.
+resource "google_secret_manager_secret" "clickhouse_ro_password" {
+  secret_id = "clickhouse-ro-password"
   project   = var.project_id
   labels    = local.labels
 
@@ -49,6 +66,11 @@ resource "google_secret_manager_secret_version" "clickhouse_password_v1" {
   secret_data = random_password.ch_password.result
 }
 
+resource "google_secret_manager_secret_version" "clickhouse_ro_password_v1" {
+  secret      = google_secret_manager_secret.clickhouse_ro_password.id
+  secret_data = random_password.ch_ro_password.result
+}
+
 resource "google_secret_manager_secret_version" "grafana_admin_password_v1" {
   secret      = google_secret_manager_secret.grafana_admin_password.id
   secret_data = random_password.gf_password.result
@@ -57,6 +79,12 @@ resource "google_secret_manager_secret_version" "grafana_admin_password_v1" {
 output "clickhouse_password_secret_data" {
   description = "Live clickhouse-password secret value (alphanumeric, 24 chars)"
   value       = random_password.ch_password.result
+  sensitive   = true
+}
+
+output "clickhouse_ro_password_secret_data" {
+  description = "Live read-only ClickHouse password for Grafana (alphanumeric, 24 chars)"
+  value       = random_password.ch_ro_password.result
   sensitive   = true
 }
 

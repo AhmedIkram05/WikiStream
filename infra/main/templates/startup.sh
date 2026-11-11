@@ -54,9 +54,11 @@ GCP_PROJECT=$(curl -fsS -H "Metadata-Flavor: Google" http://metadata.google.inte
 gcloud config set project "$GCP_PROJECT"
 
 # 4. Secrets from Secret Manager (VM SA has scoped secretAccessor).
-#    CH_PASSWORD must be EXPORTED: scripts/boot.sh runs as a child process
-#    (bash /opt/wikistream/scripts/boot.sh) and only exported vars reach it.
+#    CH_PASSWORD/CH_RO_PASSWORD must be EXPORTED: scripts/boot.sh runs as a
+#    child process (bash /opt/wikistream/scripts/boot.sh) and only exported
+#    vars reach it.
 export CH_PASSWORD=$(gcloud secrets versions access latest --secret=clickhouse-password)
+export CH_RO_PASSWORD=$(gcloud secrets versions access latest --secret=clickhouse-ro-password)
 GF_PASSWORD=$(gcloud secrets versions access latest --secret=grafana-admin-password)
 
 # 5. Durable ch-data disk (Phase 3A): data survives every startup.sh-driven
@@ -86,6 +88,7 @@ fi
 install -m 600 /dev/null .env
 cat > .env <<EOF
 CLICKHOUSE_PASSWORD=${CH_PASSWORD}
+CLICKHOUSE_RO_PASSWORD=${CH_RO_PASSWORD}
 GF_SECURITY_ADMIN_PASSWORD=${GF_PASSWORD}
 CONSUMER_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/consumer:latest
 EOF

@@ -11,9 +11,10 @@ set -euo pipefail
 
 cd /opt/wikistream
 
-# Non-empty guard: an unset/empty CH_PASSWORD must fail loudly, not bootstrap a
+# Non-empty guards: an unset/empty password must fail loudly, not bootstrap a
 # user with an empty password that breaks the migration step below.
 : "${CH_PASSWORD:?boot.sh needs CH_PASSWORD in the environment (startup.sh section 4 must export it)}"
+: "${CH_RO_PASSWORD:?boot.sh needs CH_RO_PASSWORD in the environment (startup.sh section 4 must export it)}"
 
 # 1. Wait for ClickHouse to accept connections. First boot needs ~10-20s (no
 #    first-boot init scripts anymore). 30 attempts x 2s.
@@ -30,20 +31,37 @@ done
 # calls boot.sh without || true, so a dead ClickHouse fails startup loudly.
 docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/null
 
-# 2. User bootstrap. The SQL is built in a VARIABLE first so ${CH_PASSWORD}
-#    expands (a quoted heredoc would pipe the literal text). The trailing
-#    ALTER USER runs on EVERY boot — the rotation-gap fix: the old first-boot
-#    user setup only ever ran on empty volumes, so a rotated password was
-#    never re-applied. Default user is localhost-only, hence the docker exec
-#    path (host curl is for migrations, where the wikistream user hits HTTP).
+# 2. User bootstrap. The SQL is built in a VARIABLE first so the passwords
+#    expand (a quoted heredoc would pipe the literal text). The trailing ALTER
+#    USER runs on EVERY boot — the rotation-gap fix: the old first-boot user
+#    setup only ever ran on empty volumes, so a rotated password was never
+#    re-applied. Default user is localhost-only, hence the docker exec path
+#    (host curl is for migrations, where the wikistream user hits HTTP).
+#
+#    The write user is scoped to default.*, and the REVOKE removes the old
+#    global grant from existing installs (GRANT alone does not shrink it).
+#    Grafana gets a separate read-only user/password so a panel compromise
+#    cannot DDL/DROP warehouse tables.
 BOOTSTRAP_SQL="CREATE USER IF NOT EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;
-GRANT SELECT, INSERT, CREATE, ALTER, DROP, TRUNCATE, OPTIMIZE, BACKUP ON *.* TO wikistream;
-ALTER USER IF EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;"
+ALTER USER IF EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;
+REVOKE ALL PRIVILEGES ON *.* FROM wikistream;
+GRANT SELECT, INSERT, CREATE, ALTER, DROP, TRUNCATE, OPTIMIZE, BACKUP ON default.* TO wikistream;
+-- Read-only metadata for migration checks; still no access to other databases.
+GRANT SELECT ON system.tables TO wikistream;
+GRANT SELECT ON system.columns TO wikistream;
+GRANT SELECT ON system.databases TO wikistream;
+CREATE USER IF NOT EXISTS wikistream_ro IDENTIFIED WITH plaintext_password BY '${CH_RO_PASSWORD}' HOST ANY;
+ALTER USER IF EXISTS wikistream_ro IDENTIFIED WITH plaintext_password BY '${CH_RO_PASSWORD}' HOST ANY;
+REVOKE ALL PRIVILEGES ON *.* FROM wikistream_ro;
+GRANT SELECT ON default.* TO wikistream_ro;
+GRANT SELECT ON system.tables TO wikistream_ro;
+GRANT SELECT ON system.columns TO wikistream_ro;
+GRANT SELECT ON system.databases TO wikistream_ro;"
 
-# Log the SQL with the password redacted (/var/log/wikistream-startup.log is
+# Log the SQL with both passwords redacted (/var/log/wikistream-startup.log is
 # world-readable); the client's stdout for CREATE/GRANT/ALTER is empty, so the
 # statement text here is what AC7 greps.
-echo "user bootstrap: ${BOOTSTRAP_SQL//"$CH_PASSWORD"/<redacted>}"
+echo "user bootstrap: ${BOOTSTRAP_SQL//"$CH_PASSWORD"/<redacted>}" | sed "s/${CH_RO_PASSWORD}/<redacted>/g"
 echo "$BOOTSTRAP_SQL" | docker compose exec -T clickhouse clickhouse-client --multiquery
 echo "user bootstrap ok"
 
