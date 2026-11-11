@@ -47,6 +47,7 @@ module "iam" {
   project_id = var.project_id
   secret_ids = [
     google_secret_manager_secret.clickhouse_password.secret_id,
+    google_secret_manager_secret.clickhouse_ro_password.secret_id,
     google_secret_manager_secret.grafana_admin_password.secret_id,
     google_secret_manager_secret.slack_webhook_url.secret_id,
   ]

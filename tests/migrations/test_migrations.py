@@ -79,6 +79,30 @@ def scalar(sql: str) -> str:
     return query(sql).strip()
 
 
+def query_as(user: str, password: str, sql: str):
+    """Run SQL as a specific CH user; caller asserts the exit code."""
+    e = ch_env()
+    return subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "--fail-with-body",
+            "-H",
+            f"X-ClickHouse-User: {user}",
+            "-H",
+            f"X-ClickHouse-Key: {password}",
+            "-X",
+            "POST",
+            "--data-binary",
+            sql,
+            f"http://{e['CH_HOST']}:{e['CH_PORT']}/",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def reset():
     # Disposable-container hygiene. schema_migrations is dropped too: the
     # runner skips anything already recorded, so a prior test's recorded 001
@@ -421,6 +445,28 @@ def test_bootstrap_user():
     # The CI/local wikistream user (migrations/bootstrap-user.dev.sql) can
     # connect and query — canary for the analytics-tests bootstrap step.
     assert scalar("SELECT 1") == "1"
+
+
+@pytest.mark.ch
+def test_wikistream_grants_are_database_scoped():
+    """AUD-05: the write user must not retain the old GRANT ... ON *.*."""
+    grants = scalar("SHOW GRANTS")
+    assert "ON default.*" in grants, grants
+    assert "ON *.*" not in grants, grants
+
+
+@pytest.mark.ch
+def test_grafana_user_is_read_only():
+    """AUD-05: wikistream_ro can SELECT but cannot DDL/DML."""
+    ok = query_as("wikistream_ro", "wikistream_ro_dev_password", "SELECT 1")
+    assert ok.returncode == 0, ok.stderr or ok.stdout
+
+    denied = query_as(
+        "wikistream_ro",
+        "wikistream_ro_dev_password",
+        "CREATE TABLE default.ro_must_not_create (x UInt8) ENGINE = Memory",
+    )
+    assert denied.returncode != 0, "read-only user was able to create a table"
 
 
 def test_dead_letter_partition_migration_shape():

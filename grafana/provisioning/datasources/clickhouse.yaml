@@ -10,8 +10,8 @@ datasources:
       host: clickhouse
       port: 8123
       protocol: http
-      username: wikistream
+      username: wikistream_ro
     secureJsonData:
       # Plain ${VAR} only: Grafana's provisioning interpolator does NOT support :-default.
-      # The compose file sets CLICKHOUSE_PASSWORD (with its own :-default) on this service.
-      password: ${CLICKHOUSE_PASSWORD}
+      # The compose file sets CLICKHOUSE_RO_PASSWORD (with its own :-default) on this service.
+      password: ${CLICKHOUSE_RO_PASSWORD}

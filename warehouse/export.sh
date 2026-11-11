@@ -6,8 +6,8 @@
 # targets the Ubuntu VM — window math uses GNU date (-d '2 hours ago').
 #
 # Depends on: docker (container $CLICKHOUSE_CONTAINER), gcloud storage,
-# bq. CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env
-# when present, else the environment).
+# bq. CLICKHOUSE_PASSWORD is required (read from /opt/wikistream/.env when
+# present, else the environment).
 #
 # Idempotent per window: bq load --replace lands the window in <table>_staging
 # (so an overlapping run cannot leave duplicate source keys behind), then a
@@ -20,10 +20,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if [ -f /opt/wikistream/.env ]; then
-  set -a
-  . /opt/wikistream/.env
-  set +a
+ENV_FILE="${WIKISTREAM_ENV_FILE:-/opt/wikistream/.env}"
+if [ -f "$ENV_FILE" ]; then
+  # Read only the key we need. Sourcing .env would execute arbitrary shell from
+  # a rotated file (and values with quotes/semicolons mangle the variables).
+  CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-$(grep -E '^CLICKHOUSE_PASSWORD=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)}"
 fi
 
 if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then

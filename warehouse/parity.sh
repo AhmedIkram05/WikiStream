@@ -8,7 +8,7 @@
 # window math uses GNU date.
 #
 # Depends on: docker (container $CLICKHOUSE_CONTAINER), bq, curl.
-# CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env when
+# CLICKHOUSE_PASSWORD is required (read from /opt/wikistream/.env when
 # present, else env); the final telemetry INSERT uses the HTTP API with a
 # 0600 curl config so the key never enters argv.
 # CH-side sums use the SAME rollup SQL as the export (nested in an outer
@@ -23,10 +23,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if [ -f /opt/wikistream/.env ]; then
-  set -a
-  . /opt/wikistream/.env
-  set +a
+ENV_FILE="${WIKISTREAM_ENV_FILE:-/opt/wikistream/.env}"
+if [ -f "$ENV_FILE" ]; then
+  # Read only the key we need. Sourcing .env would execute arbitrary shell from
+  # a rotated file (and values with quotes/semicolons mangle the variables).
+  CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-$(grep -E '^CLICKHOUSE_PASSWORD=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)}"
 fi
 
 if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then
