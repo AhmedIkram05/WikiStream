@@ -70,8 +70,8 @@ log = os.environ.get("STUB_LOG")
 if log:
     with open(log, "a") as fh:
         fh.write("{cmd} " + " ".join(sys.argv[1:]) + "\\n")
-if "{cmd}" == "bq" and os.environ.get("STUB_BQ_FAIL") == "1":
-    sys.stderr.write("stub bq: injected failure\\n")
+if os.environ.get("STUB_{cmd}_FAIL".upper()) == "1":
+    sys.stderr.write("stub {cmd}: injected failure\\n")
     sys.exit(1)
 print("ok")
 """
@@ -111,7 +111,13 @@ class _ShellHarness:
             (stub_bin / name).write_text(text)
             (stub_bin / name).chmod(0o755)
 
-    def run(self, script: Path, *args: str, fail_bq: bool = False):
+    def run(
+        self,
+        script: Path,
+        *args: str,
+        fail_bq: bool = False,
+        fail_gcloud: bool = False,
+    ):
         env = os.environ.copy()
         env["PATH"] = str(self.tmp / "stubbin") + os.pathsep + env["PATH"]
         env["CLICKHOUSE_PASSWORD"] = "stub-pass"
@@ -122,6 +128,8 @@ class _ShellHarness:
         env["STUB_LOG"] = str(self.log)
         if fail_bq:
             env["STUB_BQ_FAIL"] = "1"
+        if fail_gcloud:
+            env["STUB_GCLOUD_FAIL"] = "1"
         return subprocess.run(
             ["bash", str(script), *args],
             env=env,
@@ -224,6 +232,16 @@ def test_export_cleans_local_jsonl_on_bq_failure(shell):
     staging = shell.tmp / "staging"
     assert not list(staging.glob("kpi_*/*.jsonl"))
     assert not list(staging.glob("raw_sample/*.jsonl"))
+
+
+def test_export_loads_when_gcs_backup_copy_fails(shell):
+    """AUD-13: the GCS backup is non-critical; load/merge must run first and a
+    copy failure must not abort the warehouse export."""
+    proc = shell.run(WAREHOUSE / "export.sh", fail_gcloud=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "backup copy failed" in proc.stderr
+    log = shell.log.read_text()
+    assert log.index("bq load") < log.index("gcloud storage cp")
 
 
 def test_export_explicit_window_passthrough(shell):

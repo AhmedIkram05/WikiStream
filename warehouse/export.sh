@@ -99,13 +99,15 @@ for entry in "${TABLES[@]}"; do
 
   rows="$(wc -l < "$object" | tr -d ' ')"
   if [ -s "$object" ]; then
-    gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null
     # --replace, not append: the trailing 2-hour window overlaps the previous
     # run, so appending to persistent staging gives MERGE two source rows per
     # key and BigQuery aborts. export_runs stays append-only below.
     bq load --replace --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
       --schema="schemas/$btable.json" "$BQ_DATASET.$stable" "$object"
     merge_window "$mergesql"
+    # Backup copy is non-critical; never let a GCS hiccup block the load/merge.
+    gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null \
+      || echo "[export] backup copy failed key=$key" >&2
   fi
   rm -f "$object"
 
