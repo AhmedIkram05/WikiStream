@@ -392,12 +392,46 @@ def test_consume_happy_path_flush_and_state(
     assert counters["total"] == 1001
     assert counters["dead_lettered"] == 0
     assert counters["insert_failed"] == 0
-    assert ch.calls == [("default.raw_events", 1000), ("default.raw_events", 1)]
+    # Fresh start lands the first event immediately, then the 1000-row batch.
+    assert ch.calls == [("default.raw_events", 1), ("default.raw_events", 1000)]
     state = consumer.load_state()
     assert state["last_event_id"] == "1001"
     assert state["total"] == 1001
-    assert "inserted events=1000 total=1000" in caplog.text
+    assert "inserted events=1 total=1" in caplog.text
+    assert "inserted events=1000 total=1001" in caplog.text
     assert ch.dl_rows == []
+
+
+def test_fresh_start_persists_first_event_before_more_arrive(
+    monkeypatch, tmp_path, counters, stop
+):
+    """AUD-25: a fresh start has no cursor to replay from, so the first event
+    must land (and save) immediately instead of waiting for batch size or the
+    2s debounce."""
+    patch_state(monkeypatch, tmp_path)
+
+    class HoldOpen(FakeResponse):
+        async def aiter_bytes(self):
+            yield frame("1", payload())
+            await stop.wait()
+
+    patch_http(monkeypatch, [HoldOpen(chunks=[])])
+    ch = FakeCh()
+
+    async def scenario():
+        task = asyncio.create_task(consumer.consume_forever(ch, stop, None, counters))
+        try:
+            deadline = time.monotonic() + 5.0
+            while ch.rows == 0:
+                assert time.monotonic() < deadline, "first event was not flushed"
+                await asyncio.sleep(0.01)
+            assert ch.calls == [("default.raw_events", 1)]
+            assert consumer.load_state()["last_event_id"] == "1"
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 5.0)
+
+    asyncio.run(scenario())
 
 
 def test_consume_all_idless_batch_counts_as_success(
@@ -846,7 +880,7 @@ def test_failed_main_batch_retries_before_later_batch(
     patch_state(monkeypatch, tmp_path)
     ch = FailFirstInsert()
 
-    run(consumer.consume_forever(ch, stop, None, counters))
+    run(consumer.consume_forever(ch, stop, "0", counters))
 
     # Both 1000-row batches landed, in order; the cursor never skipped ahead.
     assert ch.calls == [
@@ -892,7 +926,7 @@ def test_consume_retry_in_place_recovers_without_reconnect(
     ch = OnceFailingCh(fail=True)
 
     with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
-        run(consumer.consume_forever(ch, stop, None, counters))
+        run(consumer.consume_forever(ch, stop, "0", counters))
 
     assert counters["insert_failed"] == 0  # recovered in place, nothing dropped
     assert counters["total"] == 1000
@@ -926,9 +960,9 @@ def test_dl_flush_does_not_advance_past_pending_main(
             while counters["dead_lettered"] == 0:
                 assert time.monotonic() < deadline, "DL timer never flushed"
                 await asyncio.sleep(0.01)
-            # DL row landed, but main 1-3 is unflushed: no cursor was persisted
-            # at all (a jump to "5" — the old behaviour — would have saved it).
-            assert consumer.load_state() is None
+            # Main 1 landed immediately on the fresh start, but 2-3 are still
+            # pending. The DL row 5 must not drag the cursor past them.
+            assert consumer.load_state()["last_event_id"] == "1"
         finally:
             stop.set()
             await asyncio.wait_for(task, 5.0)
@@ -1049,7 +1083,7 @@ def test_consume_flush_job_exception_logs_flush_failed(
     ch = FakeCh()
 
     with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
-        run(consumer.consume_forever(ch, stop, None, counters))
+        run(consumer.consume_forever(ch, stop, "0", counters))
 
     assert "flush_failed reason=ch exploded" in caplog.text
     assert counters["total"] == 1000  # final flush still lands everything
@@ -1187,7 +1221,7 @@ def test_consume_60s_idle_stats_line(monkeypatch, tmp_path, counters, stop, capl
     monkeypatch.setattr(consumer, "IDLE_STATS_INTERVAL", 0.0)
 
     with caplog.at_level(logging.INFO, logger="wikistream.consumer"):
-        run(consumer.consume_forever(ch, stop, None, counters))
+        run(consumer.consume_forever(ch, stop, "0", counters))
 
     assert "inserted events=0 total=0 dead_lettered=0 insert_failed=0" in caplog.text
 

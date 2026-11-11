@@ -288,6 +288,7 @@ class _StreamRun:
         self.last_saved_mono = time.monotonic()
         self.last_stats_log = time.monotonic()
         self.retry_ms: int | None = None
+        self.initial_flush_done = False
         self.pending_flushes: set[asyncio.Task] = set()
         self.flush_sem = asyncio.Semaphore(FLUSH_CONCURRENCY)
         # Main batches must land in order: a later batch advancing the cursor
@@ -505,7 +506,19 @@ class _StreamRun:
             return
         # Step 5: add to batch; step 6: flush when due.
         self.cursor.note_main_row()
-        if self.batcher.add((datetime.now(UTC), ev.data), ev_id):
+        due = self.batcher.add((datetime.now(UTC), ev.data), ev_id)
+        fresh_first = (
+            self.resumed_from is None
+            and not self.initial_flush_done
+            and ev_id is not None
+        )
+        if fresh_first:
+            # A fresh start has no durable cursor to replay from, so do not let
+            # the first batch sit in memory behind the 2s debounce: land it and
+            # save the cursor now, shrinking the SIGKILL window to one event.
+            self.initial_flush_done = True
+            await self.flush_main(honor_stop=True)
+        elif due:
             await self.spawn_main_flush()
         now_mono = time.monotonic()
         if now_mono - self.last_stats_log >= IDLE_STATS_INTERVAL:
