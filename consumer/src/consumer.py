@@ -272,6 +272,10 @@ class _StreamRun:
         # Main batches must land in order: a later batch advancing the cursor
         # past an earlier in-flight/retrying batch is the permanent-loss bug.
         self.main_flush_lock = asyncio.Lock()
+        # DL flushes share one batcher; a second concurrent flush swaps the
+        # buffer to empty while the first is still in flight, so a successful
+        # first flush would release the mirror hold over an unlanded second.
+        self.dl_flush_lock = asyncio.Lock()
 
     async def flush_main(self, honor_stop: bool) -> None:
         """Flush the main batch in order, retrying until it lands.
@@ -353,26 +357,26 @@ class _StreamRun:
         within this process, so the replay window must stay at the ~1ms
         state-write, not the 2s debounce.
         """
-        try:
-            dropped, count, max_eid = await self.dl_batcher.flush(self.client)
-        except Exception as exc:
-            logger.warning("dl_flush_failed reason=%s", exc)
-            return
-        if dropped:
-            # at-most-once: cursor stays behind, replay re-runs them, and the
-            # mirror hold stays frozen so a successful main flush cannot skip
-            # these unlanded rows.
-            return
-        self.counters["dead_lettered"] += count
-        # Rows landed: release the mirror hold once the buffer is empty; during
-        # a burst (rows added while the insert awaited) re-freeze at the
-        # current watermark so the new unlanded rows stay protected.
-        if self.dl_batcher.pending_count == 0:
-            self.cursor.dl_drained()
-        advanced = self.cursor.dl_landed(max_eid)
-        if advanced is not None:
-            self.cursor.durable_id = advanced
-            save_state(self.cursor.durable_id, self.counters["total"])
+        async with self.dl_flush_lock:
+            try:
+                dropped, count, max_eid = await self.dl_batcher.flush(self.client)
+            except Exception as exc:
+                logger.warning("dl_flush_failed reason=%s", exc)
+                return
+            if dropped:
+                # at-most-once: cursor stays behind, replay re-runs them, and
+                # the mirror hold stays frozen so a successful main flush cannot
+                # skip these unlanded rows.
+                return
+            self.counters["dead_lettered"] += count
+            # Rows landed: release the mirror hold once the buffer is empty and
+            # no other DL flush can be in flight (the lock serializes them).
+            if self.dl_batcher.pending_count == 0:
+                self.cursor.dl_drained()
+            advanced = self.cursor.dl_landed(max_eid)
+            if advanced is not None:
+                self.cursor.durable_id = advanced
+                save_state(self.cursor.durable_id, self.counters["total"])
 
     async def dl_add(
         self, *, reason: str, wiki: str, title: str, event: str, event_id: str | None

@@ -521,6 +521,42 @@ def test_consume_dl_burst_flushes_in_batches(monkeypatch, tmp_path, counters, st
     assert consumer.load_state()["last_event_id"] == "250"
 
 
+def test_consume_dl_flushes_are_serialized(monkeypatch, tmp_path, counters, stop):
+    """A second DL flush must not swap the buffer empty while the first is in
+    flight: that released the mirror hold over unlanded rows and let a later
+    main flush advance the cursor past them."""
+    patch_sleep(monkeypatch)
+    patch_http(
+        monkeypatch,
+        [FakeResponse(chunks=[b"".join(frame(str(i), "{bad") for i in range(1, 251))])],
+    )
+    patch_state(monkeypatch, tmp_path)
+
+    class SlowDLCh(FakeCh):
+        def __init__(self):
+            super().__init__()
+            self.dl_in_flight = 0
+            self.max_dl_in_flight = 0
+
+        async def insert(self, table, data, column_names=None, settings=None):
+            if table == "default.dead_letter":
+                self.dl_in_flight += 1
+                self.max_dl_in_flight = max(self.max_dl_in_flight, self.dl_in_flight)
+                await asyncio.sleep(0.01)
+                self.dl_in_flight -= 1
+            await super().insert(
+                table, data, column_names=column_names, settings=settings
+            )
+
+    ch = SlowDLCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert ch.max_dl_in_flight == 1
+    assert counters["dead_lettered"] == 250
+    assert consumer.load_state()["last_event_id"] == "250"
+
+
 def test_consume_dl_spawn_fires_for_ts_and_schema_failures(
     monkeypatch, tmp_path, counters, stop
 ):
