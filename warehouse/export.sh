@@ -9,10 +9,10 @@
 # bq. CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env
 # when present, else the environment).
 #
-# Idempotent per window: bq load lands rows in <table>_staging, then a MERGE
-# (kpi tables) or window DELETE+INSERT (raw sample, no natural key) converges
-# the final table — re-running a window upserts the same keys instead of
-# appending duplicates. Run at :00 via wikistream-export.timer.
+# Idempotent per window: bq load --replace lands the window in <table>_staging
+# (so an overlapping run cannot leave duplicate source keys behind), then a
+# MERGE (kpi tables) or window DELETE+INSERT (raw sample, no natural key)
+# converges the final table. Run at :00 via wikistream-export.timer.
 # ponytail: staging is never vacuumed; the MERGE filters the window so leftover
 # rows are harmless (same-key upsert), add expiry if staging cost matters.
 set -euo pipefail
@@ -81,6 +81,11 @@ rows_kpi_top_pages=0
 rows_kpi_sizes=0
 rows_raw_sample=0
 
+# The extracted JSONL is large (raw sample is 10% of the window); remove the
+# current object on any exit so a failed load cannot leave it on the boot disk.
+object=""
+trap 'rm -f "${object:-}"' EXIT
+
 for entry in "${TABLES[@]}"; do
   IFS='|' read -r key sqlfile btable partfield stable mergesql <<<"$entry"
   mkdir -p "$STAGING_TMP/$key"
@@ -94,14 +99,17 @@ for entry in "${TABLES[@]}"; do
 
   rows="$(wc -l < "$object" | tr -d ' ')"
   if [ -s "$object" ]; then
-    gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null
-    bq load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
+    # --replace, not append: the trailing 2-hour window overlaps the previous
+    # run, so appending to persistent staging gives MERGE two source rows per
+    # key and BigQuery aborts. export_runs stays append-only below.
+    bq load --replace --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
       --schema="schemas/$btable.json" "$BQ_DATASET.$stable" "$object"
     merge_window "$mergesql"
-  else
-    # Empty window for this table: drop the object, skip cp + load, rows stays 0.
-    rm -f "$object"
+    # Backup copy is non-critical; never let a GCS hiccup block the load/merge.
+    gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null \
+      || echo "[export] backup copy failed key=$key" >&2
   fi
+  rm -f "$object"
 
   case "$key" in
     kpi_edits)     rows_kpi_edits=$rows ;;

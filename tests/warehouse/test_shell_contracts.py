@@ -60,20 +60,63 @@ elif "clickhouse-client" in argv and "BACKUP" in argv:
     name = m.group(1) if m else "backup-unknown"
     os.makedirs(os.path.join(os.environ["CH_DATA_DIR"], "backups", name), exist_ok=True)
     print(f"20260910 10:00:01. {name} to Disk('backups','{name}') (BACKUP_CREATED)")
+elif "clickhouse-client" in argv and "--format TSV" in argv:
+    sys.stdin.read()
+    if "count()" in argv:
+        print("5")
+    elif "sum(edits)" in argv and "sum(bytes_delta)" in argv:
+        print("10\\t20")
+    elif "sum(edits)" in argv:
+        print("10")
 else:
     sys.stdin.read()
 """
 
 _CMD_STUB = """#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 log = os.environ.get("STUB_LOG")
 if log:
     with open(log, "a") as fh:
         fh.write("{cmd} " + " ".join(sys.argv[1:]) + "\\n")
-if "{cmd}" == "bq" and os.environ.get("STUB_BQ_FAIL") == "1":
-    sys.stderr.write("stub bq: injected failure\\n")
+if os.environ.get("STUB_{cmd}_FAIL".upper()) == "1":
+    sys.stderr.write("stub {cmd}: injected failure\\n")
     sys.exit(1)
+if "{cmd}" == "bq":
+    argv = " ".join(sys.argv)
+    if "export_runs" in argv:
+        print(json.dumps([{"exported_at": "2026-09-10T10:00:00Z",
+                           "window_start": "2026-09-10T08:00:00Z",
+                           "window_end": "2026-09-10T10:00:00Z",
+                           "status": "success"}]))
+        sys.exit(0)
+    if "kpi_edit_sizes_hourly" in argv:
+        print(json.dumps([{"edits": 10}]))
+        sys.exit(0)
+    if "raw_events_sample" in argv:
+        print(json.dumps([{"row_count": 5}]))
+        sys.exit(0)
+    if "kpi_" in argv:
+        print(json.dumps([{"edits": 10, "bytes_delta": 20}]))
+        sys.exit(0)
 print("ok")
+"""
+
+_CURL_STUB = """#!/usr/bin/env python3
+import os, stat, sys
+argv = sys.argv[1:]
+log = os.environ.get("STUB_LOG")
+cfg = argv[argv.index("--config") + 1] if "--config" in argv else None
+if log:
+    with open(log, "a") as fh:
+        fh.write("curl " + " ".join(argv) + "\\n")
+        if cfg:
+            mode = oct(stat.S_IMODE(os.stat(cfg).st_mode))
+            fh.write("curl_config_mode " + mode + "\\n")
+            with open(cfg) as fch:
+                fh.write("curl_config " + fch.read().replace("\\n", "|") + "\\n")
+query = argv[argv.index("--data-binary") + 1] if "--data-binary" in argv else ""
+if "count()" in query:
+    print("1")
 """
 
 _HEAD_STUB = """#!/usr/bin/env python3
@@ -106,12 +149,19 @@ class _ShellHarness:
             "date": _DATE_STUB,
             "docker": _DOCKER_STUB,
             "bq": _CMD_STUB.replace("{cmd}", "bq"),
+            "curl": _CURL_STUB,
             "head": _HEAD_STUB,
         }.items():
             (stub_bin / name).write_text(text)
             (stub_bin / name).chmod(0o755)
 
-    def run(self, script: Path, *args: str, fail_bq: bool = False):
+    def run(
+        self,
+        script: Path,
+        *args: str,
+        fail_bq: bool = False,
+        fail_gcloud: bool = False,
+    ):
         env = os.environ.copy()
         env["PATH"] = str(self.tmp / "stubbin") + os.pathsep + env["PATH"]
         env["CLICKHOUSE_PASSWORD"] = "stub-pass"
@@ -119,9 +169,12 @@ class _ShellHarness:
         env["BACKUP_BUCKET"] = "gs://stub-backups"
         env["STAGING_TMP"] = str(self.tmp / "staging")
         env["CH_DATA_DIR"] = str(self.tmp / "data")
+        env["PARITY_LOG_DIR"] = str(self.tmp / "parity-log")
         env["STUB_LOG"] = str(self.log)
         if fail_bq:
             env["STUB_BQ_FAIL"] = "1"
+        if fail_gcloud:
+            env["STUB_GCLOUD_FAIL"] = "1"
         return subprocess.run(
             ["bash", str(script), *args],
             env=env,
@@ -169,6 +222,32 @@ def test_export_default_trailing_two_hour_window(shell):
     assert "wikistream.kpi_edits_hourly_staging" in log
 
 
+def test_export_overlapping_windows_replace_staging(shell):
+    """AUD-02: the trailing 2-hour window re-exports the overlap hour. Each
+    staging load must replace the previous run's rows, not append duplicate
+    source keys that make BigQuery's MERGE abort. export_runs stays append."""
+    first = shell.run(
+        WAREHOUSE / "export.sh", "2026-09-10 08:00:00", "2026-09-10 10:00:00"
+    )
+    second = shell.run(
+        WAREHOUSE / "export.sh", "2026-09-10 09:00:00", "2026-09-10 11:00:00"
+    )
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+
+    loads = [
+        line
+        for line in shell.log.read_text().splitlines()
+        if line.startswith("bq load")
+    ]
+    staging = [line for line in loads if "_staging" in line]
+    runs = [line for line in loads if "export_runs" in line]
+    assert len(staging) == 8  # 4 tables x 2 overlapping runs
+    assert all("--replace" in line for line in staging)
+    assert len(runs) == 2
+    assert all("--replace" not in line for line in runs)
+
+
 def test_export_password_never_in_docker_argv(shell):
     """M2: the ClickHouse password travels via stdin (`--password` with no
     value, like backup.sh) — never in docker/clickhouse-client argv, where
@@ -178,6 +257,36 @@ def test_export_password_never_in_docker_argv(shell):
     log = shell.log.read_text()
     assert "clickhouse-client" in log  # the calls happened
     assert "stub-pass" not in log, "password leaked into a child-process argv"
+
+
+def test_export_cleans_local_jsonl_after_success(shell):
+    """AUD-03: the extracted JSONL must not accumulate in /tmp after a run."""
+    proc = shell.run(WAREHOUSE / "export.sh")
+    assert proc.returncode == 0, proc.stderr
+    staging = shell.tmp / "staging"
+    assert not list(staging.glob("kpi_*/*.jsonl"))
+    assert not list(staging.glob("raw_sample/*.jsonl"))
+    # The tiny run record is retained for the local contract assertions.
+    assert (staging / "export_runs" / "2026091010.jsonl").exists()
+
+
+def test_export_cleans_local_jsonl_on_bq_failure(shell):
+    """A failed load must not leave the current JSONL behind either."""
+    proc = shell.run(WAREHOUSE / "export.sh", fail_bq=True)
+    assert proc.returncode != 0
+    staging = shell.tmp / "staging"
+    assert not list(staging.glob("kpi_*/*.jsonl"))
+    assert not list(staging.glob("raw_sample/*.jsonl"))
+
+
+def test_export_loads_when_gcs_backup_copy_fails(shell):
+    """AUD-13: the GCS backup is non-critical; load/merge must run first and a
+    copy failure must not abort the warehouse export."""
+    proc = shell.run(WAREHOUSE / "export.sh", fail_gcloud=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "backup copy failed" in proc.stderr
+    log = shell.log.read_text()
+    assert log.index("bq load") < log.index("gcloud storage cp")
 
 
 def test_export_explicit_window_passthrough(shell):
@@ -191,6 +300,25 @@ def test_export_explicit_window_passthrough(shell):
 def test_export_fails_loud_on_bq_failure(shell):
     proc = shell.run(WAREHOUSE / "export.sh", fail_bq=True)
     assert proc.returncode != 0, "bq failure must exit non-zero (OnFailure wiring)"
+
+
+def test_parity_pipeline_health_insert_uses_http(shell):
+    """AUD-07: the verdict insert must not use docker exec without -i (the
+    password pipe never reaches clickhouse-client). HTTP with a 0600 config
+    keeps the key out of argv and proves the row landed."""
+    proc = shell.run(WAREHOUSE / "parity.sh")
+    assert proc.returncode == 0, proc.stderr
+    log = shell.log.read_text()
+    curl_lines = [line for line in log.splitlines() if line.startswith("curl ")]
+    assert len(curl_lines) == 2  # INSERT + verification SELECT
+    assert all("stub-pass" not in line for line in curl_lines)
+    assert "curl_config_mode 0o600" in log
+    assert "X-ClickHouse-Key: stub-pass" in log
+    docker_lines = [line for line in log.splitlines() if line.startswith("docker ")]
+    assert not any(
+        "INSERT INTO default.pipeline_health" in line for line in docker_lines
+    )
+    assert "pipeline_health row not found" not in proc.stderr
 
 
 def test_backup_guard_prune_before_snapshot_and_keep_last_two(shell):

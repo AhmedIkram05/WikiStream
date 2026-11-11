@@ -7,8 +7,10 @@
 # late-arrival rehydration is checked, not assumed. Targets the Ubuntu VM —
 # window math uses GNU date.
 #
-# Depends on: docker (container $CLICKHOUSE_CONTAINER), bq. CLICKHOUSE_PASSWORD
-# is required (sourced from /opt/wikistream/.env when present, else env).
+# Depends on: docker (container $CLICKHOUSE_CONTAINER), bq, curl.
+# CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env when
+# present, else env); the final telemetry INSERT uses the HTTP API with a
+# 0600 curl config so the key never enters argv.
 # CH-side sums use the SAME rollup SQL as the export (nested in an outer
 # SUM), so merge-state can never create false drift — never change the CH
 # side to row counts (grain differs from the BQ hourly tables).
@@ -33,11 +35,37 @@ if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then
 fi
 
 : "${CLICKHOUSE_CONTAINER:=wikistream-clickhouse}"
+: "${CLICKHOUSE_USER:=wikistream}"
+: "${CLICKHOUSE_HTTP_URL:=http://127.0.0.1:${CLICKHOUSE_PORT:-8123}/}"
 : "${BQ_DATASET:=wikistream}"
 
-LOG_DIR=/var/log/wikistream
+LOG_DIR="${PARITY_LOG_DIR:-/var/log/wikistream}"
 LOG_FILE="$LOG_DIR/wikistream-parity.log"
 mkdir -p "$LOG_DIR"
+
+# The final pipeline_health insert uses the HTTP API: clickhouse-client over
+# `docker exec -i` cannot take the password on stdin and the INSERT body at the
+# same time (it reads stdin as insert data). Keep the key in a 0600 curl config
+# so it never appears in argv or the URL.
+_curl_escape() {
+  local value=$1
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '%s' "$value"
+}
+
+CH_HTTP_CONFIG="$(mktemp)"
+chmod 600 "$CH_HTTP_CONFIG"
+trap 'rm -f "$CH_HTTP_CONFIG"' EXIT
+{
+  printf 'header = "X-ClickHouse-User: %s"\n' "$(_curl_escape "$CLICKHOUSE_USER")"
+  printf 'header = "X-ClickHouse-Key: %s"\n' "$(_curl_escape "$CLICKHOUSE_PASSWORD")"
+} > "$CH_HTTP_CONFIG"
+
+ch_http() {
+  curl --silent --show-error --fail-with-body --config "$CH_HTTP_CONFIG" \
+    --data-binary "$1" "$CLICKHOUSE_HTTP_URL"
+}
 
 if [ $# -eq 2 ]; then
   START="$1"
@@ -148,9 +176,9 @@ fi
 # $3 = export SQL filename ("" = raw-sample fixed query), $4 = CH aggregate
 # over the export SQL, $5 = bq parity SQL, $6 = comma-separated BQ column
 # names in CH order. Any query error or mismatch exits 1.
+compare_result=""
 compare_table() {
-  local -n tvar=$1
-  local name=$2 export_sql=$3 aggregate=$4 bq_sql=$5 bq_cols=$6
+  local name=$1 export_sql=$2 aggregate=$3 bq_sql=$4 bq_cols=$5
   local ch_out bq_out verdict
 
   if [ -n "$aggregate" ]; then
@@ -163,7 +191,7 @@ compare_table() {
 $(sed "s/{START}/$START/; s/{END}/$END/" "sql/$export_sql")
 )")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
-      tvar="error"
+      compare_result="error"
       status=error
       emit_log
       exit 1
@@ -177,7 +205,7 @@ $(sed "s/{START}/$START/; s/{END}/$END/" "sql/$export_sql")
 $(sed "s/{START}/$START/; s/{END}/$END/" "sql/export_raw_sample.sql")
 )")"; then
       echo "[parity] $name: ClickHouse query failed" >&2
-      tvar="error"
+      compare_result="error"
       status=error
       emit_log
       exit 1
@@ -185,7 +213,7 @@ $(sed "s/{START}/$START/; s/{END}/$END/" "sql/export_raw_sample.sql")
   fi
 
   # bq --format=json emits columns in ALPHABETICAL order (not SELECT order),
-  # so read them by name in the CH column order passed as $6.
+  # so read them by name in the CH column order passed as $5.
   if ! bq_out="$(bq query --use_legacy_sql=false --format=json \
       "$(sed "s/{START}/$START/; s/{END}/$END/" "sql/$bq_sql")" \
       | python3 -c '
@@ -195,7 +223,7 @@ d = json.load(sys.stdin)
 print(" ".join(str(d[0][c]) for c in cols))
 ' "$bq_cols")"; then
     echo "[parity] $name: BigQuery query failed" >&2
-    tvar="error"
+    compare_result="error"
     status=error
     emit_log
     exit 1
@@ -213,30 +241,46 @@ print("ok" if ok else "mismatch")
 PY
   )"
 
-    if [ "$verdict" != "ok" ]; then
+  if [ "$verdict" != "ok" ]; then
     echo "[parity] $name: CH/BQ mismatch (ch='$ch_out' bq='$bq_out')" >&2
     status=drift
   fi
+  compare_result="$verdict"
 }
 
-compare_table t_edits      kpi_edits    export_edits.sql      "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_edits.sql       edits,bytes_delta
-compare_table t_top_pages  top_pages    export_top_pages.sql  "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_top_pages.sql   edits,bytes_delta
-compare_table t_sizes      sizes        export_sizes.sql      "sum(edits) AS edits"                                 parity_bq_sizes.sql       edits
-compare_table t_raw_sample raw_sample   ""                    ""                                                    parity_bq_raw_sample.sql  row_count
+compare_table kpi_edits    export_edits.sql      "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_edits.sql      edits,bytes_delta
+t_edits="$compare_result"
+compare_table top_pages    export_top_pages.sql  "sum(edits) AS edits, sum(bytes_delta) AS bytes_delta" parity_bq_top_pages.sql  edits,bytes_delta
+t_top_pages="$compare_result"
+compare_table sizes        export_sizes.sql      "sum(edits) AS edits"                                 parity_bq_sizes.sql      edits
+t_sizes="$compare_result"
+compare_table raw_sample   ""                    ""                                                    parity_bq_raw_sample.sql row_count
+t_raw_sample="$compare_result"
 
 emit_log
 
 # Phase 5: push the verdict into pipeline_health (alerting telemetry)
 _P5_VALUE=0.0; [ "$status" = "ok" ] && _P5_VALUE=1.0
 _P5_DETAIL=$(printf '{"status":"%s","window_start":"%s","window_end":"%s"}' "$status" "$WINDOW_START" "$WINDOW_END" | sed "s/'/\\\\'/g")
-# Password via stdin (`--password` with no value, like backup.sh) — same argv
-# hygiene as the compare_table queries above. No `-i` here: clickhouse-client
-# treats attached stdin as external INSERT data alongside the inlined VALUES,
-# and the server's async_insert rejects both at once (Code 48) — the verdict
-# never lands. The compare lines above keep `-i`; they only SELECT.
-printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec "$CLICKHOUSE_CONTAINER" clickhouse-client --user wikistream --password \
-  --query "INSERT INTO default.pipeline_health (ts, source, metric, value, detail) VALUES (now(), 'parity', 'result', $_P5_VALUE, '$_P5_DETAIL')" \
-  || { echo "[$(date -u)] parity: pipeline_health write failed" >&2; }
+# HTTP keeps the password out of argv and leaves stdin free for the request
+# body; clickhouse-client over `docker exec -i` cannot do both for an INSERT.
+_P5_SQL="INSERT INTO default.pipeline_health (ts, source, metric, value, detail) VALUES (now(), 'parity', 'result', $_P5_VALUE, '$_P5_DETAIL')"
+if ! ch_http "$_P5_SQL" >/dev/null; then
+  echo "[$(date -u)] parity: pipeline_health write failed" >&2
+  exit 1
+fi
+
+# Prove the row landed; a swallowed insert is what left the parity alert stuck.
+_P5_CHECK="SELECT count() FROM default.pipeline_health WHERE source = 'parity' AND metric = 'result' AND detail LIKE '%${WINDOW_END}%'"
+if ! _P5_COUNT="$(ch_http "$_P5_CHECK")"; then
+  echo "[$(date -u)] parity: pipeline_health verification query failed" >&2
+  exit 1
+fi
+_P5_COUNT="$(printf '%s' "$_P5_COUNT" | tr -d '[:space:]')"
+if [ "${_P5_COUNT:-0}" -lt 1 ]; then
+  echo "[$(date -u)] parity: pipeline_health row not found (count=${_P5_COUNT:-0})" >&2
+  exit 1
+fi
 
 if [ "$status" != "ok" ]; then
   exit 1
