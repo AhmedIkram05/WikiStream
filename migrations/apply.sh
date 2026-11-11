@@ -24,14 +24,28 @@ fi
 
 CH_URL="http://${CH_HOST}:${CH_PORT}/"
 
-# Run a one-shot query through the CH HTTP API; the request body IS the
-# query. --fail-with-body makes any non-2xx (incl. 516 auth errors) exit
-# non-zero and print the response body; header auth keeps the password out
-# of the URL and argv.
+# Keep the password in a 0600 curl config: -H on the command line puts it in
+# /proc/<pid>/cmdline, which any local user can read. The config also keeps it
+# out of the URL. --fail-with-body makes any non-2xx (incl. 516 auth errors)
+# exit non-zero and print the response body.
+_curl_escape() {
+  local value=$1
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '%s' "$value"
+}
+
+CH_HTTP_CONFIG="$(mktemp)"
+chmod 600 "$CH_HTTP_CONFIG"
+trap 'rm -f "$CH_HTTP_CONFIG"' EXIT
+{
+  printf 'header = "X-ClickHouse-User: %s"\n' "$(_curl_escape "$CH_USER")"
+  printf 'header = "X-ClickHouse-Key: %s"\n' "$(_curl_escape "$CH_PASSWORD")"
+} > "$CH_HTTP_CONFIG"
+
+# Run a one-shot query through the CH HTTP API; the request body IS the query.
 ch_query() {
-  curl -sS --fail-with-body \
-    -H "X-ClickHouse-User: ${CH_USER}" \
-    -H "X-ClickHouse-Key: ${CH_PASSWORD}" \
+  curl -sS --fail-with-body --config "$CH_HTTP_CONFIG" \
     -X POST --data-binary "$1" \
     "${CH_URL}"
 }
@@ -93,9 +107,7 @@ for file in "${MIGRATIONS_DIR}"/[0-9]*.sql; do
 
   if [ "${status}" = "applied" ]; then
     # Apply: the request body IS the query (no /?query=).
-    if ! apply_output="$(curl -sS --fail-with-body \
-        -H "X-ClickHouse-User: ${CH_USER}" \
-        -H "X-ClickHouse-Key: ${CH_PASSWORD}" \
+    if ! apply_output="$(curl -sS --fail-with-body --config "$CH_HTTP_CONFIG" \
         -X POST --data-binary "@${file}" \
         "${CH_URL}" 2>&1)"; then
       echo "error: failed to apply ${version}:" >&2
