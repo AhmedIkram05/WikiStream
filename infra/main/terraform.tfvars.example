@@ -2,5 +2,5 @@ project_id           = "example-project"
 region               = "us-east1"
 zone                 = "us-east1-b"
 alert_email          = "example@email.com"
-allowed_ips          = ["example-ips"]
+allowed_ips          = ["203.0.113.5/32"]
 oslogin_human_member = "user:example@email.com"
