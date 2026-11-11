@@ -117,6 +117,14 @@ def test_malformed_line_skipped():
     assert events[0].data == "x"
 
 
+def test_line_without_colon_is_data_field_with_empty_value():
+    """WHATWG: a bare 'data' line is a data field with an empty value."""
+    parser = SSEParser()
+    events = parser.feed(b"data\n\n")
+    assert len(events) == 1
+    assert events[0].data == ""
+
+
 def test_empty_data_value_still_emitted():
     parser = SSEParser()
     events = parser.feed(b"data:\n\n")
