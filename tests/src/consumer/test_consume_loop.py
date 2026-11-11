@@ -1189,6 +1189,37 @@ def test_main_happy_path_graceful_shutdown(monkeypatch, tmp_path):
     run(consumer.main())  # must return without hanging
 
 
+def test_main_consume_task_crash_is_fatal(monkeypatch, tmp_path):
+    """A dead consume task must not be masked by a heartbeat that keeps
+    ticking; main() surfaces the failure instead of wedging silently."""
+    patch_state(monkeypatch, tmp_path)
+
+    async def crash(client, stop_ev, resumed_from, counters):
+        raise RuntimeError("boom")
+
+    async def heartbeat(client, counters, stop_ev):
+        await asyncio.sleep(3600)
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", crash)
+    monkeypatch.setattr(consumer, "heartbeat_loop", heartbeat)
+
+    with pytest.raises(RuntimeError, match="consume_forever failed") as exc:
+        run(consumer.main())
+
+    assert isinstance(exc.value.__cause__, RuntimeError)
+
+
 def test_main_resumes_from_saved_state(monkeypatch, tmp_path, caplog):
     # Line 402: main() logs resumed_from when durable state exists.
     patch_state(monkeypatch, tmp_path)

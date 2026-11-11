@@ -659,20 +659,47 @@ async def main() -> None:
             if await _sleep_or_stop(stop, 2.0):
                 return
     async with client:
-        task = asyncio.create_task(
+        consume_task = asyncio.create_task(
             consume_forever(client, stop, resumed_from, counters)
         )
         heartbeat_task = asyncio.create_task(heartbeat_loop(client, counters, stop))
-        await stop.wait()
-        # Graceful: up to 10s for the final flush + state save (SIGTERM path
-        # must flush), then force-cancel if the stream read blocks.
+        stop_task = asyncio.create_task(stop.wait())
         try:
-            await asyncio.wait_for(asyncio.gather(task, heartbeat_task), 10.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            for t in (task, heartbeat_task):
-                t.cancel()
-                with suppress(asyncio.CancelledError):
-                    await t
+            # Supervise BOTH workers: a dead consume task must not be masked by
+            # a still-ticking heartbeat. FIRST_COMPLETED wakes on stop too.
+            done, _ = await asyncio.wait(
+                {consume_task, heartbeat_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task not in done:
+                failed = next(t for t in done if t is not stop_task)
+                name = "consume_forever" if failed is consume_task else "heartbeat_loop"
+                logger.error("%s ended unexpectedly", name)
+                if failed.cancelled():
+                    raise RuntimeError(f"{name} was cancelled unexpectedly")
+                exc = failed.exception()
+                if exc is not None:
+                    raise RuntimeError(f"{name} failed") from exc
+                raise RuntimeError(f"{name} exited unexpectedly")
+            # Graceful: up to 10s for the final flush + state save (SIGTERM
+            # path must flush), then force-cancel if the stream read blocks.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(consume_task, heartbeat_task), 10.0
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                for t in (consume_task, heartbeat_task):
+                    t.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await t
+        finally:
+            stop_task.cancel()
+            for t in (consume_task, heartbeat_task):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(
+                stop_task, consume_task, heartbeat_task, return_exceptions=True
+            )
 
 
 if __name__ == "__main__":
