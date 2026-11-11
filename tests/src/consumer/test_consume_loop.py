@@ -366,6 +366,27 @@ def test_consume_happy_path_flush_and_state(
     assert ch.dl_rows == []
 
 
+def test_consume_all_idless_batch_counts_as_success(
+    monkeypatch, tmp_path, counters, stop
+):
+    """AUD-14: a full batch whose frames carry no id still lands; it must be
+    counted and must not be retried as if the insert failed."""
+    patch_sleep(monkeypatch)
+    frames = b"".join(b"data: " + payload().encode() + b"\n\n" for _ in range(1000))
+    patch_http(monkeypatch, [FakeResponse(chunks=[frames])])
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert ch.calls == [("default.raw_events", 1000)]
+    assert counters["total"] == 1000
+    assert counters["insert_failed"] == 0
+    state = consumer.load_state()
+    assert state["last_event_id"] is None  # no id to advance
+    assert state["total"] == 1000
+
+
 def test_consume_bad_json_goes_dead_letter(monkeypatch, tmp_path, counters, stop):
     patch_sleep(monkeypatch)
     patch_http(monkeypatch, [FakeResponse(chunks=[frame("7", "{not json")])])

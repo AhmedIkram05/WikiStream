@@ -269,7 +269,7 @@ class _StreamRun:
             flushed = 0
             while True:
                 mid, flushed = await self.batcher.flush(self.client)
-                landed = mid is not None
+                landed = self.batcher.last_flush_landed
                 if flushed == 0:
                     # Nothing pending: a concurrent flush task already drained
                     # the batch. Not a failure — do not retry or count it.

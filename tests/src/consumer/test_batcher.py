@@ -207,6 +207,23 @@ def test_unmark_survives_ring_eviction():
     assert b.seen("7") is True and b.seen("8") is True and b.seen("9") is True
 
 
+def test_flush_without_ids_still_reports_landed():
+    """AUD-14: an all-id-less batch returns max_id=None but did land."""
+    b = EventBatcher(now=constant_clock)
+    for _ in range(3):
+        b.add(("t", "d"), None)
+    assert asyncio.run(b.flush(FakeClient())) == (None, 3)
+    assert b.last_flush_landed is True
+
+
+def test_failed_flush_reports_not_landed():
+    b = EventBatcher(now=constant_clock)
+    for _ in range(3):
+        b.add(("t", "d"), None)
+    assert asyncio.run(b.flush(FakeClient(fail=True))) == (None, 3)
+    assert b.last_flush_landed is False
+
+
 def test_flush_empty():
     fake = FakeClient()
     assert asyncio.run(EventBatcher().flush(fake)) == (None, 0)
