@@ -206,6 +206,26 @@ def test_export_password_never_in_docker_argv(shell):
     assert "stub-pass" not in log, "password leaked into a child-process argv"
 
 
+def test_export_cleans_local_jsonl_after_success(shell):
+    """AUD-03: the extracted JSONL must not accumulate in /tmp after a run."""
+    proc = shell.run(WAREHOUSE / "export.sh")
+    assert proc.returncode == 0, proc.stderr
+    staging = shell.tmp / "staging"
+    assert not list(staging.glob("kpi_*/*.jsonl"))
+    assert not list(staging.glob("raw_sample/*.jsonl"))
+    # The tiny run record is retained for the local contract assertions.
+    assert (staging / "export_runs" / "2026091010.jsonl").exists()
+
+
+def test_export_cleans_local_jsonl_on_bq_failure(shell):
+    """A failed load must not leave the current JSONL behind either."""
+    proc = shell.run(WAREHOUSE / "export.sh", fail_bq=True)
+    assert proc.returncode != 0
+    staging = shell.tmp / "staging"
+    assert not list(staging.glob("kpi_*/*.jsonl"))
+    assert not list(staging.glob("raw_sample/*.jsonl"))
+
+
 def test_export_explicit_window_passthrough(shell):
     proc = shell.run(
         WAREHOUSE / "export.sh", "2026-09-05 05:00:00", "2026-09-05 06:00:00"

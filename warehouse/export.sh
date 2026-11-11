@@ -81,6 +81,11 @@ rows_kpi_top_pages=0
 rows_kpi_sizes=0
 rows_raw_sample=0
 
+# The extracted JSONL is large (raw sample is 10% of the window); remove the
+# current object on any exit so a failed load cannot leave it on the boot disk.
+object=""
+trap 'rm -f "${object:-}"' EXIT
+
 for entry in "${TABLES[@]}"; do
   IFS='|' read -r key sqlfile btable partfield stable mergesql <<<"$entry"
   mkdir -p "$STAGING_TMP/$key"
@@ -101,10 +106,8 @@ for entry in "${TABLES[@]}"; do
     bq load --replace --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
       --schema="schemas/$btable.json" "$BQ_DATASET.$stable" "$object"
     merge_window "$mergesql"
-  else
-    # Empty window for this table: drop the object, skip cp + load, rows stays 0.
-    rm -f "$object"
   fi
+  rm -f "$object"
 
   case "$key" in
     kpi_edits)     rows_kpi_edits=$rows ;;
