@@ -218,6 +218,16 @@ def test_max_id_edges():
     )
 
 
+def test_unicode_digits_never_reach_int():
+    """AUD-21: '²' is isdigit() but int('²') raises. Treat it as unparsable
+    and keep the ASCII id instead of crashing the cursor comparison."""
+    assert cursors._rank("²") is None
+    assert cursors._max_id("²", "10") == "10"
+    assert cursors._max_id("10", "²") == "10"
+    assert cursors._min_id("²", "10") == "10"
+    assert cursors._min_id("10", "²") == "10"
+
+
 def test_min_id_edges():
     # None is -∞: any pair containing it collapses to None (no advance).
     assert cursors._min_id(None, "b") is None

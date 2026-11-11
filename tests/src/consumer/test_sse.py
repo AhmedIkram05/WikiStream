@@ -91,6 +91,12 @@ def test_retry_non_digits_ignored():
     assert events[0].retry is None
 
 
+def test_retry_unicode_digits_ignored():
+    parser = SSEParser()
+    events = parser.feed("retry: ²\ndata: x\n\n".encode())
+    assert events[0].retry is None
+
+
 def test_id_with_nul_ignored():
     parser = SSEParser()
     events = parser.feed(b"id: bad\x00id\ndata: x\n\n")

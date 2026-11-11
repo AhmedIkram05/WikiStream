@@ -66,6 +66,11 @@ def _is_composite(s: str) -> bool:
     )
 
 
+def _is_ascii_digits(s: str) -> bool:
+    """True for ASCII digits only; str.isdigit() also accepts '²' etc."""
+    return s.isascii() and s.isdigit()
+
+
 def _rank(s: str) -> int | None:
     """Numeric rank for a well-formed id, else None (unparsable shape).
 
@@ -74,7 +79,7 @@ def _rank(s: str) -> int | None:
     comparison: treating an unknown id as the oldest value would silently rewind
     the cursor into mass reprocessing on an upstream id-format change.
     """
-    if s.isdigit():
+    if _is_ascii_digits(s):
         return int(s)
     if _is_composite(s):
         return _cursor_ts(s)
@@ -91,7 +96,17 @@ def _max_id(a: str | None, b: str | None) -> str | None:
     if b is None:
         return a
     if a.isdigit() and b.isdigit():
-        return a if int(a) >= int(b) else b
+        a_ok, b_ok = _is_ascii_digits(a), _is_ascii_digits(b)
+        if a_ok and b_ok:
+            return a if int(a) >= int(b) else b
+        if a_ok:
+            _warn_unparsable(b)
+            return a
+        if b_ok:
+            _warn_unparsable(a)
+            return b
+        _warn_unparsable(a)
+        return a
     if a.startswith("[") or b.startswith("["):
         ra, rb = _rank(a), _rank(b)
         if ra is None and rb is None:
@@ -114,7 +129,17 @@ def _min_id(a: str | None, b: str | None) -> str | None:
     if a is None or b is None:
         return None
     if a.isdigit() and b.isdigit():
-        return a if int(a) <= int(b) else b
+        a_ok, b_ok = _is_ascii_digits(a), _is_ascii_digits(b)
+        if a_ok and b_ok:
+            return a if int(a) <= int(b) else b
+        if a_ok:
+            _warn_unparsable(b)
+            return a
+        if b_ok:
+            _warn_unparsable(a)
+            return b
+        _warn_unparsable(a)
+        return a
     if a.startswith("[") or b.startswith("["):
         ra, rb = _rank(a), _rank(b)
         if ra is None and rb is None:

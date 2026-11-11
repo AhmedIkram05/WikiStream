@@ -99,7 +99,7 @@ class SSEParser:
         elif field == "id":
             if "\x00" not in value:
                 self._event_id = value
-        elif field == "retry" and value.isdigit():
+        elif field == "retry" and value.isascii() and value.isdigit():
             self._retry = int(value)
         # any other field name is ignored per spec
 
