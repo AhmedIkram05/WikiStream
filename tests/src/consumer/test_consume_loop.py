@@ -218,6 +218,16 @@ def test_max_id_edges():
     )
 
 
+def test_unicode_digits_never_reach_int():
+    """AUD-21: '²' is isdigit() but int('²') raises. Treat it as unparsable
+    and keep the ASCII id instead of crashing the cursor comparison."""
+    assert cursors._rank("²") is None
+    assert cursors._max_id("²", "10") == "10"
+    assert cursors._max_id("10", "²") == "10"
+    assert cursors._min_id("²", "10") == "10"
+    assert cursors._min_id("10", "²") == "10"
+
+
 def test_min_id_edges():
     # None is -∞: any pair containing it collapses to None (no advance).
     assert cursors._min_id(None, "b") is None
@@ -364,6 +374,27 @@ def test_consume_happy_path_flush_and_state(
     assert state["total"] == 1001
     assert "inserted events=1000 total=1000" in caplog.text
     assert ch.dl_rows == []
+
+
+def test_consume_all_idless_batch_counts_as_success(
+    monkeypatch, tmp_path, counters, stop
+):
+    """AUD-14: a full batch whose frames carry no id still lands; it must be
+    counted and must not be retried as if the insert failed."""
+    patch_sleep(monkeypatch)
+    frames = b"".join(b"data: " + payload().encode() + b"\n\n" for _ in range(1000))
+    patch_http(monkeypatch, [FakeResponse(chunks=[frames])])
+    patch_state(monkeypatch, tmp_path)
+    ch = FakeCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert ch.calls == [("default.raw_events", 1000)]
+    assert counters["total"] == 1000
+    assert counters["insert_failed"] == 0
+    state = consumer.load_state()
+    assert state["last_event_id"] is None  # no id to advance
+    assert state["total"] == 1000
 
 
 def test_consume_bad_json_goes_dead_letter(monkeypatch, tmp_path, counters, stop):
@@ -610,12 +641,9 @@ def test_consume_pre_epoch_timestamp_dead_lettered(
     assert consumer.load_state()["last_event_id"] == "7"
 
 
-def test_consume_caps_concurrent_flush_tasks_at_two(
-    monkeypatch, tmp_path, counters, stop
-):
-    """M4: asyncio.Semaphore around flush task creation — a CH that is slow
-    (not dead) must not pile up unbounded flush tasks (3 flush-due batches →
-    at most 2 inserts in flight; the loop backpressures at acquire)."""
+def test_consume_serializes_main_flushes(monkeypatch, tmp_path, counters, stop):
+    """AUD-01: main batches are inserted one at a time. A slow CH must not let
+    a later batch overtake an earlier one and advance the cursor past it."""
     patch_sleep(monkeypatch)
     patch_http(
         monkeypatch,
@@ -645,7 +673,7 @@ def test_consume_caps_concurrent_flush_tasks_at_two(
     run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["total"] == 3000
-    assert ch.max_in_flight == 2
+    assert ch.max_in_flight == 1
 
 
 def test_stream_client_has_read_timeout(monkeypatch, tmp_path, counters, stop):
@@ -707,58 +735,67 @@ def test_consume_flush_failure_counts_insert_failed(
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh(fail=True)
 
-    with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
+    with caplog.at_level(logging.INFO, logger="wikistream.consumer"):
         run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["insert_failed"] == 1000
     assert counters["total"] == 0
-    assert "insert_failed events=1000 reason=batch dropped" in caplog.text
+    assert "insert_failed events=1000 reason=shutdown" in caplog.text
+    assert "inserted events=0 total=0" in caplog.text
+    assert "inserted events=1000" not in caplog.text
     assert consumer.load_state()["last_event_id"] is None
 
 
-def test_consume_replays_dropped_batch_after_flush_failure(
+def test_failed_main_batch_retries_before_later_batch(
     monkeypatch, tmp_path, counters, stop
 ):
-    """H1 regression: after a failed flush the dropped ids are unmarked, so a
-    server replay (same Last-Event-ID window, since the cursor never advanced)
-    re-inserts them instead of being skipped as duplicates for the process
-    lifetime. CH blips must not cost ~23s of stream permanently."""
+    """T1: a failed lower-id batch must land before a later batch can advance
+    the cursor. Main flushes are serialised, so the second batch waits for the
+    first batch's retry to succeed."""
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", (0.0,))
     waits = {"n": 0}
 
-    async def reconnect_then_stop(stop_ev, seconds):
+    async def retry_then_stop(stop_ev, seconds):
         waits["n"] += 1
-        return waits["n"] > 1  # 1st reconnect opens pass 2; 2nd exits
+        return waits["n"] > 1  # 1st = flush retry; 2nd = reconnect exit
 
-    monkeypatch.setattr(consumer, "_sleep_or_stop", reconnect_then_stop)
-    # No in-place retry: the first-pass failure is dropped (unmarked) and the
-    # reconnect replay re-lands the ids.
-    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", ())
+    monkeypatch.setattr(consumer, "_sleep_or_stop", retry_then_stop)
 
-    class OnceFailingCh(FakeCh):
+    class FailFirstInsert(FakeCh):
         """CH blip: first insert fails, later inserts succeed."""
 
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+
         async def insert(self, table, data, column_names=None, settings=None):
-            if self.fail:
-                self.fail = False
+            if not self.failed:
+                self.failed = True
                 raise RuntimeError("boom")
             self.calls.append((table, len(data)))
             self.rows += len(data)
 
-    replay = b"".join(frame(str(i), payload()) for i in range(1, 1001))
     patch_http(
         monkeypatch,
-        [FakeResponse(chunks=[replay]), FakeResponse(chunks=[replay])],
+        [
+            FakeResponse(
+                chunks=[b"".join(frame(str(i), payload()) for i in range(1, 2001))]
+            )
+        ],
     )
     patch_state(monkeypatch, tmp_path)
-    ch = OnceFailingCh(fail=True)  # inherits FakeCh.__init__; fails first insert only
+    ch = FailFirstInsert()
 
     run(consumer.consume_forever(ch, stop, None, counters))
 
-    assert counters["insert_failed"] == 1000
-    assert counters["duplicates_skipped"] == 0  # replay not eaten by the ring
-    assert counters["total"] == 1000
-    assert ch.rows == 1000
-    assert consumer.load_state()["last_event_id"] == "1000"  # cursor: success only
+    # Both 1000-row batches landed, in order; the cursor never skipped ahead.
+    assert ch.calls == [
+        ("default.raw_events", 1000),
+        ("default.raw_events", 1000),
+    ]
+    assert counters["insert_failed"] == 0
+    assert counters["total"] == 2000
+    assert consumer.load_state()["last_event_id"] == "2000"
 
 
 def test_consume_retry_in_place_recovers_without_reconnect(

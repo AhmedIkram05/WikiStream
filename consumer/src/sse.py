@@ -87,10 +87,12 @@ class SSEParser:
             return  # comment / heartbeat — ignored
         colon = line.find(":")
         if colon == -1:
-            return  # malformed line (no colon) — skipped
-        field = line[:colon]
-        value = line[colon + 1 :]
-        value = value.removeprefix(" ")  # strip exactly ONE leading space (WHATWG)
+            # WHATWG: a line with no colon is a field name with an empty value.
+            field, value = line, ""
+        else:
+            field = line[:colon]
+            value = line[colon + 1 :]
+            value = value.removeprefix(" ")  # strip exactly ONE leading space (WHATWG)
         if field == "event":
             self._event_type = value
         elif field == "data":
@@ -99,7 +101,7 @@ class SSEParser:
         elif field == "id":
             if "\x00" not in value:
                 self._event_id = value
-        elif field == "retry" and value.isdigit():
+        elif field == "retry" and value.isascii() and value.isdigit():
             self._retry = int(value)
         # any other field name is ignored per spec
 

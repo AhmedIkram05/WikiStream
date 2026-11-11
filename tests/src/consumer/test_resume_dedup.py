@@ -23,6 +23,8 @@ Integration mechanics (verified against the real consumer):
 import asyncio
 import json
 import logging
+import os
+import stat
 import time
 from contextlib import suppress
 
@@ -123,6 +125,27 @@ def test_save_state_atomic_no_partial(tmp_path, monkeypatch):
     assert state["last_event_id"] == "42"
     assert state["total"] == 7
     assert list(state_dir.glob("*.tmp")) == []
+
+
+def test_save_state_fsyncs_directory(tmp_path, monkeypatch):
+    """AUD-22: fsync the containing directory after the rename, not just the
+    temp file, so a power loss cannot lose the rename."""
+    state_dir = tmp_path / "state"
+    state_file = state_dir / "consumer_state.json"
+    monkeypatch.setattr(consumer, "STATE_DIR", str(state_dir))
+    monkeypatch.setattr(consumer, "STATE_FILE", str(state_file))
+
+    seen = []
+    real_fsync = os.fsync
+
+    def fake_fsync(fd):
+        seen.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(consumer.os, "fsync", fake_fsync)
+    consumer.save_state("42", 7)
+
+    assert seen == [False, True]  # temp file first, then the directory
 
 
 def test_load_state_missing_file_returns_none(tmp_path, monkeypatch):

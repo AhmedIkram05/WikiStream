@@ -46,6 +46,10 @@ class EventBatcher:
         self._first_added_at: float | None = None
         self._batch_max_id: str | None = None
         self._now = now or time.monotonic
+        # True only for the most recent flush() that actually landed. Callers
+        # need this because a batch with no event ids also returns max_id=None,
+        # which is indistinguishable from a failed flush by the tuple alone.
+        self.last_flush_landed = False
 
     @property
     def pending_count(self) -> int:
@@ -104,8 +108,10 @@ class EventBatcher:
         no ids). On ANY exception the rows are RE-QUEUED (kept pending, marks
         intact) and (None, len) is returned so the caller can retry in place;
         a caller that gives up must call abandon() to drop the batch and
-        release its ids for a later server replay.
+        release its ids for a later server replay. last_flush_landed is True
+        only when the insert succeeded, including a batch with no ids.
         """
+        self.last_flush_landed = False
         if not self._pending:
             return (None, 0)
         pending = self._pending
@@ -132,6 +138,7 @@ class EventBatcher:
             self._batch_max_id = _max_id(self._batch_max_id, batch_max)
             self._first_added_at = self._now()
             return (None, len(pending))
+        self.last_flush_landed = True
         return (batch_max, len(pending))
 
     def abandon(self) -> int:

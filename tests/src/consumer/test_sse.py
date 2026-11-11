@@ -91,6 +91,12 @@ def test_retry_non_digits_ignored():
     assert events[0].retry is None
 
 
+def test_retry_unicode_digits_ignored():
+    parser = SSEParser()
+    events = parser.feed("retry: ²\ndata: x\n\n".encode())
+    assert events[0].retry is None
+
+
 def test_id_with_nul_ignored():
     parser = SSEParser()
     events = parser.feed(b"id: bad\x00id\ndata: x\n\n")
@@ -109,6 +115,14 @@ def test_malformed_line_skipped():
     events = parser.feed(b"this line has no colon\ndata: x\n\n")
     assert len(events) == 1
     assert events[0].data == "x"
+
+
+def test_line_without_colon_is_data_field_with_empty_value():
+    """WHATWG: a bare 'data' line is a data field with an empty value."""
+    parser = SSEParser()
+    events = parser.feed(b"data\n\n")
+    assert len(events) == 1
+    assert events[0].data == ""
 
 
 def test_empty_data_value_still_emitted():
