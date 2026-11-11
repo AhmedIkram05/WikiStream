@@ -160,6 +160,16 @@ def save_state(last_event_id: str | None, total: int) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, STATE_FILE)
+        # fsync the directory too: without it the rename itself can be lost on
+        # power failure even though the file contents were synced.
+        try:
+            dir_fd = os.open(STATE_DIR, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            logger.warning("state_dir_fsync_failed reason=%s", exc)
     except Exception as exc:
         logger.warning("state_save_failed reason=%s", exc)
 
