@@ -42,18 +42,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # WIF: identity from the run's OIDC token, no stored key. Version
       # pinned at build 2026-08-11.
-      - uses: google-github-actions/auth@v3
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github
           service_account: wikistream-deploy@wikistream-505003.iam.gserviceaccount.com
 
       # Required: the bare `gcloud auth configure-docker` below needs the
       # gcloud CLI on the runner.
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Configure docker for Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
@@ -63,7 +63,7 @@ jobs:
         run: echo "sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ./consumer
           push: true
@@ -76,7 +76,7 @@ jobs:
       # Context is the repo root (Dockerfile COPYs are repo-root-relative,
       # mirroring docker-compose.yml's `build: {context: ., dockerfile: gx/Dockerfile}`).
       - name: Build and push (gx)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: gx/Dockerfile
@@ -106,17 +106,17 @@ jobs:
       TF_VAR_allowed_ips: ${{ secrets.TF_VAR_ALLOWED_IPS }}
       TF_VAR_oslogin_human_member: ${{ secrets.TF_VAR_OSLOGIN_HUMAN_MEMBER }}
     steps:
-      - uses: actions/checkout@v7 # fresh runner: no source tree carried over
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 — fresh runner: no source tree carried over
 
-      - uses: google-github-actions/auth@v3 # pinned at build 2026-08-11
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3 — pinned at build 2026-08-11
         with:
           workload_identity_provider: projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github
           service_account: wikistream-deploy@wikistream-505003.iam.gserviceaccount.com
 
       # setup-gcloud: the reset step at the bottom runs bare `gcloud`.
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
         with:
           terraform_version: 1.15.6 # match local dev (1.15.6); do not float
 
