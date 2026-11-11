@@ -725,12 +725,14 @@ def test_consume_flush_failure_counts_insert_failed(
     patch_state(monkeypatch, tmp_path)
     ch = FakeCh(fail=True)
 
-    with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
+    with caplog.at_level(logging.INFO, logger="wikistream.consumer"):
         run(consumer.consume_forever(ch, stop, None, counters))
 
     assert counters["insert_failed"] == 1000
     assert counters["total"] == 0
     assert "insert_failed events=1000 reason=shutdown" in caplog.text
+    assert "inserted events=0 total=0" in caplog.text
+    assert "inserted events=1000" not in caplog.text
     assert consumer.load_state()["last_event_id"] is None
 
 

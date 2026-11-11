@@ -306,7 +306,7 @@ class _StreamRun:
                 "inserted events=%d total=%d "
                 "dead_lettered=%d insert_failed=%d "
                 "duplicates_skipped=%d resumed_from=%s",
-                flushed,
+                flushed if landed else 0,
                 self.counters["total"],
                 self.counters["dead_lettered"],
                 self.counters["insert_failed"],
