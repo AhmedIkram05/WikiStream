@@ -51,6 +51,11 @@ resource "google_project_service" "apis" {
     "oslogin.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "bigquery.googleapis.com",
+    # infra/main's scheduled daily rollup and alert policies. Without these a
+    # fresh bootstrap -> main apply fails on the transfer config and policies.
+    "bigquerydatatransfer.googleapis.com",
+    "monitoring.googleapis.com",
+    "logging.googleapis.com",
   ])
   service = each.key
 }
