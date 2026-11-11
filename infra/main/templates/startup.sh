@@ -57,8 +57,10 @@ gcloud config set project "$GCP_PROJECT"
 #    CH_PASSWORD/CH_RO_PASSWORD must be EXPORTED: scripts/boot.sh runs as a
 #    child process (bash /opt/wikistream/scripts/boot.sh) and only exported
 #    vars reach it.
-export CH_PASSWORD=$(gcloud secrets versions access latest --secret=clickhouse-password)
-export CH_RO_PASSWORD=$(gcloud secrets versions access latest --secret=clickhouse-ro-password)
+CH_PASSWORD=$(gcloud secrets versions access latest --secret=clickhouse-password)
+export CH_PASSWORD
+CH_RO_PASSWORD=$(gcloud secrets versions access latest --secret=clickhouse-ro-password)
+export CH_RO_PASSWORD
 GF_PASSWORD=$(gcloud secrets versions access latest --secret=grafana-admin-password)
 
 # 5. Durable ch-data disk (Phase 3A): data survives every startup.sh-driven
