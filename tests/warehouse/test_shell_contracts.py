@@ -60,12 +60,20 @@ elif "clickhouse-client" in argv and "BACKUP" in argv:
     name = m.group(1) if m else "backup-unknown"
     os.makedirs(os.path.join(os.environ["CH_DATA_DIR"], "backups", name), exist_ok=True)
     print(f"20260910 10:00:01. {name} to Disk('backups','{name}') (BACKUP_CREATED)")
+elif "clickhouse-client" in argv and "--format TSV" in argv:
+    sys.stdin.read()
+    if "count()" in argv:
+        print("5")
+    elif "sum(edits)" in argv and "sum(bytes_delta)" in argv:
+        print("10\\t20")
+    elif "sum(edits)" in argv:
+        print("10")
 else:
     sys.stdin.read()
 """
 
 _CMD_STUB = """#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 log = os.environ.get("STUB_LOG")
 if log:
     with open(log, "a") as fh:
@@ -73,7 +81,42 @@ if log:
 if os.environ.get("STUB_{cmd}_FAIL".upper()) == "1":
     sys.stderr.write("stub {cmd}: injected failure\\n")
     sys.exit(1)
+if "{cmd}" == "bq":
+    argv = " ".join(sys.argv)
+    if "export_runs" in argv:
+        print(json.dumps([{"exported_at": "2026-09-10T10:00:00Z",
+                           "window_start": "2026-09-10T08:00:00Z",
+                           "window_end": "2026-09-10T10:00:00Z",
+                           "status": "success"}]))
+        sys.exit(0)
+    if "kpi_edit_sizes_hourly" in argv:
+        print(json.dumps([{"edits": 10}]))
+        sys.exit(0)
+    if "raw_events_sample" in argv:
+        print(json.dumps([{"row_count": 5}]))
+        sys.exit(0)
+    if "kpi_" in argv:
+        print(json.dumps([{"edits": 10, "bytes_delta": 20}]))
+        sys.exit(0)
 print("ok")
+"""
+
+_CURL_STUB = """#!/usr/bin/env python3
+import os, stat, sys
+argv = sys.argv[1:]
+log = os.environ.get("STUB_LOG")
+cfg = argv[argv.index("--config") + 1] if "--config" in argv else None
+if log:
+    with open(log, "a") as fh:
+        fh.write("curl " + " ".join(argv) + "\\n")
+        if cfg:
+            mode = oct(stat.S_IMODE(os.stat(cfg).st_mode))
+            fh.write("curl_config_mode " + mode + "\\n")
+            with open(cfg) as fch:
+                fh.write("curl_config " + fch.read().replace("\\n", "|") + "\\n")
+query = argv[argv.index("--data-binary") + 1] if "--data-binary" in argv else ""
+if "count()" in query:
+    print("1")
 """
 
 _HEAD_STUB = """#!/usr/bin/env python3
@@ -106,6 +149,7 @@ class _ShellHarness:
             "date": _DATE_STUB,
             "docker": _DOCKER_STUB,
             "bq": _CMD_STUB.replace("{cmd}", "bq"),
+            "curl": _CURL_STUB,
             "head": _HEAD_STUB,
         }.items():
             (stub_bin / name).write_text(text)
@@ -125,6 +169,7 @@ class _ShellHarness:
         env["BACKUP_BUCKET"] = "gs://stub-backups"
         env["STAGING_TMP"] = str(self.tmp / "staging")
         env["CH_DATA_DIR"] = str(self.tmp / "data")
+        env["PARITY_LOG_DIR"] = str(self.tmp / "parity-log")
         env["STUB_LOG"] = str(self.log)
         if fail_bq:
             env["STUB_BQ_FAIL"] = "1"
@@ -255,6 +300,25 @@ def test_export_explicit_window_passthrough(shell):
 def test_export_fails_loud_on_bq_failure(shell):
     proc = shell.run(WAREHOUSE / "export.sh", fail_bq=True)
     assert proc.returncode != 0, "bq failure must exit non-zero (OnFailure wiring)"
+
+
+def test_parity_pipeline_health_insert_uses_http(shell):
+    """AUD-07: the verdict insert must not use docker exec without -i (the
+    password pipe never reaches clickhouse-client). HTTP with a 0600 config
+    keeps the key out of argv and proves the row landed."""
+    proc = shell.run(WAREHOUSE / "parity.sh")
+    assert proc.returncode == 0, proc.stderr
+    log = shell.log.read_text()
+    curl_lines = [line for line in log.splitlines() if line.startswith("curl ")]
+    assert len(curl_lines) == 2  # INSERT + verification SELECT
+    assert all("stub-pass" not in line for line in curl_lines)
+    assert "curl_config_mode 0o600" in log
+    assert "X-ClickHouse-Key: stub-pass" in log
+    docker_lines = [line for line in log.splitlines() if line.startswith("docker ")]
+    assert not any(
+        "INSERT INTO default.pipeline_health" in line for line in docker_lines
+    )
+    assert "pipeline_health row not found" not in proc.stderr
 
 
 def test_backup_guard_prune_before_snapshot_and_keep_last_two(shell):
