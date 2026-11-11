@@ -70,6 +70,9 @@ def patch_ch(monkeypatch, env: dict, stale_seconds: int) -> None:
     monkeypatch.setattr(healthcheck, "CLICKHOUSE_USER", env["CH_USER"])
     monkeypatch.setattr(healthcheck, "CLICKHOUSE_PASSWORD", env["CH_PASSWORD"])
     monkeypatch.setattr(healthcheck, "HEALTH_STALE_SECONDS", stale_seconds)
+    # The SIGTERM path targets PID 1, which is the container init only inside
+    # Docker; tests model the container unless they explicitly opt out.
+    monkeypatch.setattr(healthcheck, "IN_CONTAINER", True)
 
 
 def recorder(monkeypatch) -> list:
@@ -308,6 +311,17 @@ def test_main_stale_and_heartbeat_stale_kills(monkeypatch):
     assert len(fake.queries) == 3
     assert HEARTBEAT_SQL_FRAGMENT in fake.queries[1]
     assert "source = 'gx'" in fake.queries[2]
+
+
+def test_main_stale_outside_container_does_not_kill(monkeypatch):
+    patch_ch(monkeypatch, ch_env(), stale_seconds=300)
+    monkeypatch.setattr(healthcheck, "IN_CONTAINER", False)
+    calls = recorder(monkeypatch)
+    fake = _FakeHealthClient([_stale_row(), _stale_row()])
+    monkeypatch.setattr(healthcheck, "get_client", lambda **kw: fake)
+    assert healthcheck.main() == 1
+    assert calls == []
+    assert fake.closed
 
 
 def test_main_fresh_max_inserted_no_kill(monkeypatch):

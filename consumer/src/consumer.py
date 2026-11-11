@@ -16,6 +16,7 @@ import signal
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx2
 from clickhouse_connect import get_async_client
@@ -89,14 +90,25 @@ def _wait_seconds(retry_ms: int | None, retry_after: int | None) -> float:
 
 
 def _parse_retry_after(response) -> int | None:
-    """Seconds-form Retry-After only; HTTP-date form falls back to the cap."""
+    """Retry-After in seconds or HTTP-date form; None when unparseable.
+
+    HTTP-date is converted to a delay from now so the reconnect wait honors
+    it instead of falling back to the 1s floor.
+    """
     value = response.headers.get("Retry-After")
     if value is None:
         return None
     try:
         return max(0, int(value))
     except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
         return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0, int((when - datetime.now(UTC)).total_seconds()))
 
 
 async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
@@ -141,6 +153,27 @@ def load_state() -> dict | None:
     if not isinstance(state.get("total"), int):
         state["total"] = 0
     return state
+
+
+def _load_state_or_quarantine() -> dict | None:
+    """Load state, moving a corrupt file aside so startup cannot crash-loop.
+
+    The cursor is lost with the corrupt file; log that loudly and continue from
+    the live tail rather than restarting forever against the same bytes.
+    """
+    try:
+        return load_state()
+    except StateLoadError as exc:
+        corrupt = f"{STATE_FILE}.corrupt.{time.time_ns()}"
+        try:
+            os.replace(STATE_FILE, corrupt)
+        except OSError as move_exc:
+            logger.error("state_quarantine_failed reason=%s", move_exc)
+            raise
+        logger.error(
+            "state_quarantined path=%s reason=%s cursor_lost=true", corrupt, exc
+        )
+        return None
 
 
 def save_state(last_event_id: str | None, total: int) -> None:
@@ -255,11 +288,16 @@ class _StreamRun:
         self.last_saved_mono = time.monotonic()
         self.last_stats_log = time.monotonic()
         self.retry_ms: int | None = None
+        self.initial_flush_done = False
         self.pending_flushes: set[asyncio.Task] = set()
         self.flush_sem = asyncio.Semaphore(FLUSH_CONCURRENCY)
         # Main batches must land in order: a later batch advancing the cursor
         # past an earlier in-flight/retrying batch is the permanent-loss bug.
         self.main_flush_lock = asyncio.Lock()
+        # DL flushes share one batcher; a second concurrent flush swaps the
+        # buffer to empty while the first is still in flight, so a successful
+        # first flush would release the mirror hold over an unlanded second.
+        self.dl_flush_lock = asyncio.Lock()
 
     async def flush_main(self, honor_stop: bool) -> None:
         """Flush the main batch in order, retrying until it lands.
@@ -341,26 +379,26 @@ class _StreamRun:
         within this process, so the replay window must stay at the ~1ms
         state-write, not the 2s debounce.
         """
-        try:
-            dropped, count, max_eid = await self.dl_batcher.flush(self.client)
-        except Exception as exc:
-            logger.warning("dl_flush_failed reason=%s", exc)
-            return
-        if dropped:
-            # at-most-once: cursor stays behind, replay re-runs them, and the
-            # mirror hold stays frozen so a successful main flush cannot skip
-            # these unlanded rows.
-            return
-        self.counters["dead_lettered"] += count
-        # Rows landed: release the mirror hold once the buffer is empty; during
-        # a burst (rows added while the insert awaited) re-freeze at the
-        # current watermark so the new unlanded rows stay protected.
-        if self.dl_batcher.pending_count == 0:
-            self.cursor.dl_drained()
-        advanced = self.cursor.dl_landed(max_eid)
-        if advanced is not None:
-            self.cursor.durable_id = advanced
-            save_state(self.cursor.durable_id, self.counters["total"])
+        async with self.dl_flush_lock:
+            try:
+                dropped, count, max_eid = await self.dl_batcher.flush(self.client)
+            except Exception as exc:
+                logger.warning("dl_flush_failed reason=%s", exc)
+                return
+            if dropped:
+                # at-most-once: cursor stays behind, replay re-runs them, and
+                # the mirror hold stays frozen so a successful main flush cannot
+                # skip these unlanded rows.
+                return
+            self.counters["dead_lettered"] += count
+            # Rows landed: release the mirror hold once the buffer is empty and
+            # no other DL flush can be in flight (the lock serializes them).
+            if self.dl_batcher.pending_count == 0:
+                self.cursor.dl_drained()
+            advanced = self.cursor.dl_landed(max_eid)
+            if advanced is not None:
+                self.cursor.durable_id = advanced
+                save_state(self.cursor.durable_id, self.counters["total"])
 
     async def dl_add(
         self, *, reason: str, wiki: str, title: str, event: str, event_id: str | None
@@ -468,7 +506,19 @@ class _StreamRun:
             return
         # Step 5: add to batch; step 6: flush when due.
         self.cursor.note_main_row()
-        if self.batcher.add((datetime.now(UTC), ev.data), ev_id):
+        due = self.batcher.add((datetime.now(UTC), ev.data), ev_id)
+        fresh_first = (
+            self.resumed_from is None
+            and not self.initial_flush_done
+            and ev_id is not None
+        )
+        if fresh_first:
+            # A fresh start has no durable cursor to replay from, so do not let
+            # the first batch sit in memory behind the 2s debounce: land it and
+            # save the cursor now, shrinking the SIGKILL window to one event.
+            self.initial_flush_done = True
+            await self.flush_main(honor_stop=True)
+        elif due:
             await self.spawn_main_flush()
         now_mono = time.monotonic()
         if now_mono - self.last_stats_log >= IDLE_STATS_INTERVAL:
@@ -618,7 +668,7 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    state = load_state()
+    state = _load_state_or_quarantine()
     resumed_from = state.get("last_event_id") if state else None
     if resumed_from is not None:
         logger.info("resumed_from=%s", resumed_from)
@@ -647,20 +697,47 @@ async def main() -> None:
             if await _sleep_or_stop(stop, 2.0):
                 return
     async with client:
-        task = asyncio.create_task(
+        consume_task = asyncio.create_task(
             consume_forever(client, stop, resumed_from, counters)
         )
         heartbeat_task = asyncio.create_task(heartbeat_loop(client, counters, stop))
-        await stop.wait()
-        # Graceful: up to 10s for the final flush + state save (SIGTERM path
-        # must flush), then force-cancel if the stream read blocks.
+        stop_task = asyncio.create_task(stop.wait())
         try:
-            await asyncio.wait_for(asyncio.gather(task, heartbeat_task), 10.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            for t in (task, heartbeat_task):
-                t.cancel()
-                with suppress(asyncio.CancelledError):
-                    await t
+            # Supervise BOTH workers: a dead consume task must not be masked by
+            # a still-ticking heartbeat. FIRST_COMPLETED wakes on stop too.
+            done, _ = await asyncio.wait(
+                {consume_task, heartbeat_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task not in done:
+                failed = next(t for t in done if t is not stop_task)
+                name = "consume_forever" if failed is consume_task else "heartbeat_loop"
+                logger.error("%s ended unexpectedly", name)
+                if failed.cancelled():
+                    raise RuntimeError(f"{name} was cancelled unexpectedly")
+                exc = failed.exception()
+                if exc is not None:
+                    raise RuntimeError(f"{name} failed") from exc
+                raise RuntimeError(f"{name} exited unexpectedly")
+            # Graceful: up to 10s for the final flush + state save (SIGTERM
+            # path must flush), then force-cancel if the stream read blocks.
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(consume_task, heartbeat_task), 10.0
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                for t in (consume_task, heartbeat_task):
+                    t.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await t
+        finally:
+            stop_task.cancel()
+            for t in (consume_task, heartbeat_task):
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(
+                stop_task, consume_task, heartbeat_task, return_exceptions=True
+            )
 
 
 if __name__ == "__main__":

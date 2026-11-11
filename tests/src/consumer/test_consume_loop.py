@@ -14,6 +14,7 @@ import logging
 import runpy
 import sys
 import time
+from email.utils import formatdate
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,6 +184,13 @@ def test_parse_retry_after():
     assert (
         consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "-3"})) == 0
     )
+    # HTTP-date form: convert to seconds from now, not the 1s floor.
+    future = formatdate(time.time() + 20, usegmt=True)
+    parsed = consumer._parse_retry_after(
+        SimpleNamespace(headers={"Retry-After": future})
+    )
+    assert 18 <= parsed <= 20
+    assert consumer._wait_seconds(None, parsed) == float(parsed)
 
 
 def test_sleep_or_stop_real():
@@ -272,6 +280,22 @@ def test_load_state_corrupt_fails_loudly(monkeypatch, tmp_path, caplog):
         path.write_text(json.dumps("just a string"))
         with pytest.raises(consumer.StateLoadError):
             consumer.load_state()
+
+
+def test_corrupt_state_is_quarantined(monkeypatch, tmp_path, caplog):
+    """A corrupt file must not make Docker restart into the same bytes
+    forever: move it aside, log the lost cursor, and start from the tail."""
+    patch_state(monkeypatch, tmp_path)
+    path = Path(consumer.STATE_FILE)
+    path.write_text("not json")
+    with caplog.at_level(logging.ERROR, logger="wikistream.consumer"):
+        assert consumer._load_state_or_quarantine() is None
+    assert "state_quarantined" in caplog.text
+    assert "cursor_lost=true" in caplog.text
+    assert not path.exists()
+    quarantined = list(tmp_path.glob("consumer_state.json.corrupt.*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text() == "not json"
 
 
 def test_load_state_unreadable_fails_loudly(monkeypatch, tmp_path):
@@ -368,12 +392,46 @@ def test_consume_happy_path_flush_and_state(
     assert counters["total"] == 1001
     assert counters["dead_lettered"] == 0
     assert counters["insert_failed"] == 0
-    assert ch.calls == [("default.raw_events", 1000), ("default.raw_events", 1)]
+    # Fresh start lands the first event immediately, then the 1000-row batch.
+    assert ch.calls == [("default.raw_events", 1), ("default.raw_events", 1000)]
     state = consumer.load_state()
     assert state["last_event_id"] == "1001"
     assert state["total"] == 1001
-    assert "inserted events=1000 total=1000" in caplog.text
+    assert "inserted events=1 total=1" in caplog.text
+    assert "inserted events=1000 total=1001" in caplog.text
     assert ch.dl_rows == []
+
+
+def test_fresh_start_persists_first_event_before_more_arrive(
+    monkeypatch, tmp_path, counters, stop
+):
+    """AUD-25: a fresh start has no cursor to replay from, so the first event
+    must land (and save) immediately instead of waiting for batch size or the
+    2s debounce."""
+    patch_state(monkeypatch, tmp_path)
+
+    class HoldOpen(FakeResponse):
+        async def aiter_bytes(self):
+            yield frame("1", payload())
+            await stop.wait()
+
+    patch_http(monkeypatch, [HoldOpen(chunks=[])])
+    ch = FakeCh()
+
+    async def scenario():
+        task = asyncio.create_task(consumer.consume_forever(ch, stop, None, counters))
+        try:
+            deadline = time.monotonic() + 5.0
+            while ch.rows == 0:
+                assert time.monotonic() < deadline, "first event was not flushed"
+                await asyncio.sleep(0.01)
+            assert ch.calls == [("default.raw_events", 1)]
+            assert consumer.load_state()["last_event_id"] == "1"
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, 5.0)
+
+    asyncio.run(scenario())
 
 
 def test_consume_all_idless_batch_counts_as_success(
@@ -510,6 +568,42 @@ def test_consume_dl_burst_flushes_in_batches(monkeypatch, tmp_path, counters, st
     dl_sizes = sorted(n for table, n in ch.calls if table == "default.dead_letter")
     assert dl_sizes == [50, 100, 100]
     assert len(ch.dl_rows) == 250
+    assert consumer.load_state()["last_event_id"] == "250"
+
+
+def test_consume_dl_flushes_are_serialized(monkeypatch, tmp_path, counters, stop):
+    """A second DL flush must not swap the buffer empty while the first is in
+    flight: that released the mirror hold over unlanded rows and let a later
+    main flush advance the cursor past them."""
+    patch_sleep(monkeypatch)
+    patch_http(
+        monkeypatch,
+        [FakeResponse(chunks=[b"".join(frame(str(i), "{bad") for i in range(1, 251))])],
+    )
+    patch_state(monkeypatch, tmp_path)
+
+    class SlowDLCh(FakeCh):
+        def __init__(self):
+            super().__init__()
+            self.dl_in_flight = 0
+            self.max_dl_in_flight = 0
+
+        async def insert(self, table, data, column_names=None, settings=None):
+            if table == "default.dead_letter":
+                self.dl_in_flight += 1
+                self.max_dl_in_flight = max(self.max_dl_in_flight, self.dl_in_flight)
+                await asyncio.sleep(0.01)
+                self.dl_in_flight -= 1
+            await super().insert(
+                table, data, column_names=column_names, settings=settings
+            )
+
+    ch = SlowDLCh()
+
+    run(consumer.consume_forever(ch, stop, None, counters))
+
+    assert ch.max_dl_in_flight == 1
+    assert counters["dead_lettered"] == 250
     assert consumer.load_state()["last_event_id"] == "250"
 
 
@@ -786,7 +880,7 @@ def test_failed_main_batch_retries_before_later_batch(
     patch_state(monkeypatch, tmp_path)
     ch = FailFirstInsert()
 
-    run(consumer.consume_forever(ch, stop, None, counters))
+    run(consumer.consume_forever(ch, stop, "0", counters))
 
     # Both 1000-row batches landed, in order; the cursor never skipped ahead.
     assert ch.calls == [
@@ -832,7 +926,7 @@ def test_consume_retry_in_place_recovers_without_reconnect(
     ch = OnceFailingCh(fail=True)
 
     with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
-        run(consumer.consume_forever(ch, stop, None, counters))
+        run(consumer.consume_forever(ch, stop, "0", counters))
 
     assert counters["insert_failed"] == 0  # recovered in place, nothing dropped
     assert counters["total"] == 1000
@@ -866,9 +960,9 @@ def test_dl_flush_does_not_advance_past_pending_main(
             while counters["dead_lettered"] == 0:
                 assert time.monotonic() < deadline, "DL timer never flushed"
                 await asyncio.sleep(0.01)
-            # DL row landed, but main 1-3 is unflushed: no cursor was persisted
-            # at all (a jump to "5" — the old behaviour — would have saved it).
-            assert consumer.load_state() is None
+            # Main 1 landed immediately on the fresh start, but 2-3 are still
+            # pending. The DL row 5 must not drag the cursor past them.
+            assert consumer.load_state()["last_event_id"] == "1"
         finally:
             stop.set()
             await asyncio.wait_for(task, 5.0)
@@ -989,7 +1083,7 @@ def test_consume_flush_job_exception_logs_flush_failed(
     ch = FakeCh()
 
     with caplog.at_level(logging.WARNING, logger="wikistream.consumer"):
-        run(consumer.consume_forever(ch, stop, None, counters))
+        run(consumer.consume_forever(ch, stop, "0", counters))
 
     assert "flush_failed reason=ch exploded" in caplog.text
     assert counters["total"] == 1000  # final flush still lands everything
@@ -1127,7 +1221,7 @@ def test_consume_60s_idle_stats_line(monkeypatch, tmp_path, counters, stop, capl
     monkeypatch.setattr(consumer, "IDLE_STATS_INTERVAL", 0.0)
 
     with caplog.at_level(logging.INFO, logger="wikistream.consumer"):
-        run(consumer.consume_forever(ch, stop, None, counters))
+        run(consumer.consume_forever(ch, stop, "0", counters))
 
     assert "inserted events=0 total=0 dead_lettered=0 insert_failed=0" in caplog.text
 
@@ -1179,6 +1273,37 @@ def test_main_happy_path_graceful_shutdown(monkeypatch, tmp_path):
     monkeypatch.setattr(consumer, "heartbeat_loop", fake_heartbeat)
 
     run(consumer.main())  # must return without hanging
+
+
+def test_main_consume_task_crash_is_fatal(monkeypatch, tmp_path):
+    """A dead consume task must not be masked by a heartbeat that keeps
+    ticking; main() surfaces the failure instead of wedging silently."""
+    patch_state(monkeypatch, tmp_path)
+
+    async def crash(client, stop_ev, resumed_from, counters):
+        raise RuntimeError("boom")
+
+    async def heartbeat(client, counters, stop_ev):
+        await asyncio.sleep(3600)
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", crash)
+    monkeypatch.setattr(consumer, "heartbeat_loop", heartbeat)
+
+    with pytest.raises(RuntimeError, match="consume_forever failed") as exc:
+        run(consumer.main())
+
+    assert isinstance(exc.value.__cause__, RuntimeError)
 
 
 def test_main_resumes_from_saved_state(monkeypatch, tmp_path, caplog):

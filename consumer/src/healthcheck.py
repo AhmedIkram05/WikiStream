@@ -47,6 +47,15 @@ HEALTHCHECK_GX_TABLE = (
     os.environ.get("HEALTHCHECK_GX_TABLE") or "default.pipeline_health"
 )
 HEALTHCHECK_GX_STALE_SECONDS = os.environ.get("HEALTHCHECK_GX_STALE_SECONDS", "5400")
+# PID 1 is uv inside the consumer container, but the host init outside it.
+# Default the SIGTERM path on only when Docker's marker file is present.
+IN_CONTAINER = (
+    os.environ.get(
+        "HEALTHCHECK_IN_CONTAINER",
+        "1" if os.path.exists("/.dockerenv") else "0",
+    )
+    == "1"
+)
 
 logger = logging.getLogger("wikistream.healthcheck")
 
@@ -186,6 +195,11 @@ def main() -> int:
                         max_inserted,
                         stale_seconds,
                     )
+                    if not IN_CONTAINER:
+                        logger.error(
+                            "healthcheck refusing to signal PID 1 outside container"
+                        )
+                        return 1
                     os.kill(1, signal.SIGTERM)
             # A failing GX verdict makes the pipeline health signal red (exit 1
             # = container unhealthy) WITHOUT restarting anything: data-quality
