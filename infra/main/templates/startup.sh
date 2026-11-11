@@ -41,9 +41,11 @@ cd /opt/wikistream
 
 # 2b. Containers read bind mounts as unprivileged users (grafana uid 472), but
 #     umask 077 leaves the clone 700/600 root — grafana provisioning dies with
-#     "permission denied". Open the tree (r+X) BEFORE rendering secrets below
-#     so .env still lands 600. Found 2026-08-11 on first prod boot.
+#     "permission denied". Open the tree (r+X) BEFORE rendering secrets below.
+#     The recursive chmod also opens an existing .env on reboot; restore 600
+#     here and again after the rewrite so the secrets never stay world-readable.
 chmod -R a+rX /opt/wikistream
+[ -f /opt/wikistream/.env ] && chmod 600 /opt/wikistream/.env
 
 # 3. Project id from the metadata server — deterministic, no gcloud config.
 #    Pin it: warehouse/export.sh + parity.sh call bq/gcloud storage without
@@ -77,7 +79,11 @@ if [ -b "$DEV" ]; then
   export CH_DATA_DIR=/mnt/ch-data/clickhouse
 fi
 
-# 6. .env for compose (the Phase 1 ${VAR:-default} seams, now real)
+# 6. .env for compose (the Phase 1 ${VAR:-default} seams, now real).
+#    install -m 600 truncates/creates the file with the right mode before the
+#    heredoc; cat preserves that mode. Do not rely on umask alone: on reboot the
+#    file already exists and the recursive chmod above may have left it 644.
+install -m 600 /dev/null .env
 cat > .env <<EOF
 CLICKHOUSE_PASSWORD=${CH_PASSWORD}
 GF_SECURITY_ADMIN_PASSWORD=${GF_PASSWORD}
