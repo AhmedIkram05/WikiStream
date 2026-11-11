@@ -169,6 +169,32 @@ def test_export_default_trailing_two_hour_window(shell):
     assert "wikistream.kpi_edits_hourly_staging" in log
 
 
+def test_export_overlapping_windows_replace_staging(shell):
+    """AUD-02: the trailing 2-hour window re-exports the overlap hour. Each
+    staging load must replace the previous run's rows, not append duplicate
+    source keys that make BigQuery's MERGE abort. export_runs stays append."""
+    first = shell.run(
+        WAREHOUSE / "export.sh", "2026-09-10 08:00:00", "2026-09-10 10:00:00"
+    )
+    second = shell.run(
+        WAREHOUSE / "export.sh", "2026-09-10 09:00:00", "2026-09-10 11:00:00"
+    )
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+
+    loads = [
+        line
+        for line in shell.log.read_text().splitlines()
+        if line.startswith("bq load")
+    ]
+    staging = [line for line in loads if "_staging" in line]
+    runs = [line for line in loads if "export_runs" in line]
+    assert len(staging) == 8  # 4 tables x 2 overlapping runs
+    assert all("--replace" in line for line in staging)
+    assert len(runs) == 2
+    assert all("--replace" not in line for line in runs)
+
+
 def test_export_password_never_in_docker_argv(shell):
     """M2: the ClickHouse password travels via stdin (`--password` with no
     value, like backup.sh) — never in docker/clickhouse-client argv, where

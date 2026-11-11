@@ -9,10 +9,10 @@
 # bq. CLICKHOUSE_PASSWORD is required (sourced from /opt/wikistream/.env
 # when present, else the environment).
 #
-# Idempotent per window: bq load lands rows in <table>_staging, then a MERGE
-# (kpi tables) or window DELETE+INSERT (raw sample, no natural key) converges
-# the final table — re-running a window upserts the same keys instead of
-# appending duplicates. Run at :00 via wikistream-export.timer.
+# Idempotent per window: bq load --replace lands the window in <table>_staging
+# (so an overlapping run cannot leave duplicate source keys behind), then a
+# MERGE (kpi tables) or window DELETE+INSERT (raw sample, no natural key)
+# converges the final table. Run at :00 via wikistream-export.timer.
 # ponytail: staging is never vacuumed; the MERGE filters the window so leftover
 # rows are harmless (same-key upsert), add expiry if staging cost matters.
 set -euo pipefail
@@ -95,7 +95,10 @@ for entry in "${TABLES[@]}"; do
   rows="$(wc -l < "$object" | tr -d ' ')"
   if [ -s "$object" ]; then
     gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null
-    bq load --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
+    # --replace, not append: the trailing 2-hour window overlaps the previous
+    # run, so appending to persistent staging gives MERGE two source rows per
+    # key and BigQuery aborts. export_runs stays append-only below.
+    bq load --replace --source_format=NEWLINE_DELIMITED_JSON --time_partitioning_field="$partfield" \
       --schema="schemas/$btable.json" "$BQ_DATASET.$stable" "$object"
     merge_window "$mergesql"
   else
