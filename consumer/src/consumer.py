@@ -247,56 +247,73 @@ class _StreamRun:
         self.retry_ms: int | None = None
         self.pending_flushes: set[asyncio.Task] = set()
         self.flush_sem = asyncio.Semaphore(FLUSH_CONCURRENCY)
+        # Main batches must land in order: a later batch advancing the cursor
+        # past an earlier in-flight/retrying batch is the permanent-loss bug.
+        self.main_flush_lock = asyncio.Lock()
 
     async def flush_main(self, honor_stop: bool) -> None:
-        """Flush the main batch with bounded in-place retry.
+        """Flush the main batch in order, retrying until it lands.
 
-        EventBatcher.flush re-queues rows on failure, so we retry after each
-        backoff in FLUSH_RETRY_SCHEDULE; only when the schedule is exhausted do
-        we abandon the batch (drop + unmark, counted as insert_failed) so a
-        reconnect replay can still refill the dedup ring. honor_stop=True for
-        background flushes (a shutdown mid-retry leaves the rows for the final
-        flush); False for the final flush, which must not bail on the stop flag.
+        EventBatcher.flush re-queues rows on failure, so a background flush
+        keeps retrying with the schedule's last delay until the stop signal
+        (the final drain retries the schedule once, then abandons as a
+        last-resort shutdown path; the cursor is still behind it, so replay
+        recovers the rows). The lock serialises main flushes, so no later batch
+        can advance the cursor past an earlier unfinished one. honor_stop=True
+        for background flushes; False for the final flush, which must not bail
+        on the stop flag.
         """
-        attempt = 0
-        while True:
-            mid, flushed = await self.batcher.flush(self.client)
-            if flushed == 0:
-                # Nothing pending: a concurrent flush task already drained the
-                # batch. Not a failure — do not retry or count it.
-                break
-            if mid is not None:
-                self.counters["total"] += flushed
-                self.cursor.main_flushed(mid)
-                break
-            if attempt >= len(FLUSH_RETRY_SCHEDULE):
-                dropped = self.batcher.abandon()
-                self.counters["insert_failed"] += dropped
-                logger.warning(
-                    "insert_failed events=%d reason=%s", dropped, "batch dropped"
-                )
-                break
-            delay = FLUSH_RETRY_SCHEDULE[attempt]
-            attempt += 1
-            logger.warning("insert_retry events=%d attempt=%d", flushed, attempt)
-            if honor_stop:
-                if await _sleep_or_stop(self.stop, delay):
-                    # Shutdown mid-retry: leave rows queued for the final flush.
+        async with self.main_flush_lock:
+            attempt = 0
+            landed = False
+            flushed = 0
+            while True:
+                mid, flushed = await self.batcher.flush(self.client)
+                landed = mid is not None
+                if flushed == 0:
+                    # Nothing pending: a concurrent flush task already drained
+                    # the batch. Not a failure — do not retry or count it.
                     break
-            else:
-                await asyncio.sleep(delay)
-        logger.info(
-            "inserted events=%d total=%d "
-            "dead_lettered=%d insert_failed=%d "
-            "duplicates_skipped=%d resumed_from=%s",
-            flushed,
-            self.counters["total"],
-            self.counters["dead_lettered"],
-            self.counters["insert_failed"],
-            self.counters["duplicates_skipped"],
-            self.resumed_from or "none",
-        )
-        self.last_stats_log = time.monotonic()
+                if landed:
+                    self.counters["total"] += flushed
+                    if mid is not None:
+                        self.cursor.main_flushed(mid)
+                    break
+                if not honor_stop and (
+                    not FLUSH_RETRY_SCHEDULE or attempt >= len(FLUSH_RETRY_SCHEDULE)
+                ):
+                    dropped = self.batcher.abandon()
+                    self.counters["insert_failed"] += dropped
+                    logger.warning(
+                        "insert_failed events=%d reason=%s", dropped, "shutdown"
+                    )
+                    break
+                delay = (
+                    FLUSH_RETRY_SCHEDULE[min(attempt, len(FLUSH_RETRY_SCHEDULE) - 1)]
+                    if FLUSH_RETRY_SCHEDULE
+                    else 1.0
+                )
+                attempt += 1
+                logger.warning("insert_retry events=%d attempt=%d", flushed, attempt)
+                if honor_stop:
+                    if await _sleep_or_stop(self.stop, delay):
+                        # Shutdown mid-retry: leave rows queued for the final
+                        # flush.
+                        break
+                else:
+                    await asyncio.sleep(delay)
+            logger.info(
+                "inserted events=%d total=%d "
+                "dead_lettered=%d insert_failed=%d "
+                "duplicates_skipped=%d resumed_from=%s",
+                flushed,
+                self.counters["total"],
+                self.counters["dead_lettered"],
+                self.counters["insert_failed"],
+                self.counters["duplicates_skipped"],
+                self.resumed_from or "none",
+            )
+            self.last_stats_log = time.monotonic()
 
     async def flush_job(self) -> None:
         try:
