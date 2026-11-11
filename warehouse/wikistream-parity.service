@@ -9,6 +9,7 @@ OnFailure=wikistream-fail-notify@%n.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=1800
 ExecStart=/opt/wikistream/warehouse/parity.sh
 StandardOutput=journal
 StandardError=journal
