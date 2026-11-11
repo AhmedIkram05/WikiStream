@@ -282,6 +282,22 @@ def test_load_state_corrupt_fails_loudly(monkeypatch, tmp_path, caplog):
             consumer.load_state()
 
 
+def test_corrupt_state_is_quarantined(monkeypatch, tmp_path, caplog):
+    """A corrupt file must not make Docker restart into the same bytes
+    forever: move it aside, log the lost cursor, and start from the tail."""
+    patch_state(monkeypatch, tmp_path)
+    path = Path(consumer.STATE_FILE)
+    path.write_text("not json")
+    with caplog.at_level(logging.ERROR, logger="wikistream.consumer"):
+        assert consumer._load_state_or_quarantine() is None
+    assert "state_quarantined" in caplog.text
+    assert "cursor_lost=true" in caplog.text
+    assert not path.exists()
+    quarantined = list(tmp_path.glob("consumer_state.json.corrupt.*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text() == "not json"
+
+
 def test_load_state_unreadable_fails_loudly(monkeypatch, tmp_path):
     # A present-but-unreadable path (here: a directory) raises the same way.
     monkeypatch.setattr(consumer, "STATE_FILE", str(tmp_path))

@@ -155,6 +155,27 @@ def load_state() -> dict | None:
     return state
 
 
+def _load_state_or_quarantine() -> dict | None:
+    """Load state, moving a corrupt file aside so startup cannot crash-loop.
+
+    The cursor is lost with the corrupt file; log that loudly and continue from
+    the live tail rather than restarting forever against the same bytes.
+    """
+    try:
+        return load_state()
+    except StateLoadError as exc:
+        corrupt = f"{STATE_FILE}.corrupt.{time.time_ns()}"
+        try:
+            os.replace(STATE_FILE, corrupt)
+        except OSError as move_exc:
+            logger.error("state_quarantine_failed reason=%s", move_exc)
+            raise
+        logger.error(
+            "state_quarantined path=%s reason=%s cursor_lost=true", corrupt, exc
+        )
+        return None
+
+
 def save_state(last_event_id: str | None, total: int) -> None:
     """Atomically persist state (tmp + os.replace); never crash."""
     try:
@@ -634,7 +655,7 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    state = load_state()
+    state = _load_state_or_quarantine()
     resumed_from = state.get("last_event_id") if state else None
     if resumed_from is not None:
         logger.info("resumed_from=%s", resumed_from)
