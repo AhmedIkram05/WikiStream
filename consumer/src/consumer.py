@@ -16,6 +16,7 @@ import signal
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx2
 from clickhouse_connect import get_async_client
@@ -89,14 +90,25 @@ def _wait_seconds(retry_ms: int | None, retry_after: int | None) -> float:
 
 
 def _parse_retry_after(response) -> int | None:
-    """Seconds-form Retry-After only; HTTP-date form falls back to the cap."""
+    """Retry-After in seconds or HTTP-date form; None when unparseable.
+
+    HTTP-date is converted to a delay from now so the reconnect wait honors
+    it instead of falling back to the 1s floor.
+    """
     value = response.headers.get("Retry-After")
     if value is None:
         return None
     try:
         return max(0, int(value))
     except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
         return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0, int((when - datetime.now(UTC)).total_seconds()))
 
 
 async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:

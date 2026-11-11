@@ -14,6 +14,7 @@ import logging
 import runpy
 import sys
 import time
+from email.utils import formatdate
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,6 +184,13 @@ def test_parse_retry_after():
     assert (
         consumer._parse_retry_after(SimpleNamespace(headers={"Retry-After": "-3"})) == 0
     )
+    # HTTP-date form: convert to seconds from now, not the 1s floor.
+    future = formatdate(time.time() + 20, usegmt=True)
+    parsed = consumer._parse_retry_after(
+        SimpleNamespace(headers={"Retry-After": future})
+    )
+    assert 18 <= parsed <= 20
+    assert consumer._wait_seconds(None, parsed) == float(parsed)
 
 
 def test_sleep_or_stop_real():
