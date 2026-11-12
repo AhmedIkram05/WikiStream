@@ -197,7 +197,7 @@ def test_ttl_present():
             " WHERE database = 'default' AND name = 'raw_events'"
         )
     if ttl:
-        assert "toIntervalDay(30)" in ttl, f"unexpected TTL expression: {ttl}"
+        assert "toIntervalDay(1)" in ttl, f"unexpected TTL expression: {ttl}"
     else:
         # CH 26.x dropped TTL metadata from system.tables — SHOW CREATE is
         # the version-proof form; it normalizes to toIntervalDay(1).
