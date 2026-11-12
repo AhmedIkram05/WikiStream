@@ -47,6 +47,21 @@ it further requires custom roles or resource conditions; do that before sharing
 the project with other operators, and re-run the bootstrap apply so the change
 is recorded in state.
 
+## Pinned identity constants
+
+A few bootstrap identities are intentionally pinned to the live project because
+they cannot be discovered before CI authenticates:
+
+- state bucket: `<project_id>-terraform-state` (also the `infra/main` backend)
+- deploy SA: `wikistream-deploy@<project_id>.iam.gserviceaccount.com`
+- WIF provider: `projects/<project_number>/locations/global/workloadIdentityPools/wikistream-ci/providers/github`
+- Artifact Registry: `us-central1-docker.pkg.dev/<project_id>/wikistream-consumer`
+
+Runtime project wiring is **not** pinned: `startup.sh` reads the project id from
+the metadata server and writes `GCP_PROJECT`, `CONSUMER_IMAGE` and `GX_IMAGE`
+into `.env`; Grafana, the warehouse scripts and the backup/export defaults derive
+from that value.
+
 ## Apply (once, by hand)
 
 ```sh

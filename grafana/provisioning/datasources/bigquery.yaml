@@ -7,4 +7,4 @@ datasources:
     isDefault: false
     jsonData:
       authenticationType: gce
-      defaultProject: wikistream-505003
+      defaultProject: ${GCP_PROJECT}
