@@ -1,5 +1,12 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   clickhouse:
+    logging: *default-logging
     image: clickhouse/clickhouse-server:26.3.17
     container_name: wikistream-clickhouse
     restart: unless-stopped
@@ -28,6 +35,7 @@ services:
       nofile: { soft: 262144, hard: 262144 }
 
   consumer:
+    logging: *default-logging
     build: ./consumer
     image: ${CONSUMER_IMAGE:-wikistream-consumer:local}
     container_name: wikistream-consumer
@@ -58,6 +66,7 @@ services:
       start_period: 60s
 
   grafana:
+    logging: *default-logging
     image: grafana/grafana:13.1.1
     container_name: wikistream-grafana
     restart: unless-stopped
@@ -87,6 +96,7 @@ services:
   # must resolve the manifest. Local dev builds the same ref via `docker
   # compose build gx`.
   gx:
+    logging: *default-logging
     platform: linux/amd64  # zstd (via asynch) has no arm64 wheel; prod is amd64
     build:
       context: .
