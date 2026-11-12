@@ -7,7 +7,9 @@ pages on failure, the template's plumbing matches the script's expectations,
 and boot.sh actually installs the pieces. Greppable invariants, cheap to keep.
 """
 
+import json
 import os
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).parents[1]
@@ -40,7 +42,54 @@ def test_notify_failure_script_is_guarded():
     assert os.access(path, os.X_OK), "notify-failure.sh must stay executable"
     text = path.read_text()
     assert "SLACK_WEBHOOK_URL missing" in text, "missing env must fail loudly"
-    assert "--data-urlencode" in text, "payload must stay form-encoded"
+    assert "Content-type: application/json" in text, "Slack needs a JSON body"
+    assert "--data-urlencode" not in text, "form-encoded payloads are not Slack JSON"
+    assert '{"text":' in text, "JSON payload lost its text field"
+
+
+def _notify_env(tmp_path: Path) -> tuple[dict, Path]:
+    curl = tmp_path / "curl"
+    curl.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "argv = sys.argv[1:]\n"
+        "payload = argv[argv.index('--data') + 1]\n"
+        "json.loads(payload)\n"
+        "open(os.environ['STUB_LOG'], 'w').write(payload)\n"
+    )
+    curl.chmod(0o755)
+    log = tmp_path / "payload.json"
+    env = os.environ | {
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "SLACK_WEBHOOK_URL": "https://example.invalid/hook",
+        "STUB_LOG": str(log),
+    }
+    return env, log
+
+
+def test_notify_failure_sends_json_payload(tmp_path):
+    env, log = _notify_env(tmp_path)
+    proc = subprocess.run(
+        [str(WAREHOUSE / "notify-failure.sh"), "wikistream-export.service"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(log.read_text())
+    assert "wikistream-export.service" in payload["text"]
+
+
+def test_notify_failure_rejects_unsafe_unit_name(tmp_path):
+    env, log = _notify_env(tmp_path)
+    proc = subprocess.run(
+        [str(WAREHOUSE / "notify-failure.sh"), 'bad"unit'],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2
+    assert not log.exists()
 
 
 def test_boot_installs_the_notify_template():
