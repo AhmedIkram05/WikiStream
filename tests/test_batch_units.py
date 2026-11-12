@@ -87,8 +87,7 @@ def test_notify_failure_reads_only_the_slack_secret(tmp_path):
     env.pop("SLACK_WEBHOOK_URL", None)
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "CLICKHOUSE_PASSWORD=not-for-the-notifier\n"
-        "SLACK_WEBHOOK_URL=https://example.invalid/hook\n"
+        "GCP_PROJECT=test-project\nSLACK_WEBHOOK_URL=https://example.invalid/hook\n"
     )
     env["WIKISTREAM_ENV_FILE"] = str(env_file)
     proc = subprocess.run(
