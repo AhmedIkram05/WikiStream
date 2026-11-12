@@ -75,6 +75,8 @@ services:
     environment:
       GF_PLUGINS_PREINSTALL: grafana-clickhouse-datasource@4.20.0,grafana-bigquery-datasource@3.2.0
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      # Project-scoped datasource default; startup.sh writes the real id.
+      GCP_PROJECT: ${GCP_PROJECT:-wikistream-505003}
       # Read-only identity only: Grafana must never hold the write password.
       CLICKHOUSE_RO_PASSWORD: ${CLICKHOUSE_RO_PASSWORD:-wikistream_ro_dev_password}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
@@ -91,10 +93,8 @@ services:
   # Phase 4B (Q8/Q10): periodic data-quality gate. NOT a long-running service —
   # boot-time `up -d` runs suite.py once (harmless, usually exits non-zero
   # before boot.sh bootstraps the user) and the hourly systemd timer drives it
-  # via `docker compose run --rm gx`. Image is HARDCODED: nothing on the VM
-  # sets GX_IMAGE and startup.sh is frozen, so boot's `docker compose pull`
-  # must resolve the manifest. Local dev builds the same ref via `docker
-  # compose build gx`.
+  # via `docker compose run --rm gx`. startup.sh writes GX_IMAGE for the VM;
+  # local dev builds the same ref via `docker compose build gx`.
   gx:
     logging: *default-logging
     platform: linux/amd64  # zstd (via asynch) has no arm64 wheel; prod is amd64
