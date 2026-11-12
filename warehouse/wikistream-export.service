@@ -8,6 +8,8 @@ OnFailure=wikistream-fail-notify@%n.service
 [Service]
 Type=oneshot
 TimeoutStartSec=1800
-ExecStart=/opt/wikistream/warehouse/export.sh
+# Shared lock with parity.sh: a Persistent=true catch-up can start parity while
+# an export is already active, which After= alone does not prevent.
+ExecStart=/usr/bin/flock -w 3600 /run/wikistream-warehouse.lock /opt/wikistream/warehouse/export.sh
 StandardOutput=journal
 StandardError=journal
