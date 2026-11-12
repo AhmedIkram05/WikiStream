@@ -57,7 +57,6 @@ module "iam" {
 module "storage" {
   source                = "./modules/storage"
   project_id            = var.project_id
-  region                = var.region
   service_account_email = module.iam.service_account_email
 }
 

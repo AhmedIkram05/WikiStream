@@ -3,11 +3,6 @@ variable "project_id" {
   type        = string
 }
 
-variable "region" {
-  description = "Region of the wikistream-consumer repository"
-  type        = string
-}
-
 variable "service_account_email" {
   description = "VM service account granted roles/artifactregistry.reader"
   type        = string
