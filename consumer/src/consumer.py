@@ -72,9 +72,9 @@ DL_FLUSH_INTERVAL = 5.0
 FLUSH_CONCURRENCY = 2
 
 # Bounded in-place retry for a failed main-batch insert: rows are re-queued by
-# EventBatcher.flush and re-attempted after these backoff delays before the
-# batch is abandoned (dropped + unmarked, counted as insert_failed). Kept
-# short so the shutdown drain stays inside main()'s 10s budget. Empty
+# EventBatcher.flush and re-attempted after these backoff delays. Background
+# flushes keep retrying; the final shutdown drain gives up after this schedule
+# and leaves the cursor behind so the next start replays the batch. Empty
 # schedule disables retry (tests that exercise the reconnect-replay fallback).
 FLUSH_RETRY_SCHEDULE = (0.5, 1.0, 2.0)
 
