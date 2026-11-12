@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 4B — daily ClickHouse `default` DB backup to the local `backups`
 # disk (06:20 via wikistream-backup.timer), lifted to GCS
-# (wikistream-505003-backups), local kept last 2. Cadence + retention sized
+# (gs://<project>-backups), local kept last 2. Cadence + retention sized
 # together (implementation-log §9.12): raw TTL 1 day so raw (~9 GB) +
 # keep-last-2 backups (~2 × 7-9 GB) fit the 50 GB disk with headroom.
 # Targets the Debian bookworm VM (GNU date). The BACKUP direction runs as the
@@ -25,14 +25,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if [ -f /opt/wikistream/.env ]; then
+if [ -f "${WIKISTREAM_ENV_FILE:-/opt/wikistream/.env}" ]; then
   # Extract only what we need — sourcing a rotated .env as shell code would let
   # a value containing quotes/semicolons mangle the variables (compose parses
   # the same file safely; shell source does not).
   # `|| true` on each: a missing key makes grep exit 1, which under pipefail
   # would abort here and never reach the friendly diagnostic below.
-  CLICKHOUSE_PASSWORD="$(grep -E '^CLICKHOUSE_PASSWORD=' /opt/wikistream/.env | tail -n1 | cut -d= -f2- || true)"
-  CH_DATA_DIR="${CH_DATA_DIR:-$(grep -E '^CH_DATA_DIR=' /opt/wikistream/.env | tail -n1 | cut -d= -f2- || true)}"
+  ENV_FILE="${WIKISTREAM_ENV_FILE:-/opt/wikistream/.env}"
+  CLICKHOUSE_PASSWORD="$(grep -E '^CLICKHOUSE_PASSWORD=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+  CH_DATA_DIR="${CH_DATA_DIR:-$(grep -E '^CH_DATA_DIR=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)}"
+  GCP_PROJECT="${GCP_PROJECT:-$(grep -E '^GCP_PROJECT=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)}"
 fi
 
 if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then
@@ -42,7 +44,7 @@ fi
 
 : "${CLICKHOUSE_CONTAINER:=wikistream-clickhouse}"
 : "${CH_DATA_DIR:=/mnt/ch-data}"
-: "${BACKUP_BUCKET:=gs://wikistream-505003-backups}"
+: "${BACKUP_BUCKET:=gs://${GCP_PROJECT:-wikistream-505003}-backups}"
 
 NAME="backup-$(date -u +%Y%m%d-%H%M%S)"
 
