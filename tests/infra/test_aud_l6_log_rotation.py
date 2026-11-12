@@ -11,4 +11,4 @@ def test_all_services_share_bounded_logging():
     assert "x-logging: &default-logging" in text
     assert 'max-size: "10m"' in text
     assert 'max-file: "3"' in text
-    assert text.count("logging: *default-logging") == 4
+    assert text.count("logging: *default-logging") == 5
