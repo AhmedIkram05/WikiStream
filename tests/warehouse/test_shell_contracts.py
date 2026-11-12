@@ -119,22 +119,6 @@ if "count()" in query:
     print("1")
 """
 
-_HEAD_STUB = """#!/usr/bin/env python3
-# GNU-head semantics (the batch scripts use `head -n -K`, unsupported by BSD
-# head — fine on the VM/CI runners, shimmed here so dev boxes behave the same).
-import sys
-args = sys.argv[1:]
-k = 10
-if "-n" in args:
-    k = int(args[args.index("-n") + 1])
-lines = sys.stdin.readlines()
-if k > 0:
-    lines = lines[:k]
-elif k < 0:
-    lines = lines[:k]
-sys.stdout.writelines(lines)
-"""
-
 
 class _ShellHarness:
     def __init__(self, tmp_path: Path):
@@ -150,7 +134,6 @@ class _ShellHarness:
             "docker": _DOCKER_STUB,
             "bq": _CMD_STUB.replace("{cmd}", "bq"),
             "curl": _CURL_STUB,
-            "head": _HEAD_STUB,
         }.items():
             (stub_bin / name).write_text(text)
             (stub_bin / name).chmod(0o755)
