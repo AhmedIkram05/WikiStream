@@ -94,6 +94,8 @@ resource "google_service_account" "deploy" {
 # Project-level roles the deploy SA needs across infra/main's resources.
 # projectIamAdmin: infra/main binds roles/compute.osLogin for the human
 # account (project-level IAM) — requires resourcemanager.projects.setIamPolicy.
+# These are broad by design for Terraform-created project primitives; every
+# role is justified in infra/bootstrap/README.md ("Deploy SA roles").
 resource "google_project_iam_member" "deploy_project_roles" {
   for_each = toset([
     "roles/compute.admin",

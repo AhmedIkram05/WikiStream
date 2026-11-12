@@ -3,7 +3,7 @@
 # 2-day lifecycle keeps the bucket from growing unbounded. The VM SA writes
 # (objectCreator) and reads back for restore (objectViewer).
 resource "google_storage_bucket" "wikistream_backups" {
-  name                        = "wikistream-505003-backups"
+  name                        = "${var.project_id}-backups"
   location                    = "US"
   project                     = var.project_id
   uniform_bucket_level_access = true
