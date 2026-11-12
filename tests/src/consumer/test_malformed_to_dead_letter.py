@@ -190,6 +190,13 @@ def test_malformed_event_lands_in_dead_letter(monkeypatch, tmp_path):
 
             assert not task.done(), "consumer task ended — crash or reconnect storm"
             assert fixture.connections <= 2, fixture.connections
+            # The row can become visible before do_dl_flush increments the
+            # in-process counter (async_insert returns after queueing). Wait for
+            # the counter instead of racing the ClickHouse visibility check.
+            deadline = time.monotonic() + DEADLINE_S
+            while counters["dead_lettered"] != 1:
+                assert time.monotonic() < deadline, counters
+                await asyncio.sleep(POLL_S)
             assert counters["dead_lettered"] == 1, counters
 
             # Graceful shutdown: stop + stream end; the pending 5-row batch is
