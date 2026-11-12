@@ -22,9 +22,10 @@ cd "$SCRIPT_DIR"
 
 ENV_FILE="${WIKISTREAM_ENV_FILE:-/opt/wikistream/.env}"
 if [ -f "$ENV_FILE" ]; then
-  # Read only the key we need. Sourcing .env would execute arbitrary shell from
+  # Read only the keys we need. Sourcing .env would execute arbitrary shell from
   # a rotated file (and values with quotes/semicolons mangle the variables).
   CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-$(grep -E '^CLICKHOUSE_PASSWORD=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)}"
+  GCP_PROJECT="${GCP_PROJECT:-$(grep -E '^GCP_PROJECT=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)}"
 fi
 
 if [ -z "${CLICKHOUSE_PASSWORD:-}" ]; then
@@ -34,7 +35,7 @@ fi
 
 : "${CLICKHOUSE_CONTAINER:=wikistream-clickhouse}"
 : "${BQ_DATASET:=wikistream}"
-: "${STAGING_BUCKET:=gs://wikistream-505003-bq-staging}"
+: "${STAGING_BUCKET:=gs://${GCP_PROJECT:-wikistream-505003}-bq-staging}"
 : "${STAGING_TMP:=/tmp/wikistream-export}"
 
 if [ $# -eq 2 ]; then
