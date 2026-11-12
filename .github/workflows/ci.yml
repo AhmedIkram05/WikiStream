@@ -117,6 +117,29 @@ jobs:
           files: ch-coverage.xml,gx-coverage.xml
           fail_ci_if_error: false
 
+  # Live BigQuery gate for AUD-02: the original failure was a MERGE matching
+  # one target row with two appended staging rows. This creates a throwaway
+  # dataset and runs the real merge/reload SQL twice. Gated on the deploy switch
+  # because it needs the WIF-backed deploy identity; skipped when deploys are off.
+  bq-idempotency:
+    if: vars.GCP_DEPLOY_ENABLED == 'true' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: projects/984854414993/locations/global/workloadIdentityPools/wikistream-ci/providers/github
+          service_account: ${{ vars.GCP_DEPLOY_SA || 'wikistream-deploy@wikistream-505003.iam.gserviceaccount.com' }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: BigQuery idempotency
+        env:
+          BQ_TEST_PROJECT: ${{ secrets.TF_VAR_PROJECT_ID }}
+        run: ./warehouse/test_bq_idempotency.sh
+
   compose-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
