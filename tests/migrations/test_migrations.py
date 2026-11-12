@@ -197,7 +197,7 @@ def test_ttl_present():
             " WHERE database = 'default' AND name = 'raw_events'"
         )
     if ttl:
-        assert "toIntervalDay(30)" in ttl, f"unexpected TTL expression: {ttl}"
+        assert "toIntervalDay(1)" in ttl, f"unexpected TTL expression: {ttl}"
     else:
         # CH 26.x dropped TTL metadata from system.tables — SHOW CREATE is
         # the version-proof form; it normalizes to toIntervalDay(1).
@@ -359,9 +359,9 @@ def test_dead_letter_partition_swap_backfill():
     # dedup; both rows survive a single copy pass.)
     query(
         "INSERT INTO default.dead_letter (inserted_at, reason, wiki, title, event)"
-        " VALUES (toDateTime64('2026-10-20 12:00:00.000', 3, 'UTC'),"
+        " VALUES (now64(3) - INTERVAL 40 DAY,"
         " 'old_reason', 'enwiki', 'Old Page', '{\"seed\":1}'),"
-        " (toDateTime64('2026-10-25 09:30:00.000', 3, 'UTC'),"
+        " (now64(3) - INTERVAL 35 DAY,"
         " 'spam_reason', 'dewiki', 'Other Page', '{\"seed\":2}')"
     )
     apply_ok()

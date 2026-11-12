@@ -7,8 +7,15 @@ set -euo pipefail
 
 : "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL missing from /opt/wikistream/.env (boot.sh section 5)}"
 unit="${1:?usage: notify-failure.sh <failed-unit-name>}"
+case "$unit" in
+  *[!A-Za-z0-9@._:-]*)
+    echo "[fail-notify] invalid unit name: ${unit}" >&2
+    exit 2
+    ;;
+esac
 
-curl -sf -m 10 --data-urlencode \
-  "payload={\"text\":\":warning: WikiStream batch job FAILED: ${unit} (check: journalctl -u ${unit})\"}" \
+payload="$(printf '{"text":":warning: WikiStream batch job FAILED: %s (check: journalctl -u %s)"}' "$unit" "$unit")"
+curl -sf -m 10 -H 'Content-type: application/json' \
+  --data "$payload" \
   "${SLACK_WEBHOOK_URL}" >/dev/null
 echo "[fail-notify] Slack page sent for ${unit}"

@@ -8,7 +8,7 @@ resource "google_monitoring_notification_channel" "alerts" {
   project = var.project_id
 }
 
-# ch-data is the pipeline's durability surface (vision §7): a 30 GB
+# ch-data is the pipeline's durability surface (vision §7): a 50 GB
 # pd-standard volume holding incoming edits. Above 80% for 5+ minutes the
 # ClickHouse inserts start failing; free space or grow the disk.
 resource "google_monitoring_alert_policy" "disk_almost_full" {
@@ -21,7 +21,7 @@ resource "google_monitoring_alert_policy" "disk_almost_full" {
 
   documentation {
     content = <<-EOT
-      The ch-data volume (30 GB pd-standard, the pipeline's durability surface
+      The ch-data volume (50 GB pd-standard, the pipeline's durability surface
       per vision §7) is over 80% full for 5+ minutes. Above this threshold
       ClickHouse inserts begin failing. Free space on the volume or grow the
       disk.
