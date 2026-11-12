@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
 
 # uv is the package manager for this project (pyproject.toml + uv.lock).
 # uv 0.9.30
