@@ -7,7 +7,7 @@ x-logging: &default-logging
 services:
   clickhouse:
     logging: *default-logging
-    image: clickhouse/clickhouse-server:26.3.17
+    image: clickhouse/clickhouse-server:26.3.17@sha256:2ef11bbe2e44ab7022f37ff3019b3f2125ed09e919ea6194660be6130b7ca4b7
     container_name: wikistream-clickhouse
     restart: unless-stopped
     environment:
@@ -34,13 +34,34 @@ services:
     ulimits:
       nofile: { soft: 262144, hard: 262144 }
 
+  # One-shot ownership fix for the bind-mounted state directory. The consumer
+  # image runs as uid 10001, so it cannot chown a root-owned Docker bind mount
+  # itself; this init container does it once and exits before the consumer starts.
+  consumer-init:
+    logging: *default-logging
+    build: ./consumer
+    image: ${CONSUMER_IMAGE:-wikistream-consumer:local}
+    container_name: wikistream-consumer-init
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mkdir -p /state && chown -R app:app /state"]
+    volumes:
+      - ${STATE_DIR:-${CH_DATA_DIR:-./ch-data}/../state}:/state
+
   consumer:
     logging: *default-logging
     build: ./consumer
     image: ${CONSUMER_IMAGE:-wikistream-consumer:local}
     container_name: wikistream-consumer
     restart: unless-stopped
-    depends_on: [clickhouse]
+    # True non-root runtime: the init service above owns the one writable mount.
+    user: "10001:10001"
+    depends_on:
+      clickhouse:
+        condition: service_started
+      consumer-init:
+        condition: service_completed_successfully
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
@@ -67,7 +88,7 @@ services:
 
   grafana:
     logging: *default-logging
-    image: grafana/grafana:13.1.1
+    image: grafana/grafana:13.1.1@sha256:7cb8c64c4d57a57e734073f3cc94620adb24a0acb929bd80ba9f14017e3a975b
     container_name: wikistream-grafana
     restart: unless-stopped
     ports:

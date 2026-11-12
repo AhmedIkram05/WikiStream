@@ -5,15 +5,17 @@ from pathlib import Path
 REPO = Path(__file__).parents[2]
 
 
-def test_consumer_drops_privileges_after_fixing_state_ownership():
+def test_consumer_runs_as_uid_10001_from_the_start():
     dockerfile = (REPO / "consumer" / "Dockerfile").read_text()
-    entrypoint = (REPO / "consumer" / "docker-entrypoint.sh").read_text()
+    compose = (REPO / "docker-compose.yml").read_text()
     assert "--uid 10001" in dockerfile
-    assert 'ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]' in dockerfile
-    assert 'state_dir="${STATE_DIR:-/state}"' in entrypoint
-    assert 'chown -R app:app "$state_dir"' in entrypoint
-    assert "setuid(10001)" in entrypoint
-    assert "setgid(10001)" in entrypoint
+    assert "\nUSER app\n" in dockerfile
+    assert "docker-entrypoint.sh" not in dockerfile
+    assert 'user: "10001:10001"' in compose
+    assert "consumer-init:" in compose
+    assert 'user: "0:0"' in compose
+    assert "service_completed_successfully" in compose
+    assert "chown -R app:app /state" in compose
 
 
 def test_gx_runs_as_the_unprivileged_user():

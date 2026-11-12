@@ -47,6 +47,11 @@ it further requires custom roles or resource conditions; do that before sharing
 the project with other operators, and re-run the bootstrap apply so the change
 is recorded in state.
 
+The ungated **image build** job does not use this identity. `wikistream-build`
+has only `roles/artifactregistry.writer` on the single `wikistream-consumer`
+repo, so a compromised build cannot reach BigQuery, Storage, Secret Manager or
+Compute. The gated apply job still authenticates as `wikistream-deploy`.
+
 ## Pinned identity constants
 
 A few bootstrap identities are intentionally pinned to the live project because
