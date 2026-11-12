@@ -91,6 +91,13 @@ resource "google_service_account" "deploy" {
   display_name = "WikiStream deploy (CI)"
 }
 
+# Image-build identity: the ungated build-push job must not run as the broad
+# deploy SA. It only needs to push to the one Artifact Registry repo.
+resource "google_service_account" "build" {
+  account_id   = "wikistream-build"
+  display_name = "WikiStream image build (CI)"
+}
+
 # Project-level roles the deploy SA needs across infra/main's resources.
 # projectIamAdmin: infra/main binds roles/compute.osLogin for the human
 # account (project-level IAM) — requires resourcemanager.projects.setIamPolicy.
@@ -140,6 +147,19 @@ resource "google_service_account_iam_member" "deploy_wif" {
   )
 }
 
+# Same GitHub trust, separate identity: the build job cannot touch BigQuery,
+# Storage, Secret Manager or Compute.
+resource "google_service_account_iam_member" "build_wif" {
+  service_account_id = google_service_account.build.name
+  role               = "roles/iam.workloadIdentityUser"
+  member = format(
+    "principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
+    data.google_project.project.number,
+    google_iam_workload_identity_pool.ci.workload_identity_pool_id,
+    "AhmedIkram05/WikiStream",
+  )
+}
+
 # Container image repo. Bootstrap-owned for the same reason as the bucket:
 # the build-push CI job runs BEFORE the gated apply, so the repo must exist
 # from the very first merge and survive infra/main's destroy.
@@ -147,4 +167,13 @@ resource "google_artifact_registry_repository" "wikistream_consumer" {
   repository_id = "wikistream-consumer"
   location      = "us-central1"
   format        = "DOCKER"
+}
+
+# Push-only scope for the build identity: one repo, not project-wide AR admin.
+resource "google_artifact_registry_repository_iam_member" "build_writer" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.wikistream_consumer.location
+  repository = google_artifact_registry_repository.wikistream_consumer.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${google_service_account.build.email}"
 }

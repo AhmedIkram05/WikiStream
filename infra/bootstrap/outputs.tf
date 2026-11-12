@@ -7,3 +7,8 @@ output "deploy_sa_email" {
   description = "Email of the wikistream-deploy service account (CI authenticates as this)"
   value       = google_service_account.deploy.email
 }
+
+output "build_sa_email" {
+  description = "Email of the wikistream-build service account (image push only)"
+  value       = google_service_account.build.email
+}
