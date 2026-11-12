@@ -111,12 +111,12 @@ def test_detail_has_six_keys_and_parses():
     }
 
 
-def test_detail_single_quote_escaped():
+def test_detail_single_quote_round_trips():
     row = report_status(
         {**VERDICT, "window_start": "2026-08-01T00:00:0'0+00:00"}, _FakeClient()
     )
-    # No raw quote survives: every ' is backslash-escaped (SQL string literal).
-    assert "'" not in row[4].replace("\\'", "")
+    detail = json.loads(row[4])
+    assert detail["window_start"] == "2026-08-01T00:00:0'0+00:00"
 
 
 def test_missing_verdict_keys_default_to_zero():

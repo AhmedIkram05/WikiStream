@@ -36,8 +36,8 @@ def report_status(verdict: dict, client=None) -> tuple | None:
     Builds the insert row ``(ts, "gx", "result", value, detail)`` and pushes it
     through the given clickhouse-connect client. Never raises and never affects
     the suite's exit code: a falsy client (connection failure) or a failed
-    insert is logged as a warning and skipped. The detail JSON is
-    single-quote-escaped so it is safe inside a SQL string literal.
+    insert is logged as a warning and skipped. The client parameterizes the
+    insert, so the detail JSON is passed through unchanged.
     """
     if not verdict or not client:
         logging.getLogger(__name__).warning(
@@ -58,7 +58,7 @@ def report_status(verdict: dict, client=None) -> tuple | None:
                 "expectations_failed": int(verdict.get("expectations_failed", 0)),
                 "row_count": int(verdict.get("row_count", 0)),
             }
-        ).replace("'", "\\'"),
+        ),
     )
     try:
         client.insert(
