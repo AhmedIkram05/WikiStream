@@ -13,5 +13,12 @@ RUN uv sync --frozen --no-install-project --no-dev
 
 COPY gx/ ./gx/
 
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+
+ENV HOME=/home/app \
+    UV_CACHE_DIR=/tmp/uv-cache
+USER app
+
 # Exec form: PID 1 is /bin/uv so SIGTERM (timer/stop) reaches the process.
 CMD ["uv", "run", "python", "/app/gx/suite.py"]
