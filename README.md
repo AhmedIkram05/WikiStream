@@ -64,7 +64,7 @@ flowchart LR
         GXT["wikistream-gx.timer · :30"]
         EXP["wikistream-export.timer · :00"]
         PAR["wikistream-parity.timer · :05"]
-        BAK["wikistream-backup.timer · :20"]
+        BAK["wikistream-backup.timer · 06:20"]
     end
 
     subgraph GCP["GCP data plane"]
@@ -198,7 +198,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/systemd-timers.png" alt="systemd timers" width="760"/>
-  <em>Four systemd timers, all active: backup (:20), GX suite (:30), warehouse export (:00), parity check (:05).</em>
+  <em>Four systemd timers, all active: backup (06:20 daily), GX suite (:30), warehouse export (:00), parity check (:05).</em>
 </p>
 
 <p align="center">
