@@ -8,6 +8,6 @@ OnFailure=wikistream-fail-notify@%n.service
 [Service]
 Type=oneshot
 TimeoutStartSec=1800
-ExecStart=/usr/bin/docker compose -f /opt/wikistream/docker-compose.yml run --rm gx
+ExecStart=/usr/bin/docker compose -f /opt/wikistream/docker-compose.yml run --rm -T gx
 StandardOutput=append:/var/log/wikistream-gx.log
 StandardError=append:/var/log/wikistream-gx.log
