@@ -91,7 +91,7 @@ services:
     build:
       context: .
       dockerfile: gx/Dockerfile
-    image: us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/gx:latest
+    image: ${GX_IMAGE:-us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/gx:latest}
     container_name: wikistream-gx
     restart: "no"
     depends_on: [clickhouse]

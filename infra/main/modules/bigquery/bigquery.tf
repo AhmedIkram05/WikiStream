@@ -247,7 +247,7 @@ resource "google_project_iam_member" "vm_bq_resource_viewer" {
 # Staging bucket for exports (e.g. external tables / gs:// loads). Objects
 # auto-delete after 7 days — transient staging only, not a backup.
 resource "google_storage_bucket" "wikistream_bq_staging" {
-  name                        = "wikistream-505003-bq-staging"
+  name                        = "${var.project_id}-bq-staging"
   project                     = var.project_id
   location                    = "US"
   uniform_bucket_level_access = true
