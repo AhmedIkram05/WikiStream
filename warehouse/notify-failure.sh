@@ -5,7 +5,13 @@
 # so export/parity/backup/GX crashes page at :03, not at the next dashboard look.
 set -euo pipefail
 
-: "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL missing from /opt/wikistream/.env (boot.sh section 5)}"
+ENV_FILE="${WIKISTREAM_ENV_FILE:-/opt/wikistream/.env}"
+if [ -z "${SLACK_WEBHOOK_URL:-}" ] && [ -f "$ENV_FILE" ]; then
+  # Only the webhook is read; the unit deliberately does not load .env, so the
+  # ClickHouse/Grafana secrets never enter this short-lived process.
+  SLACK_WEBHOOK_URL="$(grep -E '^SLACK_WEBHOOK_URL=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+fi
+: "${SLACK_WEBHOOK_URL:?SLACK_WEBHOOK_URL missing from ${ENV_FILE}}"
 unit="${1:?usage: notify-failure.sh <failed-unit-name>}"
 case "$unit" in
   *[!A-Za-z0-9@._:-]*)

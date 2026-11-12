@@ -33,7 +33,9 @@ def test_all_batch_units_page_on_failure():
 
 def test_fail_notify_template_contract():
     text = (WAREHOUSE / "wikistream-fail-notify@.service").read_text()
-    assert "EnvironmentFile=/opt/wikistream/.env" in text, "webhook env source missing"
+    assert "EnvironmentFile=/opt/wikistream/.env" not in text, (
+        "notifier must not inherit ClickHouse/Grafana secrets"
+    )
     assert "notify-failure.sh %i" in text, "template must pass the failed unit name"
 
 
@@ -78,6 +80,27 @@ def test_notify_failure_sends_json_payload(tmp_path):
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(log.read_text())
     assert "wikistream-export.service" in payload["text"]
+
+
+def test_notify_failure_reads_only_the_slack_secret(tmp_path):
+    env, log = _notify_env(tmp_path)
+    env.pop("SLACK_WEBHOOK_URL", None)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CLICKHOUSE_PASSWORD=not-for-the-notifier\n"
+        "SLACK_WEBHOOK_URL=https://example.invalid/hook\n"
+    )
+    env["WIKISTREAM_ENV_FILE"] = str(env_file)
+    proc = subprocess.run(
+        [str(WAREHOUSE / "notify-failure.sh"), "wikistream-export.service"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(log.read_text())["text"].endswith(
+        "(check: journalctl -u wikistream-export.service)"
+    )
 
 
 def test_notify_failure_rejects_unsafe_unit_name(tmp_path):
