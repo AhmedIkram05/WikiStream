@@ -17,7 +17,7 @@ import time
 from collections import deque
 from typing import Callable
 
-from src.cursors import _max_id
+from src.cursors import _advance_max_id
 
 logger = logging.getLogger("wikistream.batcher")
 
@@ -45,6 +45,10 @@ class EventBatcher:
         self._pending_ids: list[str] = []
         self._first_added_at: float | None = None
         self._batch_max_id: str | None = None
+        # Rank of _batch_max_id, carried so add() parses only the incoming id
+        # (composite cursor ids are JSON; re-decoding the running max per event
+        # dominated the ingest hot path).
+        self._batch_max_rank: int | None = None
         self._now = now or time.monotonic
         # True only for the most recent flush() that actually landed. Callers
         # need this because a batch with no event ids also returns max_id=None,
@@ -91,10 +95,8 @@ class EventBatcher:
         if event_id is not None:
             self._pending_ids.append(event_id)
             self._mark(event_id)
-            self._batch_max_id = (
-                event_id
-                if self._batch_max_id is None
-                else _max_id(self._batch_max_id, event_id)
+            self._batch_max_id, self._batch_max_rank = _advance_max_id(
+                self._batch_max_id, self._batch_max_rank, event_id
             )
         return len(self._pending) >= self.max_rows or (
             self._first_added_at is not None
@@ -121,6 +123,7 @@ class EventBatcher:
         self._pending_ids = []
         self._first_added_at = None
         self._batch_max_id = None
+        self._batch_max_rank = None
         try:
             await client.insert(
                 TABLE,
@@ -135,7 +138,9 @@ class EventBatcher:
             # never replays a mid-session failure, only a reconnect does.
             self._pending = pending + self._pending
             self._pending_ids = batch_ids + self._pending_ids
-            self._batch_max_id = _max_id(self._batch_max_id, batch_max)
+            self._batch_max_id, self._batch_max_rank = _advance_max_id(
+                self._batch_max_id, self._batch_max_rank, batch_max
+            )
             self._first_added_at = self._now()
             return (None, len(pending))
         self.last_flush_landed = True
@@ -152,4 +157,5 @@ class EventBatcher:
         self._pending_ids = []
         self._first_added_at = None
         self._batch_max_id = None
+        self._batch_max_rank = None
         return count
