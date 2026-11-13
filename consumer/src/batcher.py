@@ -1,11 +1,14 @@
 """Batching + dedup for raw event inserts (plan §4A).
 
 EventBatcher accumulates rows until size/age thresholds are met, then flushes
-them in one async_insert to default.raw_events. A failed flush RE-QUEUES the
-batch (rows stay pending) so the caller can retry in place; the caller drops
-the batch via abandon() only after giving up, which releases the dedup marks
-so replay can refill the ring. At-most-once either way: duplicates are cheap
-and losses are the thing to avoid (Q1: one row per event, best-effort).
+them in one synchronous insert to default.raw_events. The client batch IS the
+batching: async_insert=0 means the insert returns only after ClickHouse has
+written the part, and server-side errors surface to the caller, so a failed
+flush is re-queued for in-place retry. (The old async_insert=1 +
+wait_for_async_insert=0 path acknowledged rows still sitting in the server's
+memory buffer — at-most-once, and the cursor could advance past them.)
+A duplicate is still possible in the tiny window between a landed write and
+the cursor save; the consumer saves immediately after a landed flush.
 
 Dedup ring is memory-only (capacity 50_000 ≈ 20 min at ~44 ev/s): after a
 kill (or a dropped batch) the server's replay (Last-Event-ID) refills it; the
@@ -23,7 +26,7 @@ logger = logging.getLogger("wikistream.batcher")
 
 TABLE = "default.raw_events"
 COLUMNS = ["inserted_at", "event"]
-SETTINGS = {"async_insert": 1, "wait_for_async_insert": 0}
+SETTINGS = {"async_insert": 0}
 
 
 class EventBatcher:

@@ -186,7 +186,7 @@ Sampling uses `rand() < int(0x100000000 * rate)` - `%`-based sampling breaks thr
 
 > **The SIGKILL proof:** `sudo docker kill` the consumer mid-stream (exit 137). On restart it emitted `resumed_from=[…]`, replayed the kill-window redeliveries into the dedup ring, and logged `inserted events=1000 total=4370 duplicates_skipped=85→150` - **zero loss, zero duplicates**.
 
-**Batcher + dedup ring:** `EventBatcher(max_rows=1000, max_age_s=5.0, dedup_capacity=50_000)` - flush at ≥1,000 rows or ≥5s, single `async_insert=1, wait_for_async_insert=0` insert. A `deque(maxlen=50_000)` + set mirror (~20 min at 44 ev/s) absorbs the server's own replays: live runs show `duplicates_skipped=3/7/10` catching native redeliveries. On flush exception, rows are dropped **at-most-once and counted** - never silently.
+**Batcher + dedup ring:** `EventBatcher(max_rows=1000, max_age_s=5.0, dedup_capacity=50_000)` - flush at ≥1,000 rows or ≥5s, one synchronous insert (`async_insert=0`). A `deque(maxlen=50_000)` + set mirror (~20 min at 44 ev/s) absorbs the server's own replays: live runs show `duplicates_skipped=3/7/10` catching native redeliveries. On a flush exception the batch is **re-queued for in-place retry**; only `abandon()` (after the retry schedule is exhausted) drops it, and that drop is counted - never silent.
 
 ### 9. Backup & Restore
 

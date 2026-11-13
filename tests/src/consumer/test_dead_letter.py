@@ -49,14 +49,7 @@ def test_buffer_until_max_rows_then_flush():
             "event",
         ]
     )
-    assert (
-        call["settings"]
-        == SETTINGS
-        == {
-            "async_insert": 1,
-            "wait_for_async_insert": 0,
-        }
-    )
+    assert call["settings"] == SETTINGS == {"async_insert": 0}
     assert len(call["data"]) == 3
     assert isinstance(call["data"][0][0], datetime)
     assert call["data"][0][1:] == ["r1", "w", "t", "e1"]

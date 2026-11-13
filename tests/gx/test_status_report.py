@@ -156,8 +156,8 @@ def test_live_insert_to_pipeline_health():
             client,
         )
         assert row is not None
-        # async_insert: 1 buffers on the server and flushes shortly after —
-        # poll briefly instead of asserting on a racy first read.
+        # The insert is synchronous now; poll briefly anyway so a slow server
+        # flush cannot make the assertion racy.
         deadline = time.monotonic() + 10
         while True:
             n = client.query(
