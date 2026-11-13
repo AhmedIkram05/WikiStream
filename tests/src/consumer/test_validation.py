@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from src.models import WikiEvent, validate_timestamp
+from src.models import WikiEvent, parse_timestamp, validate_timestamp
 
 PAST_TS = "2020-01-01T00:00:00Z"
 
@@ -77,6 +77,61 @@ def test_timestamp_future():
 
 def test_timestamp_valid_past():
     assert validate_timestamp(PAST_TS) is None
+
+
+# --- parse_timestamp: one decode, shared by validation and the model ---------
+
+
+def test_parse_timestamp_returns_utc_datetime():
+    parsed, reason = parse_timestamp(1786626373)
+    assert reason is None
+    assert parsed is not None and parsed.tzinfo == timezone.utc
+    assert parsed.timestamp() == 1786626373
+
+    parsed, reason = parse_timestamp(PAST_TS)
+    assert reason is None
+    assert parsed == datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        (None, "timestamp_missing"),
+        ("", "timestamp_missing"),
+        ("   ", "timestamp_missing"),
+        # bool is an int subclass: JSON true/false must not become epoch 1/0.
+        (True, "timestamp_unparseable"),
+        (False, "timestamp_unparseable"),
+        ("garbage", "timestamp_unparseable"),
+        (float("nan"), "timestamp_unparseable"),
+        (float("inf"), "timestamp_unparseable"),
+        (1e20, "timestamp_unparseable"),
+        ({}, "timestamp_unparseable"),
+        ("1900-01-01T00:00:00Z", "timestamp_too_old"),
+    ],
+)
+def test_parse_timestamp_failure_matrix(raw, reason):
+    parsed, got = parse_timestamp(raw)
+    assert parsed is None
+    assert got == reason
+
+
+def test_parse_timestamp_future_and_tolerance():
+    now = datetime(2026, 8, 13, 10, 0, tzinfo=timezone.utc)
+    parsed, reason = parse_timestamp("2026-08-13T10:04:00Z", now=now)
+    assert reason is None and parsed is not None
+    parsed, reason = parse_timestamp("2026-08-13T10:06:00Z", now=now)
+    assert parsed is None
+    assert reason == "timestamp_future"
+
+
+def test_parsed_timestamp_feeds_model_without_changing_value():
+    """The consumer passes the parsed datetime to Pydantic, so the wire value
+    must survive the hand-off exactly (no second decode, no tz shift)."""
+    parsed, reason = parse_timestamp(PAST_TS)
+    assert reason is None
+    event = WikiEvent.model_validate(make_payload(timestamp=parsed))
+    assert event.timestamp == parsed
 
 
 def test_extra_fields_ignored():
