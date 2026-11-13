@@ -28,7 +28,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
-from src.cursors import _max_id
+from src.cursors import _advance_max_id
 
 logger = logging.getLogger("wikistream.dead_letter")
 
@@ -53,6 +53,9 @@ class DeadLetterBatcher:
         self._pending: list[list] = []
         self._pending_ids: list[str] = []
         self._batch_max_id: str | None = None
+        # Rank of _batch_max_id: add() parses only the incoming id, not both
+        # sides of every composite-cursor comparison.
+        self._batch_max_rank: int | None = None
         # Ring of event ids whose DL rows LANDED (marked only on a successful
         # flush). Mirrors EventBatcher's ring: the set mirror gives O(1)
         # membership, and the deque(maxlen) evicts the oldest on overflow.
@@ -87,10 +90,8 @@ class DeadLetterBatcher:
         self._pending.append([_now_utc(), reason, wiki, title, event])
         if event_id is not None:
             self._pending_ids.append(event_id)
-            self._batch_max_id = (
-                event_id
-                if self._batch_max_id is None
-                else _max_id(self._batch_max_id, event_id)
+            self._batch_max_id, self._batch_max_rank = _advance_max_id(
+                self._batch_max_id, self._batch_max_rank, event_id
             )
         return len(self._pending) >= self.max_rows
 
@@ -109,6 +110,7 @@ class DeadLetterBatcher:
         self._pending = []
         self._pending_ids = []
         self._batch_max_id = None
+        self._batch_max_rank = None
         try:
             await client.insert(
                 TABLE,

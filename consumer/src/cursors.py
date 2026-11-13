@@ -27,6 +27,39 @@ def _warn_unparsable(s: str) -> None:
     logger.warning("cursor_id_unparsable kind=%s example=%r", kind, s[:64])
 
 
+def _parse_cursor(s: str) -> list | None:
+    """json.loads(s) when it is a cursor array, else None (one parse)."""
+    try:
+        cursors = json.loads(s)
+    except (TypeError, ValueError):
+        return None
+    return cursors if isinstance(cursors, list) else None
+
+
+def _composite_rank(s: str) -> int | None:
+    """Highest partition position in a composite cursor array, else None.
+
+    The single parse behind _cursor_ts, _is_composite and _rank, so one id is
+    never decoded twice for the same comparison. Returns None when s is not a
+    cursor array or carries no integer position; a parseable array whose
+    positions are all <= 0 ranks as 0 (matching the historical _cursor_ts floor).
+    """
+    cursors = _parse_cursor(s)
+    if cursors is None:
+        return None
+    best = 0
+    found = False
+    for c in cursors:
+        if isinstance(c, dict):
+            for key in ("timestamp", "offset"):
+                v = c.get(key)
+                if isinstance(v, int):
+                    found = True
+                    if v > best:
+                        best = v
+    return best if found else None
+
+
 def _cursor_ts(s: str) -> int:
     """Highest partition position in a Kafka composite cursor id.
 
@@ -34,36 +67,16 @@ def _cursor_ts(s: str) -> int:
     `[{"topic":"eqiad...","timestamp":1786...},{"topic":"codfw...","offset":-1}]`.
     The ARRAY ORDER varies between events (eqiad-first or codfw-first), so a
     raw string compare is meaningless — compare the max numeric position.
+    Unparseable / non-cursor input ranks 0.
     """
-    try:
-        cursors = json.loads(s)
-    except (TypeError, ValueError):
-        return 0
-    best = 0
-    if isinstance(cursors, list):
-        for c in cursors:
-            if isinstance(c, dict):
-                for key in ("timestamp", "offset"):
-                    v = c.get(key)
-                    if isinstance(v, int) and v > best:
-                        best = v
-    return best
+    rank = _composite_rank(s)
+    return 0 if rank is None else rank
 
 
 def _is_composite(s: str) -> bool:
     """True when s is a parseable composite cursor array (a JSON list carrying
     at least one integer timestamp/offset position)."""
-    try:
-        cursors = json.loads(s)
-    except (TypeError, ValueError):
-        return False
-    if not isinstance(cursors, list):
-        return False
-    return any(
-        isinstance(c, dict)
-        and any(isinstance(c.get(k), int) for k in ("timestamp", "offset"))
-        for c in cursors
-    )
+    return _composite_rank(s) is not None
 
 
 def _is_ascii_digits(s: str) -> bool:
@@ -81,9 +94,7 @@ def _rank(s: str) -> int | None:
     """
     if _is_ascii_digits(s):
         return int(s)
-    if _is_composite(s):
-        return _cursor_ts(s)
-    return None
+    return _composite_rank(s)
 
 
 def _max_id(a: str | None, b: str | None) -> str | None:
@@ -119,6 +130,50 @@ def _max_id(a: str | None, b: str | None) -> str | None:
             return a
         return a if ra >= rb else b
     return a if a >= b else b
+
+
+def _advance_max_id(
+    current_id: str | None,
+    current_rank: int | None,
+    new_id: str | None,
+) -> tuple[str | None, int | None]:
+    """Larger of (current_id, new_id) plus its rank, parsing new_id at most once.
+
+    Mirrors _max_id's selection exactly (digit, composite and lexical shapes,
+    the unparsable-id guard and its once-per-kind warning) but carries the
+    running maximum's already-computed rank, so the per-event caller parses only
+    the incoming id instead of decoding both sides on every event.
+    """
+    if current_id is None:
+        return new_id, (None if new_id is None else _rank(new_id))
+    if new_id is None:
+        return current_id, current_rank
+    a, b = current_id, new_id
+    if a.isdigit() and b.isdigit():
+        a_ok, b_ok = _is_ascii_digits(a), _is_ascii_digits(b)
+        if a_ok and b_ok:
+            return (a, int(a)) if int(a) >= int(b) else (b, int(b))
+        if a_ok:
+            _warn_unparsable(b)
+            return a, int(a)
+        if b_ok:
+            _warn_unparsable(a)
+            return b, int(b)
+        _warn_unparsable(a)
+        return a, None
+    if a.startswith("[") or b.startswith("["):
+        ra = _rank(a) if current_rank is None else current_rank
+        rb = _rank(b)
+        if ra is None and rb is None:
+            return a, None
+        if ra is None:
+            _warn_unparsable(a)
+            return b, rb
+        if rb is None:
+            _warn_unparsable(b)
+            return a, ra
+        return (a, ra) if ra >= rb else (b, rb)
+    return (a, current_rank) if a >= b else (b, None)
 
 
 def _min_id(a: str | None, b: str | None) -> str | None:

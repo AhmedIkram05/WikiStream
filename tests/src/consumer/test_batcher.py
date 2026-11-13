@@ -114,6 +114,22 @@ def test_flush_max_id_kafka_composite():
     assert _cursor_ts(asyncio.run(b.flush(FakeClient()))[0]) == 1786692862935
 
 
+def test_batcher_carries_max_rank_and_clears_on_flush():
+    """Composite cursor rank is cached on add and reset with the batch, so each
+    event parses only its own id (the reason for _advance_max_id)."""
+    low = '[{"timestamp": 100}]'
+    high = '[{"timestamp": 200}]'
+    b = EventBatcher(now=constant_clock)
+    b.add(("t", "d"), low)
+    assert (b._batch_max_id, b._batch_max_rank) == (low, 100)
+    b.add(("t", "d"), '[{"timestamp": 50}]')
+    assert (b._batch_max_id, b._batch_max_rank) == (low, 100)  # lower: no advance
+    b.add(("t", "d"), high)
+    assert (b._batch_max_id, b._batch_max_rank) == (high, 200)
+    assert asyncio.run(b.flush(FakeClient())) == (high, 3)
+    assert (b._batch_max_id, b._batch_max_rank) == (None, None)
+
+
 def test_failed_flush_requeues_rows():
     fake = FakeClient(fail=True)
     b = EventBatcher(now=constant_clock)
