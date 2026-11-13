@@ -5,7 +5,14 @@ import logging
 import pytest
 
 from src import cursors
-from src.cursors import _cursor_ts, _is_composite, _max_id, _min_id, _rank
+from src.cursors import (
+    _advance_max_id,
+    _cursor_ts,
+    _is_composite,
+    _max_id,
+    _min_id,
+    _rank,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -130,3 +137,36 @@ def test_unparsable_warning_logged_once_per_kind(caplog):
         _max_id("1000", "[{other")  # duplicate composite: suppressed
     assert cursors._warned_unparsable == {"composite", "plain"}
     assert caplog.text.count("cursor_id_unparsable") == 2
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        (None, "5"),
+        ("5", None),
+        (None, None),
+        ("9", "10"),
+        ("10", "9"),
+        ("7", "7"),
+        ('[{"topic":"eqiad","timestamp":100}]', '[{"topic":"codfw","timestamp":200}]'),
+        ('[{"topic":"eqiad","timestamp":100}]', "5"),
+        ("5", '[{"topic":"eqiad","timestamp":100}]'),
+        ("abc", "abd"),
+        ("5", "x"),
+        ("x", "12"),
+        ("1000", '[{"timestamp": 50}]'),
+        ('[{"timestamp": 50}]', "1000"),
+        ('[{"timestamp": 5}]', "x"),
+        ("[", "[x"),
+        ('[{"offset":-1}]', '[{"timestamp":7}]'),
+        ("²", "5"),
+        ("5", "²"),  # ASCII digit loses to a non-ASCII digit: warn, keep ASCII
+        ("²", "³"),
+        ("[{bad", '[{"timestamp": 5}]'),  # unparsable current, valid candidate
+    ],
+)
+def test_advance_max_id_matches_max_id(a, b):
+    """The cached-rank fast path must select exactly what _max_id selects."""
+    winner, rank = _advance_max_id(a, None if a is None else _rank(a), b)
+    assert winner == _max_id(a, b)
+    assert rank == (None if winner is None else _rank(winner))
