@@ -11,6 +11,10 @@ set -euo pipefail
 
 cd /opt/wikistream
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=secret_helpers.sh
+source "${SCRIPT_DIR}/secret_helpers.sh"
+
 # Non-empty guards: an unset/empty password must fail loudly, not bootstrap a
 # user with an empty password that breaks the migration step below.
 : "${CH_PASSWORD:?boot.sh needs CH_PASSWORD in the environment (startup.sh section 4 must export it)}"
@@ -42,26 +46,29 @@ docker compose exec -T clickhouse clickhouse-client --query "SELECT 1" >/dev/nul
 #    global grant from existing installs (GRANT alone does not shrink it).
 #    Grafana gets a separate read-only user/password so a panel compromise
 #    cannot DDL/DROP warehouse tables.
-BOOTSTRAP_SQL="CREATE USER IF NOT EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;
-ALTER USER IF EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD}' HOST ANY;
+CH_PASSWORD_SQL="$(sql_escape "$CH_PASSWORD")"
+CH_RO_PASSWORD_SQL="$(sql_escape "$CH_RO_PASSWORD")"
+BOOTSTRAP_SQL="CREATE USER IF NOT EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD_SQL}' HOST ANY;
+ALTER USER IF EXISTS wikistream IDENTIFIED WITH plaintext_password BY '${CH_PASSWORD_SQL}' HOST ANY;
 REVOKE ALL PRIVILEGES ON *.* FROM wikistream;
 GRANT SELECT, INSERT, CREATE, ALTER, DROP, TRUNCATE, OPTIMIZE, BACKUP ON default.* TO wikistream;
 -- Read-only metadata for migration checks; still no access to other databases.
 GRANT SELECT ON system.tables TO wikistream;
 GRANT SELECT ON system.columns TO wikistream;
 GRANT SELECT ON system.databases TO wikistream;
-CREATE USER IF NOT EXISTS wikistream_ro IDENTIFIED WITH plaintext_password BY '${CH_RO_PASSWORD}' HOST ANY;
-ALTER USER IF EXISTS wikistream_ro IDENTIFIED WITH plaintext_password BY '${CH_RO_PASSWORD}' HOST ANY;
+CREATE USER IF NOT EXISTS wikistream_ro IDENTIFIED WITH plaintext_password BY '${CH_RO_PASSWORD_SQL}' HOST ANY;
+ALTER USER IF EXISTS wikistream_ro IDENTIFIED WITH plaintext_password BY '${CH_RO_PASSWORD_SQL}' HOST ANY;
 REVOKE ALL PRIVILEGES ON *.* FROM wikistream_ro;
 GRANT SELECT ON default.* TO wikistream_ro;
 GRANT SELECT ON system.tables TO wikistream_ro;
 GRANT SELECT ON system.columns TO wikistream_ro;
 GRANT SELECT ON system.databases TO wikistream_ro;"
 
-# Log the SQL with both passwords redacted (/var/log/wikistream-startup.log is
-# world-readable); the client's stdout for CREATE/GRANT/ALTER is empty, so the
-# statement text here is what AC7 greps.
-echo "user bootstrap: ${BOOTSTRAP_SQL//"$CH_PASSWORD"/<redacted>}" | sed "s/${CH_RO_PASSWORD}/<redacted>/g"
+# Log the SQL with both passwords redacted; the client's stdout for
+# CREATE/GRANT/ALTER is empty, so the statement text here is what AC7 greps.
+# Redact raw AND SQL-escaped forms: the statement carries the escaped values, so
+# a password containing ' or \ would otherwise slip past a raw-only match.
+echo "user bootstrap: $(redact_all "$BOOTSTRAP_SQL" "$CH_PASSWORD" "$CH_RO_PASSWORD" "$CH_PASSWORD_SQL" "$CH_RO_PASSWORD_SQL")"
 echo "$BOOTSTRAP_SQL" | docker compose exec -T clickhouse clickhouse-client --multiquery
 echo "user bootstrap ok"
 

@@ -1,9 +1,10 @@
 """Dead-letter queue for validation-failed events (plan §4A).
 
 Validation failures (invalid JSON, bad timestamps, schema violations) are
-written to default.dead_letter with a machine-readable reason — buffered
-(async_insert=1, at-most-once like the main batch), so long-tail quality
-gaps surface in Grafana/BigQuery instead of vanishing.
+written to default.dead_letter with a machine-readable reason — one
+synchronous insert per batch (server errors surface; a failed batch is dropped
+at-most-once and the cursor stays behind, so replay re-runs it), so long-tail
+quality gaps surface in Grafana/BigQuery instead of vanishing.
 
 Rows accumulate in DeadLetterBatcher and flush as ONE insert per batch: the
 SSE loop must never await a per-event round-trip (a schema-drift burst once
@@ -34,7 +35,7 @@ logger = logging.getLogger("wikistream.dead_letter")
 
 TABLE = "default.dead_letter"
 COLUMNS = ["inserted_at", "reason", "wiki", "title", "event"]
-SETTINGS = {"async_insert": 1, "wait_for_async_insert": 0}
+SETTINGS = {"async_insert": 0}
 
 
 class DeadLetterBatcher:

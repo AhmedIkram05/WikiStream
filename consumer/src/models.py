@@ -52,21 +52,25 @@ class WikiEvent(BaseModel):
         return value
 
 
-def validate_timestamp(
+def parse_timestamp(
     ts: str | int | float | None, now: datetime | None = None
-) -> str | None:
-    """Validate an event timestamp; returns a dead-letter reason or None.
+) -> tuple[datetime | None, str | None]:
+    """Parse and validate an event timestamp; returns (datetime, reason).
+
+    reason is None on success; otherwise one of the exact dead-letter reasons
+    ("timestamp_missing" | "timestamp_unparseable" | "timestamp_too_old" |
+    "timestamp_future") and the datetime is None. The consumer hands the parsed
+    datetime to Pydantic, so the wire timestamp is decoded once, not twice.
 
     Accepts ISO-8601 strings (fromisoformat; py3.13 handles trailing "Z") and
-    integer/float epoch seconds (the real wire shape). Reasons (exact):
-    "timestamp_missing" | "timestamp_unparseable" | "timestamp_too_old" |
-    "timestamp_future". now defaults to datetime.now(timezone.utc).
+    integer/float epoch seconds (the real wire shape). now defaults to
+    datetime.now(timezone.utc).
     """
     if ts is None or (isinstance(ts, str) and ts.strip() == ""):
-        return "timestamp_missing"
+        return None, "timestamp_missing"
     # bool is an int subclass: JSON true/false must NOT parse as epoch 1/0.
     if isinstance(ts, bool):
-        return "timestamp_unparseable"
+        return None, "timestamp_unparseable"
     if isinstance(ts, (int, float)):
         # fromtimestamp raises on NaN/Inf and overflows the time_t range;
         # json.loads accepts NaN/Infinity, so this must be total or a single
@@ -74,21 +78,32 @@ def validate_timestamp(
         try:
             parsed = datetime.fromtimestamp(ts, tz=timezone.utc)
         except (OverflowError, ValueError, OSError):
-            return "timestamp_unparseable"
+            return None, "timestamp_unparseable"
     elif isinstance(ts, str):
         try:
             parsed = datetime.fromisoformat(ts)
         except ValueError:
-            return "timestamp_unparseable"
+            return None, "timestamp_unparseable"
     else:
-        return "timestamp_unparseable"
+        return None, "timestamp_unparseable"
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     if parsed < _MIN_TIMESTAMP:
-        return "timestamp_too_old"
+        return None, "timestamp_too_old"
     if (
         parsed
         > (now if now is not None else datetime.now(timezone.utc)) + _FUTURE_TOLERANCE
     ):
-        return "timestamp_future"
-    return None
+        return None, "timestamp_future"
+    return parsed, None
+
+
+def validate_timestamp(
+    ts: str | int | float | None, now: datetime | None = None
+) -> str | None:
+    """Validate an event timestamp; returns a dead-letter reason or None.
+
+    Thin wrapper over parse_timestamp (same exact reasons) for callers that do
+    not need the parsed datetime.
+    """
+    return parse_timestamp(ts, now)[1]

@@ -402,6 +402,40 @@ def test_consume_happy_path_flush_and_state(
     assert ch.dl_rows == []
 
 
+def test_flush_main_saves_cursor_immediately(monkeypatch, tmp_path, counters, stop):
+    """A landed batch persists its cursor before the 2s debounce: without this
+    a crash replayed an already-written batch (duplicates)."""
+    patch_state(monkeypatch, tmp_path)
+    stream = consumer._StreamRun(FakeCh(), stop, None, counters)
+    for event_id in ("1", "2", "3"):
+        stream.batcher.add(("t", "d"), event_id)
+
+    run(stream.flush_main(honor_stop=True))
+
+    assert counters["total"] == 3
+    state = consumer.load_state()
+    assert state["last_event_id"] == "3"
+    assert state["total"] == 3
+    assert stream.last_saved_id == "3"
+
+
+def test_failed_flush_does_not_advance_saved_cursor(
+    monkeypatch, tmp_path, counters, stop
+):
+    """Only a landed batch may move the durable cursor; a dropped batch leaves
+    it behind so the server replay can re-deliver the rows."""
+    patch_state(monkeypatch, tmp_path)
+    consumer.save_state("0", 0)
+    monkeypatch.setattr(consumer, "FLUSH_RETRY_SCHEDULE", ())
+    stream = consumer._StreamRun(FakeCh(fail=True), stop, "0", counters)
+    stream.batcher.add(("t", "d"), "1")
+
+    run(stream.flush_main(honor_stop=False))
+
+    assert counters["insert_failed"] == 1
+    assert consumer.load_state()["last_event_id"] == "0"
+
+
 def test_fresh_start_persists_first_event_before_more_arrive(
     monkeypatch, tmp_path, counters, stop
 ):
@@ -1227,6 +1261,171 @@ def test_consume_60s_idle_stats_line(monkeypatch, tmp_path, counters, stop, capl
 
 
 # ---- main() ----
+
+
+def test_run_reaps_dl_timer_when_client_construction_fails(monkeypatch, counters):
+    """An exception before the stream loop must not orphan the DL timer."""
+
+    class BoomHTTP:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            raise RuntimeError("client boom")
+
+        async def __aexit__(self, *exc):
+            return None
+
+    monkeypatch.setattr(consumer.httpx2, "AsyncClient", BoomHTTP)
+    created = []
+    real_create_task = asyncio.create_task
+
+    def spy(coro, **kwargs):
+        task = real_create_task(coro, **kwargs)
+        created.append(task)
+        return task
+
+    monkeypatch.setattr(consumer.asyncio, "create_task", spy)
+    loop = asyncio.new_event_loop()
+
+    async def scenario():
+        stream = consumer._StreamRun(FakeCh(), asyncio.Event(), None, counters)
+        with pytest.raises(RuntimeError, match="client boom"):
+            await stream.run()
+        assert created and created[0].done()
+
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+
+
+def test_main_surfaces_worker_crash_even_when_stop_fires(monkeypatch, tmp_path):
+    """A crash that also sets stop must still be reported with the worker's
+    name, not hidden by the graceful-shutdown path."""
+    patch_state(monkeypatch, tmp_path)
+
+    async def crash(client, stop_ev, resumed_from, counters):
+        stop_ev.set()
+        raise RuntimeError("boom")
+
+    async def heartbeat(client, counters, stop_ev):
+        await stop_ev.wait()
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", crash)
+    monkeypatch.setattr(consumer, "heartbeat_loop", heartbeat)
+
+    with pytest.raises(RuntimeError, match="consume_forever failed") as exc:
+        run(consumer.main())
+
+    assert isinstance(exc.value.__cause__, RuntimeError)
+
+
+def test_main_normal_worker_exit_without_stop_is_fatal(monkeypatch, tmp_path):
+    """A worker that just returns is a bug, not a graceful shutdown."""
+    patch_state(monkeypatch, tmp_path)
+
+    async def early_exit(client, stop_ev, resumed_from, counters):
+        return None
+
+    async def heartbeat(client, counters, stop_ev):
+        await asyncio.sleep(3600)
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", early_exit)
+    monkeypatch.setattr(consumer, "heartbeat_loop", heartbeat)
+
+    with pytest.raises(RuntimeError, match="consume_forever exited unexpectedly"):
+        run(consumer.main())
+
+
+def test_main_cancelled_worker_is_fatal(monkeypatch, tmp_path):
+    """An unexpectedly cancelled worker is surfaced, not treated as a stop."""
+    patch_state(monkeypatch, tmp_path)
+
+    async def cancelled(client, stop_ev, resumed_from, counters):
+        raise asyncio.CancelledError()
+
+    async def heartbeat(client, counters, stop_ev):
+        await asyncio.sleep(3600)
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", cancelled)
+    monkeypatch.setattr(consumer, "heartbeat_loop", heartbeat)
+
+    with pytest.raises(
+        RuntimeError, match="consume_forever was cancelled unexpectedly"
+    ):
+        run(consumer.main())
+
+
+def test_main_names_worker_crash_during_graceful_drain(monkeypatch, tmp_path):
+    """Stop can win FIRST_COMPLETED; a worker that fails in the drain must
+    still be named, not surface as a bare gather exception."""
+    patch_state(monkeypatch, tmp_path)
+
+    async def crash_after_stop(client, stop_ev, resumed_from, counters):
+        stop_ev.set()
+        await asyncio.sleep(0.05)
+        raise RuntimeError("boom")
+
+    async def heartbeat(client, counters, stop_ev):
+        await asyncio.sleep(3600)
+
+    class FakeCh:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_get_client(**kw):
+        return FakeCh()
+
+    monkeypatch.setattr(consumer, "get_async_client", fake_get_client)
+    monkeypatch.setattr(consumer, "consume_forever", crash_after_stop)
+    monkeypatch.setattr(consumer, "heartbeat_loop", heartbeat)
+
+    with pytest.raises(RuntimeError, match="consume_forever failed") as exc:
+        run(consumer.main())
+
+    assert isinstance(exc.value.__cause__, RuntimeError)
 
 
 def test_main_cold_start_returns_when_stop_requested(monkeypatch, caplog):

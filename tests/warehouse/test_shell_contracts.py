@@ -27,6 +27,7 @@ SHELL_SCRIPTS = [
     WAREHOUSE / "backup.sh",
     WAREHOUSE / "notify-failure.sh",
     REPO / "scripts" / "boot.sh",
+    REPO / "scripts" / "secret_helpers.sh",
 ]
 
 _DATE_STUB = f"""#!/usr/bin/env python3

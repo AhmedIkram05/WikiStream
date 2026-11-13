@@ -65,7 +65,7 @@ def report_status(verdict: dict, client=None) -> tuple | None:
             "default.pipeline_health",
             data=[row],
             column_names=["ts", "source", "metric", "value", "detail"],
-            settings={"async_insert": 1, "wait_for_async_insert": 0},
+            settings={"async_insert": 0},
         )
     except Exception as exc:
         logging.getLogger(__name__).warning(

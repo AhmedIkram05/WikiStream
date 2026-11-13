@@ -91,7 +91,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | --- | --- | --- |
 | **SSE consumer** | Async `httpx2` + hand-rolled WHATWG-compliant SSE parser | Zero-dependency, full control over `Last-Event-ID` resume semantics |
 | **Validation** | Pydantic v2 schema-on-write | Every row is typed before it hits disk; malformed events route to a dead-letter table |
-| **Batcher** | 1,000 rows / 5s flush, `async_insert=1` | ~1,000x fewer insert round-trips; ClickHouse merges server-side |
+| **Batcher** | 1,000 rows / 5s flush, synchronous insert | ~1,000x fewer insert round-trips; a returned insert means the part is written, not merely buffered |
 | **Materialized views** | 3 SummingMergeTree MVs, no `POPULATE` | Dashboard queries skip JSON parsing: **15.0x faster p50, ~200x fewer rows scanned** |
 | **BigQuery warehouse** | Hourly `bq load` → staging tables → MERGE upserts with a **2-hour trailing overlap** (late arrivals self-heal) + SUMS parity over the same slice; daily `kpi_daily` rollup on the BQ scheduler | Queryable partitioned history past the 1-day raw TTL (retention sized by disk math; BQ owns history); re-runs are idempotent and late arrivals rehydrate automatically; merge-state-safe parity |
 | **Warehouse governance** | `require_partition_filter` + expirations (730d KPI / 90d raw / 7d staging / 365d ops) + clustering + `v_bq_cost_daily` view | Cost is enforced in the schema, not in discipline: every scan must narrow a partition, stale data self-expires, and GB-scanned/day lands in Grafana |

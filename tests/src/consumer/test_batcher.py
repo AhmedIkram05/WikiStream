@@ -3,7 +3,7 @@
 import asyncio
 from datetime import datetime, timezone
 
-from src.batcher import EventBatcher
+from src.batcher import SETTINGS, EventBatcher
 from src.cursors import _cursor_ts, _max_id
 
 
@@ -28,6 +28,12 @@ class FakeClock:
 
 def constant_clock() -> float:
     return 0.0
+
+
+def test_insert_is_synchronous_so_landed_means_written():
+    """A returned insert must mean ClickHouse wrote the part, not that it
+    accepted rows into an in-memory async buffer (the old at-most-once path)."""
+    assert SETTINGS == {"async_insert": 0}
 
 
 def test_1000th_row_triggers_flush():
@@ -67,7 +73,7 @@ def test_flush_shape():
     assert len(call["data"]) == 3
     assert isinstance(call["data"][0][0], datetime)
     assert isinstance(call["data"][0][1], str)
-    assert call["settings"] == {"async_insert": 1, "wait_for_async_insert": 0}
+    assert call["settings"] == {"async_insert": 0}
     assert b.pending_count == 0
 
 

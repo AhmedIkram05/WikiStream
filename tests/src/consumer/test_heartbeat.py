@@ -210,8 +210,8 @@ def test_heartbeat_loop_live_insert():
             stopper = asyncio.create_task(_set_after(stop, 1.0))
             await heartbeat_loop(client, counters(), stop, interval=0.1)
             await stopper
-            # async_insert is fire-and-forget (wait_for_async_insert=0): poll
-            # for visibility instead of asserting immediately. pipeline_health
+            # The heartbeat insert is synchronous (async_insert=0); poll anyway
+            # so a slow flush cannot make the assertion racy. pipeline_health
             # comes from migration 008 — if it is missing, this SELECT raises.
             deadline = time.monotonic() + 10.0
             n = 0

@@ -63,7 +63,7 @@ async def heartbeat_loop(client, counters, stop, interval: float = 15.0) -> None
                 "default.pipeline_health",
                 data=[row],
                 column_names=["ts", "source", "metric", "value", "detail"],
-                settings={"async_insert": 1, "wait_for_async_insert": 0},
+                settings={"async_insert": 0},
             )
         except Exception as exc:
             logger.warning("heartbeat_insert_failed reason=%s", exc)
@@ -75,7 +75,7 @@ async def heartbeat_loop(client, counters, stop, interval: float = 15.0) -> None
             "default.pipeline_health",
             data=[row],
             column_names=["ts", "source", "metric", "value", "detail"],
-            settings={"async_insert": 1, "wait_for_async_insert": 0},
+            settings={"async_insert": 0},
         )
     except Exception as exc:
         logger.warning("heartbeat_insert_failed reason=%s", exc)

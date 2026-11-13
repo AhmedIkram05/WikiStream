@@ -173,10 +173,11 @@ if [ "$gate" != "OK" ]; then
   exit 1
 fi
 
-# Compare CH vs BQ for the window. $1 = result var name, $2 = label,
-# $3 = export SQL filename ("" = raw-sample fixed query), $4 = CH aggregate
-# over the export SQL, $5 = bq parity SQL, $6 = comma-separated BQ column
-# names in CH order. Any query error or mismatch exits 1.
+# Compare CH vs BQ for the window. $1 = result name, $2 = export SQL filename
+# ("" = raw-sample fixed query), $3 = CH aggregate over the export SQL,
+# $4 = bq parity SQL, $5 = comma-separated BQ column names in CH order.
+# Query errors set status=error and exit 1; a value mismatch sets status=drift
+# and the caller exits 1 after the log line is written.
 compare_result=""
 compare_table() {
   local name=$1 export_sql=$2 aggregate=$3 bq_sql=$4 bq_cols=$5

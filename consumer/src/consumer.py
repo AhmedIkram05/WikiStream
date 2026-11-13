@@ -1,11 +1,13 @@
 """Async consumer for the Wikimedia recentchange SSE stream (plan §6.1, §4A).
 
 Connects to the EventStreams SSE endpoint, parses frames with src.sse.SSEParser,
-validates each event (src.models), and batches inserts into
-default.raw_events via the clickhouse-connect async client (async_insert,
-at-most-once). Validation failures go to the dead-letter table. Durability is
-tracked in /state/consumer_state.json (Last-Event-ID + totals) so restarts
-resume without losing the cursor. SIGINT/SIGTERM flush + save before exit.
+validates each event (src.models), and batches synchronous inserts into
+default.raw_events via the clickhouse-connect async client. A returned insert
+means the part is written, not merely buffered, and the durable cursor is saved
+immediately after each landed batch. Validation failures go to the dead-letter
+table. Durability is tracked in /state/consumer_state.json (Last-Event-ID +
+totals) so restarts resume without losing the cursor. SIGINT/SIGTERM flush +
+save before exit.
 """
 
 import asyncio
@@ -26,7 +28,7 @@ from src.batcher import EventBatcher
 from src.cursors import _max_id, _min_id
 from src.dead_letter import DeadLetterBatcher
 from src.heartbeat import heartbeat_loop
-from src.models import WikiEvent, validate_timestamp
+from src.models import WikiEvent, parse_timestamp
 from src.sse import SSEParser
 
 STREAM_URL = os.environ.get(
@@ -326,6 +328,13 @@ class _StreamRun:
                     self.counters["total"] += flushed
                     if mid is not None:
                         self.cursor.main_flushed(mid)
+                    # Persist the cursor at the same point the batch became
+                    # durable: the 2s debounce in ingest() left a window where
+                    # a crash replayed an already-written batch (duplicates).
+                    # One ~1ms fsync per batch, not per event.
+                    save_state(self.cursor.durable_id, self.counters["total"])
+                    self.last_saved_id = self.cursor.durable_id
+                    self.last_saved_mono = time.monotonic()
                     break
                 if not honor_stop and (
                     not FLUSH_RETRY_SCHEDULE or attempt >= len(FLUSH_RETRY_SCHEDULE)
@@ -480,15 +489,18 @@ class _StreamRun:
                 event_id=ev_id,
             )
             return
-        # Step 2: timestamp validity.
+        # Step 2: timestamp validity. Parse once and hand the datetime to
+        # Pydantic below, so the wire value is not decoded a second time.
         ts = obj.get("timestamp") if isinstance(obj, dict) else None
-        ts_reason = validate_timestamp(ts)
+        parsed_ts, ts_reason = parse_timestamp(ts)
         if ts_reason is not None:
             wiki, title = _dl_fields(obj)
             await self.dl_add(
                 reason=ts_reason, wiki=wiki, title=title, event=ev.data, event_id=ev_id
             )
             return
+        if isinstance(obj, dict):
+            obj["timestamp"] = parsed_ts
         # Step 3: schema validity.
         try:
             WikiEvent.model_validate(obj)
@@ -546,70 +558,77 @@ class _StreamRun:
 
     async def run(self) -> None:
         dl_timer = asyncio.create_task(self.dl_timer_job())
-        # read=120: a silent upstream stall must time out into a reconnect —
-        # with read unbounded the loop blocks in aiter_bytes forever and only
-        # checks stop at chunk boundaries (which never arrive without bytes).
-        async with httpx2.AsyncClient(
-            timeout=httpx2.Timeout(None, connect=10.0, read=120.0)
-        ) as http:
-            while not self.stop.is_set():
-                headers = {
-                    "Accept": "text/event-stream",
-                    "Cache-Control": "no-cache",
-                    "User-Agent": USER_AGENT,
-                }
-                if self.cursor.durable_id is not None:
-                    headers["Last-Event-ID"] = self.cursor.durable_id
-                retry_after: int | None = None
-                try:
-                    async with http.stream(
-                        "GET", STREAM_URL, headers=headers
-                    ) as response:
-                        if response.status_code != 200:
-                            retry_after = _parse_retry_after(response)
-                            reason = f"http {response.status_code}"
-                        else:
-                            logger.info(
-                                "connected url=%s last_event_id=%s",
-                                STREAM_URL,
-                                self.cursor.durable_id,
-                            )
-                            parser = SSEParser()
-                            async for chunk in response.aiter_bytes():
-                                if self.stop.is_set():
-                                    break  # flush-on-exit: stop observed at
-                                    # every chunk boundary, so SIGTERM exits
-                                    # promptly between parser feeds
-                                for ev in parser.feed(chunk):
-                                    if ev.retry is not None:
-                                        self.retry_ms = ev.retry
-                                    await self.ingest(ev)
-                            reason = "stream ended"
-                except Exception as exc:
-                    reason = f"{type(exc).__name__}: {exc}"
-                if self.pending_flushes:
-                    await asyncio.gather(*self.pending_flushes, return_exceptions=True)
-                # Drain the DL buffer BEFORE the next connect: buffered rows
-                # land and advance the cursor here, so the reconnect's
-                # Last-Event-ID never replays events whose DL rows already
-                # landed (they would be re-dead-lettered — the DL table has no
-                # dedup).
-                if self.dl_batcher.pending_count:
-                    await self.do_dl_flush()
-                logger.warning(
-                    "reconnect reason=%s last_event_id=%s",
-                    reason,
-                    self.cursor.durable_id,
-                )
-                if await _sleep_or_stop(
-                    self.stop, _wait_seconds(self.retry_ms, retry_after)
-                ):
-                    break
+        try:
+            # read=120: a silent upstream stall must time out into a reconnect —
+            # with read unbounded the loop blocks in aiter_bytes forever and only
+            # checks stop at chunk boundaries (which never arrive without bytes).
+            async with httpx2.AsyncClient(
+                timeout=httpx2.Timeout(None, connect=10.0, read=120.0)
+            ) as http:
+                while not self.stop.is_set():
+                    headers = {
+                        "Accept": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "User-Agent": USER_AGENT,
+                    }
+                    if self.cursor.durable_id is not None:
+                        headers["Last-Event-ID"] = self.cursor.durable_id
+                    retry_after: int | None = None
+                    try:
+                        async with http.stream(
+                            "GET", STREAM_URL, headers=headers
+                        ) as response:
+                            if response.status_code != 200:
+                                retry_after = _parse_retry_after(response)
+                                reason = f"http {response.status_code}"
+                            else:
+                                logger.info(
+                                    "connected url=%s last_event_id=%s",
+                                    STREAM_URL,
+                                    self.cursor.durable_id,
+                                )
+                                parser = SSEParser()
+                                async for chunk in response.aiter_bytes():
+                                    if self.stop.is_set():
+                                        break  # flush-on-exit: stop observed at
+                                        # every chunk boundary, so SIGTERM exits
+                                        # promptly between parser feeds
+                                    for ev in parser.feed(chunk):
+                                        if ev.retry is not None:
+                                            self.retry_ms = ev.retry
+                                        await self.ingest(ev)
+                                reason = "stream ended"
+                    except Exception as exc:
+                        reason = f"{type(exc).__name__}: {exc}"
+                    if self.pending_flushes:
+                        await asyncio.gather(
+                            *self.pending_flushes, return_exceptions=True
+                        )
+                    # Drain the DL buffer BEFORE the next connect: buffered rows
+                    # land and advance the cursor here, so the reconnect's
+                    # Last-Event-ID never replays events whose DL rows already
+                    # landed (they would be re-dead-lettered — the DL table has
+                    # no dedup).
+                    if self.dl_batcher.pending_count:
+                        await self.do_dl_flush()
+                    logger.warning(
+                        "reconnect reason=%s last_event_id=%s",
+                        reason,
+                        self.cursor.durable_id,
+                    )
+                    if await _sleep_or_stop(
+                        self.stop, _wait_seconds(self.retry_ms, retry_after)
+                    ):
+                        break
 
-        await self.final_drain()
-        dl_timer.cancel()
-        with suppress(asyncio.CancelledError):
-            await dl_timer
+            await self.final_drain()
+        finally:
+            # Reap the timer on EVERY exit (client construction failure,
+            # cancellation mid-stream, or an unexpected error): an orphaned
+            # dl_timer would outlive the run.
+            dl_timer.cancel()
+            with suppress(asyncio.CancelledError):
+                await dl_timer
 
     async def final_drain(self) -> None:
         """FINAL FLUSH on shutdown — zero loss.
@@ -709,15 +728,23 @@ async def main() -> None:
                 {consume_task, heartbeat_task, stop_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if stop_task not in done:
-                failed = next(t for t in done if t is not stop_task)
+            # A worker that completed abnormally is fatal even when stop fired
+            # at the same instant: losing that failure would hide a crash.
+            workers_done = [t for t in done if t is not stop_task]
+            failed = next(
+                (t for t in workers_done if t.cancelled() or t.exception() is not None),
+                None,
+            )
+            if failed is not None:
                 name = "consume_forever" if failed is consume_task else "heartbeat_loop"
                 logger.error("%s ended unexpectedly", name)
                 if failed.cancelled():
                     raise RuntimeError(f"{name} was cancelled unexpectedly")
-                exc = failed.exception()
-                if exc is not None:
-                    raise RuntimeError(f"{name} failed") from exc
+                raise RuntimeError(f"{name} failed") from failed.exception()
+            if stop_task not in done:
+                failed = workers_done[0]
+                name = "consume_forever" if failed is consume_task else "heartbeat_loop"
+                logger.error("%s ended unexpectedly", name)
                 raise RuntimeError(f"{name} exited unexpectedly")
             # Graceful: up to 10s for the final flush + state save (SIGTERM
             # path must flush), then force-cancel if the stream read blocks.
@@ -730,6 +757,20 @@ async def main() -> None:
                     t.cancel()
                     with suppress(asyncio.CancelledError):
                         await t
+            except Exception as exc:
+                # A worker that fails while draining must still be named: stop
+                # may have won the FIRST_COMPLETED race above.
+                failed = next(
+                    (
+                        t
+                        for t in (consume_task, heartbeat_task)
+                        if t.done() and not t.cancelled() and t.exception() is not None
+                    ),
+                    None,
+                )
+                name = "consume_forever" if failed is consume_task else "heartbeat_loop"
+                logger.error("%s ended unexpectedly", name)
+                raise RuntimeError(f"{name} failed") from exc
         finally:
             stop_task.cancel()
             for t in (consume_task, heartbeat_task):
