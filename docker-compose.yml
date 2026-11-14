@@ -111,19 +111,17 @@ services:
       retries: 3
       start_period: 30s
 
-  # Phase 4B (Q8/Q10): periodic data-quality gate. NOT a long-running service —
-  # boot-time `up -d` runs suite.py once (harmless, usually exits non-zero
-  # before boot.sh bootstraps the user) and the hourly systemd timer drives it
-  # via `docker compose run --rm gx`. startup.sh writes GX_IMAGE for the VM;
-  # local dev builds the same ref via `docker compose build gx`.
-  gx:
+  # Periodic data-quality gate. NOT a long-running service — boot-time `up -d`
+  # runs it once (harmless, usually exits before boot.sh bootstraps the user)
+  # and the hourly systemd timer drives it via
+  # `docker compose run --rm data_quality`. It uses the consumer image: after
+  # Great Expectations was retired, the gate needs only clickhouse-connect,
+  # which the consumer image already carries.
+  data_quality:
     logging: *default-logging
-    platform: linux/amd64  # zstd (via asynch) has no arm64 wheel; prod is amd64
-    build:
-      context: .
-      dockerfile: gx/Dockerfile
-    image: ${GX_IMAGE:-us-central1-docker.pkg.dev/wikistream-505003/wikistream-consumer/gx:latest}
-    container_name: wikistream-gx
+    build: ./consumer
+    image: ${CONSUMER_IMAGE:-wikistream-consumer:local}
+    container_name: wikistream-data-quality
     restart: "no"
     depends_on: [clickhouse]
     environment:
@@ -131,8 +129,9 @@ services:
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_USER: wikistream
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-wikistream_dev_password}
-      GX_TABLE: default.raw_events
-      GX_WINDOW_HOURS: "1"
+      DATA_QUALITY_TABLE: default.raw_events
+      DATA_QUALITY_WINDOW_HOURS: "1"
+    command: ["uv", "run", "python", "-m", "src.data_quality"]
 
 volumes:
   ch-data:

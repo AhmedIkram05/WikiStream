@@ -33,7 +33,7 @@ that have no existing resource to scope a binding to.
 | Role | Why it is needed |
 | --- | --- |
 | `roles/compute.admin` | create/replace the VM, disk, static IP, VPC, subnet and firewall rules |
-| `roles/artifactregistry.admin` | bootstrap owns the `wikistream-consumer` repo; CI pushes consumer and gx images |
+| `roles/artifactregistry.admin` | bootstrap owns the `wikistream-consumer` repo; CI pushes the consumer image |
 | `roles/secretmanager.admin` | create secrets and versions managed by `infra/main` |
 | `roles/iam.serviceAccountAdmin` + `roles/iam.serviceAccountUser` | create the VM service account and run the instance as it |
 | `roles/resourcemanager.projectIamAdmin` | bind `roles/compute.osLogin` for the human operator |
@@ -63,7 +63,7 @@ they cannot be discovered before CI authenticates:
 - Artifact Registry: `us-central1-docker.pkg.dev/<project_id>/wikistream-consumer`
 
 Runtime project wiring is **not** pinned: `startup.sh` reads the project id from
-the metadata server and writes `GCP_PROJECT`, `CONSUMER_IMAGE` and `GX_IMAGE`
+the metadata server and writes `GCP_PROJECT` and `CONSUMER_IMAGE`
 into `.env`; Grafana, the warehouse scripts and the backup/export defaults derive
 from that value.
 

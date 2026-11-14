@@ -20,7 +20,7 @@ BATCH_UNITS = [
     WAREHOUSE / "wikistream-export.service",
     WAREHOUSE / "wikistream-parity.service",
     WAREHOUSE / "wikistream-backup.service",
-    REPO / "gx" / "wikistream-gx.service",
+    REPO / "consumer" / "wikistream-data-quality.service",
 ]
 
 

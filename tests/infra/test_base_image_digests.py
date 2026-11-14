@@ -7,9 +7,7 @@ REPO = Path(__file__).parents[2]
 
 def test_dockerfiles_pin_base_images_by_digest():
     consumer = (REPO / "consumer" / "Dockerfile").read_text()
-    gx = (REPO / "gx" / "Dockerfile").read_text()
     assert "FROM python:3.14-slim@sha256:" in consumer
-    assert "FROM python:3.12-slim@sha256:" in gx
 
 
 def test_compose_pins_service_images_by_digest():

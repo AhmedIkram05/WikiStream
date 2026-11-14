@@ -5,16 +5,18 @@ from pathlib import Path
 REPO = Path(__file__).parents[2]
 
 
-def test_startup_env_carries_project_and_gx_image():
+def test_startup_env_carries_project_and_consumer_image():
     startup = (REPO / "infra" / "main" / "templates" / "startup.sh").read_text()
     assert "GCP_PROJECT=${GCP_PROJECT}" in startup
     assert (
-        "GX_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/gx:latest"
+        "CONSUMER_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/consumer:latest"
         in startup
     )
+    assert "GX_IMAGE=" not in startup
     example = (REPO / ".env.example").read_text()
     assert "GCP_PROJECT=" in example
-    assert "GX_IMAGE=" in example
+    assert "CONSUMER_IMAGE=" in example
+    assert "DATA_QUALITY_TABLE=" in example
 
 
 def test_grafana_bigquery_default_project_is_not_hardcoded():

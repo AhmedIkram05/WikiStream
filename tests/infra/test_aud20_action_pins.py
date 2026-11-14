@@ -20,7 +20,6 @@ def test_every_action_ref_is_a_commit_sha():
 
 
 def test_dockerfiles_pin_uv_by_digest():
-    for name in ("consumer/Dockerfile", "gx/Dockerfile"):
-        text = (REPO / name).read_text()
-        assert "ghcr.io/astral-sh/uv@sha256:" in text
-        assert "ghcr.io/astral-sh/uv:latest" not in text
+    text = (REPO / "consumer" / "Dockerfile").read_text()
+    assert "ghcr.io/astral-sh/uv@sha256:" in text
+    assert "ghcr.io/astral-sh/uv:latest" not in text

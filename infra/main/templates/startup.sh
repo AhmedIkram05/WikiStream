@@ -94,7 +94,6 @@ CLICKHOUSE_RO_PASSWORD=${CH_RO_PASSWORD}
 GF_SECURITY_ADMIN_PASSWORD=${GF_PASSWORD}
 GCP_PROJECT=${GCP_PROJECT}
 CONSUMER_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/consumer:latest
-GX_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/gx:latest
 EOF
 [ -n "${CH_DATA_DIR:-}" ] && echo "CH_DATA_DIR=${CH_DATA_DIR}" >>.env
 
