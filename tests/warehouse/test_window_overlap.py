@@ -1,4 +1,4 @@
-"""Trailing-overlap window contract for export.sh / parity.sh (no CH needed).
+"""Trailing-overlap window contract for export.sh / parity.py (no CH needed).
 
 The late-arrival fix (implementation-log §9.10) lives in shell window math:
 the hourly export covers a trailing 2-hour overlap and parity mirrors it, so
@@ -31,8 +31,8 @@ def test_export_default_window_trails_two_hours():
 
 
 def test_parity_default_window_mirrors_export():
-    text = _script("parity.sh")
-    assert TWO_HOURS_AGO_START in text, "parity stopped mirroring the export overlap"
-    assert TOP_OF_HOUR_END in text, "parity window_end must stay identical to export's"
+    text = _script("parity.py")
+    assert "timedelta(hours=2)" in text, "parity stopped mirroring the export overlap"
+    assert "minute=0" in text, "parity window_end must stay top-of-hour"
     assert "mirroring export.sh" in text, "parity header no longer states the mirror"
     assert ONE_HOUR_BACKFILL_MENTION not in text, "old '1 hour ago' default left behind"

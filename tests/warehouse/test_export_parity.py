@@ -1,8 +1,8 @@
 """Warehouse export/parity suite for phase 3C (plan 3.3.7, Q6/Q7).
 
 Runs against a live ClickHouse and exercises the SAME committed SQL files that
-export.sh and parity.sh run in production. gcloud/bq are deliberately out of
-scope here (3.3.7: local equivalence is the point) — the drift parity.sh
+export.sh and parity.py run in production. gcloud/bq are deliberately out of
+scope here (3.3.7: local equivalence is the point) — the drift parity.py
 detects lives on the BQ side of its comparison, and the BQ-dialect twins are
 only shape-checked locally.
 
@@ -363,7 +363,7 @@ def test_export_raw_sample_deterministic_subset(seeded):
 
 @pytest.mark.ch
 def test_parity_ch_sums_match_export(seeded):
-    """The CH half of parity.sh (wrapped SUM/count over the same SQL)."""
+    """The CH half of parity.py (wrapped SUM/count over the same SQL)."""
     start, end = seeded
     want_edits, want_bytes = fixture_totals()
 
