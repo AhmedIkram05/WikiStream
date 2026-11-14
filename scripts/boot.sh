@@ -77,15 +77,19 @@ echo "user bootstrap ok"
 #    lines; any non-zero exit aborts boot.sh via set -e).
 CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream CH_PASSWORD=${CH_PASSWORD} MIGRATIONS_DIR=/opt/wikistream/migrations bash /opt/wikistream/migrations/apply.sh
 
-# Phase 3C/4B: install BigQuery export + parity + backup + GX systemd units/timers,
-# plus the OnFailure page-template (batch failures Slack instantly, incl. GX crashes).
+# Install BigQuery export + parity + backup + data-quality systemd units/timers,
+# plus the OnFailure page-template (batch failures Slack instantly, incl.
+# data-quality crashes). The gx unit cleanup is idempotent and keeps an
+# in-place VM from running the retired gate alongside its replacement.
+systemctl disable --now wikistream-gx.timer 2>/dev/null || true
+rm -f /etc/systemd/system/wikistream-gx.service /etc/systemd/system/wikistream-gx.timer
 cp /opt/wikistream/warehouse/wikistream-export.service /opt/wikistream/warehouse/wikistream-export.timer \
   /opt/wikistream/warehouse/wikistream-parity.service /opt/wikistream/warehouse/wikistream-parity.timer \
   /opt/wikistream/warehouse/wikistream-backup.service /opt/wikistream/warehouse/wikistream-backup.timer \
-  /opt/wikistream/gx/wikistream-gx.service /opt/wikistream/gx/wikistream-gx.timer \
+  /opt/wikistream/consumer/wikistream-data-quality.service /opt/wikistream/consumer/wikistream-data-quality.timer \
   /opt/wikistream/warehouse/wikistream-fail-notify@.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now wikistream-export.timer wikistream-parity.timer wikistream-backup.timer wikistream-gx.timer
+systemctl enable --now wikistream-export.timer wikistream-parity.timer wikistream-backup.timer wikistream-data-quality.timer
 
 # Phase 5 (5B.1): Ops Agent — disk/memory metrics (agentless CM cannot see them).
 # Non-fatal by design (boot.sh is set -e): a transient network failure must not

@@ -16,6 +16,6 @@ def test_bucket_names_follow_the_project():
     assert 'name                        = "${var.project_id}-bq-staging"' in bigquery
 
 
-def test_gx_image_has_an_override():
+def test_consumer_image_has_an_override():
     compose = (REPO / "docker-compose.yml").read_text()
-    assert "${GX_IMAGE:-" in compose
+    assert "${CONSUMER_IMAGE:-" in compose

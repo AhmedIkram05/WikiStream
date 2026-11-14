@@ -19,7 +19,7 @@ def test_clickhouse_grants_are_scoped_and_grafana_is_read_only():
         assert "ON *.* TO wikistream_ro" not in text
 
     compose = (REPO / "docker-compose.yml").read_text()
-    grafana = compose.split("grafana:", 1)[1].split("gx:", 1)[0]
+    grafana = compose.split("grafana:", 1)[1].split("data_quality:", 1)[0]
     assert "CLICKHOUSE_RO_PASSWORD" in grafana
     assert "CLICKHOUSE_PASSWORD:" not in grafana
 

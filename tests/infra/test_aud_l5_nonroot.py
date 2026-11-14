@@ -16,9 +16,3 @@ def test_consumer_runs_as_uid_10001_from_the_start():
     assert 'user: "0:0"' in compose
     assert "service_completed_successfully" in compose
     assert "chown -R app:app /state" in compose
-
-
-def test_gx_runs_as_the_unprivileged_user():
-    dockerfile = (REPO / "gx" / "Dockerfile").read_text()
-    assert "--uid 10001" in dockerfile
-    assert "\nUSER app\n" in dockerfile

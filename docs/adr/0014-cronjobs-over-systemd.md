@@ -3,6 +3,8 @@
 **Status:** Accepted — v4 ephemeral per phase-6-kubernetes-integration.md §16 (2026-09-06; v4 changes cluster ownership only, decision stands) — v2 intent preserved as ponytail upgrade path
 **Date:** 2026-09-02
 
+**Naming note (2026-11-14):** the `gx`/`GX` batch job referenced below is now `data-quality` (ADR-0015); this proposal's naming predates that rename.
+
 ## Context
 
 VM has 4 `systemd` timers (`boot.sh:54-60`): `export *:00`, `parity *:05`, `backup *:20`, `gx *:30`. `export.sh`/`parity.sh` are bash that `docker exec clickhouse-client` + `gcloud storage cp` + `bq load`; `gx/suite.py` is Python already. v1 left gaps: `BACKUP TABLE` not `DATABASE`, missing `timeZone`/`startingDeadlineSeconds`/`backoffLimit`, no restore-verify, workload via `kubernetes_manifest`, GMP optional, `pipeline_health` circular alert.

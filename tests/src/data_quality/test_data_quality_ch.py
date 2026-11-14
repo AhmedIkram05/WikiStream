@@ -1,7 +1,8 @@
-"""CH-marked integration tests for the gx suite against local ClickHouse.
+"""CH-marked integration tests for src.data_quality against local ClickHouse.
 
-Each test builds a fixture table in default.*, runs gx/suite.py as a real
-subprocess (exercising the exit-code contract), and drops the table in teardown.
+Each test builds a fixture table in default.*, runs the gate as a real
+subprocess (exercising the exit-code contract), and drops the table in
+teardown.
 """
 
 import json
@@ -16,7 +17,7 @@ import pytest
 
 pytestmark = pytest.mark.ch
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "wikistream_dev_password")
@@ -59,44 +60,24 @@ def _window():
     return end - timedelta(hours=1), end
 
 
-def _suite_command() -> list[str]:
-    """Command to run gx.suite with the gx project's interpreter.
-
-    Under ``uv run --project gx pytest`` ``sys.executable`` already is the gx
-    venv python; when the file is collected by another project's pytest (e.g.
-    the consumer ch run) resolve the gx venv via uv instead.
-    """
-    try:
-        import great_expectations  # noqa: F401
-    except ImportError:
-        return ["uv", "run", "--project", "gx", "python", "-m", "gx.suite"]
-    # Phase 6 AC4: when the coverage gate runs, COVERAGE_PROCESS_START points
-    # at the gx .coveragerc and coverage's startup hook measures this plain
-    # subprocess automatically (no `coverage run` wrapper needed — a nested
-    # one would double-start tracing).
-    return [sys.executable, "-m", "gx.suite"]
-
-
-def _run_suite(table: str, window_end: datetime) -> tuple[int, dict]:
+def _run_gate(table: str, window_end: datetime) -> tuple[int, dict]:
     env = {
         **os.environ,
         "CLICKHOUSE_HOST": HOST,
         "CLICKHOUSE_PORT": str(PORT),
         "CLICKHOUSE_USER": "wikistream",
         "CLICKHOUSE_PASSWORD": PASSWORD,
-        "GX_TABLE": table,
-        "GX_WINDOW_HOURS": "1",
-        # Pin the validated window to the one the fixture was built with —
-        # otherwise a wall-clock hop across an hour boundary between insert and
-        # run makes the suite see an empty window.
-        "GX_WINDOW_END": window_end.isoformat(),
-        "GX_ROW_MIN": "1",
-        "GX_ROW_MAX": "500000",
-        "GX_SAMPLE_RATE": "1.0",  # no sampling in tests — full deterministic batches
+        "DATA_QUALITY_TABLE": table,
+        "DATA_QUALITY_WINDOW_HOURS": "1",
+        # Pin the validated window to the fixture's window — otherwise a
+        # wall-clock hop across an hour boundary makes the gate see nothing.
+        "DATA_QUALITY_WINDOW_END": window_end.isoformat(),
+        "DATA_QUALITY_ROW_MIN": "1",
+        "DATA_QUALITY_ROW_MAX": "500000",
     }
     proc = subprocess.run(
-        _suite_command(),
-        cwd=REPO_ROOT,
+        [sys.executable, "-m", "src.data_quality"],
+        cwd=REPO_ROOT / "consumer",
         env=env,
         capture_output=True,
         text=True,
@@ -105,16 +86,15 @@ def _run_suite(table: str, window_end: datetime) -> tuple[int, dict]:
     lines = proc.stdout.strip().splitlines()
     if not lines:
         raise AssertionError(
-            "suite produced no stdout; "
+            "gate produced no stdout; "
             f"rc={proc.returncode} stderr={proc.stderr[-2000:]}"
         )
     return proc.returncode, json.loads(lines[-1])
 
 
-# Unique per-process so parallel pytest runs (consumer ch + gx ch) don't race
-# on the same fixture tables.
-_VALID_TABLE = f"gx_test_valid_{os.getpid()}"
-_BAD_TABLE = f"gx_test_bad_{os.getpid()}"
+# Unique per-process so parallel pytest runs don't race on fixture tables.
+_VALID_TABLE = f"dq_test_valid_{os.getpid()}"
+_BAD_TABLE = f"dq_test_bad_{os.getpid()}"
 
 
 def test_valid_fixture_passes():
@@ -142,10 +122,11 @@ def test_valid_fixture_passes():
                 ]
             )
         client.insert(table, rows, column_names=COLUMNS)
-        rc, report = _run_suite(table, end)
+        rc, report = _run_gate(table, end)
         assert rc == 0, report
         assert report["success"] is True
         assert report["row_count"] == 200
+        assert report["expectations_passed"] == 11
     finally:
         client.command(f"DROP TABLE IF EXISTS {table}")
         client.close()
@@ -161,8 +142,8 @@ def test_bad_fixture_fails():
         inserted_at = start + timedelta(minutes=30)
         rows = []
         for i in range(200):
-            # Engineered failures: bad event_type, 5 wikis only, bot ratio 0.9,
-            # and a +10min future skew on half the rows.
+            # Engineered failures: bad event_type, 5 wikis only, and a +10min
+            # future skew on half the rows.
             rows.append(
                 [
                     f'{{"wiki": "wiki{i % 5}"}}',
@@ -179,7 +160,7 @@ def test_bad_fixture_fails():
                 ]
             )
         client.insert(table, rows, column_names=COLUMNS)
-        rc, report = _run_suite(table, end)
+        rc, report = _run_gate(table, end)
         assert rc != 0, report
         assert report["success"] is False
         assert report["expectations_failed"] >= 1

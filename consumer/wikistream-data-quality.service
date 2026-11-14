@@ -1,0 +1,14 @@
+[Unit]
+Description=WikiStream hourly SQL data-quality check
+After=docker.service network-online.target
+Wants=network-online.target
+# A crashed run (no 0.0 verdict written) escapes the data-quality alert;
+# page instantly.
+OnFailure=wikistream-fail-notify@%n.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=1800
+ExecStart=/usr/bin/docker compose -f /opt/wikistream/docker-compose.yml run --rm -T data_quality
+StandardOutput=append:/var/log/wikistream-data-quality.log
+StandardError=append:/var/log/wikistream-data-quality.log

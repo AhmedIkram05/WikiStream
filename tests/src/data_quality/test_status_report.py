@@ -1,36 +1,22 @@
-"""Unit + CH-marked tests for gx.suite.report_status (pipeline_health write).
+"""Unit + CH-marked tests for src.data_quality.report_status.
 
 Row-builder and failure-swallowing behavior is pure and runs everywhere; the
-live insert and the fake-client insert-failure test are ch-marked so the
-``-m ch`` verification run exercises them against the running stack.
+live insert is ch-marked so the ``-m ch`` verification run exercises it against
+the running stack.
 """
 
 import json
 import os
-import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import clickhouse_connect
 import pytest
 
-# pythonpath in pytest.ini only exposes consumer/gx (the `src` layout); gx.suite
-# lives at repo root, so insert it explicitly (mirrors tests/conftest.py).
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-# gx.suite imports great_expectations at module level, which only the gx venv
-# has. The unit-tests CI job collects this file under the *consumer* venv, so
-# skip the module there instead of failing collection (the gx venv runs the
-# unit half in CI via its own `-m "not ch" tests/gx` step).
-pytest.importorskip("great_expectations")
-
-from gx.suite import report_status
+from src.data_quality import report_status
 
 HOST = "localhost"
 PORT = 8123
-# CI's live ch job exports CH_PASSWORD; no credential literal in source so
-# secret scanners stay quiet. The local `-m "not ch"` run never connects.
 PASSWORD = os.getenv("CH_PASSWORD", "")
 
 # Mirrors migrations/008_pipeline_health.sql so the live test is self-sufficient
@@ -53,7 +39,7 @@ VERDICT = {
     "window_start": "2026-08-01T00:00:00+00:00",
     "window_end": "2026-08-01T01:00:00+00:00",
     "run_id": "unit-test",
-    "expectations_passed": 3,
+    "expectations_passed": 11,
     "expectations_failed": 0,
     "row_count": 42,
 }
@@ -76,7 +62,7 @@ def test_row_shape_and_source_metric():
     row = report_status(VERDICT, _FakeClient())
     assert isinstance(row, tuple) and len(row) == 5
     assert isinstance(row[0], datetime) and row[0].tzinfo is timezone.utc
-    assert row[1] == "gx"
+    assert row[1] == "data_quality"
     assert row[2] == "result"
 
 
@@ -105,7 +91,7 @@ def test_detail_has_six_keys_and_parses():
         "window_start": "2026-08-01T00:00:00+00:00",
         "window_end": "2026-08-01T01:00:00+00:00",
         "run_id": "unit-test",
-        "expectations_passed": 3,
+        "expectations_passed": 11,
         "expectations_failed": 0,
         "row_count": 42,
     }
@@ -131,7 +117,6 @@ def test_client_none_returns_none_without_raising():
     assert report_status(VERDICT, None) is None
 
 
-@pytest.mark.ch
 def test_insert_failure_is_swallowed():
     assert report_status(VERDICT, _RaisingClient()) is not None
 
@@ -149,20 +134,18 @@ def test_live_insert_to_pipeline_health():
                 "window_start": "2026-08-01T00:00:00+00:00",
                 "window_end": "2026-08-01T01:00:00+00:00",
                 "run_id": "live-insert-test",
-                "expectations_passed": 3,
+                "expectations_passed": 11,
                 "expectations_failed": 0,
                 "row_count": 42,
             },
             client,
         )
         assert row is not None
-        # The insert is synchronous now; poll briefly anyway so a slow server
-        # flush cannot make the assertion racy.
         deadline = time.monotonic() + 10
         while True:
             n = client.query(
                 "SELECT count() FROM default.pipeline_health "
-                "WHERE source='gx' AND metric='result' "
+                "WHERE source='data_quality' AND metric='result' "
                 "AND ts > now() - INTERVAL 1 MINUTE"
             ).first_row[0]
             if n >= 1:

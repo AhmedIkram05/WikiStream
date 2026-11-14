@@ -85,8 +85,8 @@ def recorder(monkeypatch) -> list:
     return calls
 
 
-def gx_probe_name() -> str:
-    return f"healthcheck_gx_probe_{os.getpid()}"
+def data_quality_probe_name() -> str:
+    return f"healthcheck_data_quality_probe_{os.getpid()}"
 
 
 def probe_table(monkeypatch, env: dict, stale_seconds: int) -> tuple[str, str]:
@@ -101,10 +101,10 @@ def probe_table(monkeypatch, env: dict, stale_seconds: int) -> tuple[str, str]:
     """
     table = f"healthcheck_probe_{os.getpid()}"
     hb_table = f"healthcheck_heartbeat_probe_{os.getpid()}"
-    gx_table = gx_probe_name()
+    data_quality_table = data_quality_probe_name()
     query(f"DROP TABLE IF EXISTS {table}", env)
     query(f"DROP TABLE IF EXISTS {hb_table}", env)
-    query(f"DROP TABLE IF EXISTS {gx_table}", env)
+    query(f"DROP TABLE IF EXISTS {data_quality_table}", env)
     query(
         f"CREATE TABLE {table} (event String, inserted_at DateTime64(3, 'UTC')) "
         "ENGINE = MergeTree ORDER BY inserted_at",
@@ -117,12 +117,14 @@ def probe_table(monkeypatch, env: dict, stale_seconds: int) -> tuple[str, str]:
         "ENGINE = MergeTree ORDER BY ts",
         env,
     )
-    # Empty gx probe: no verdict -> healthy, so the staleness assertions are
-    # unaffected by whatever gx rows the live pipeline_health happens to hold.
-    query(f"CREATE TABLE {gx_table} AS {hb_table}", env)
+    # Empty data-quality probe: no verdict -> healthy, so the staleness assertions are
+    # unaffected by whatever data-quality rows the live pipeline_health happens to hold.
+    query(f"CREATE TABLE {data_quality_table} AS {hb_table}", env)
     monkeypatch.setattr(healthcheck, "HEALTHCHECK_TABLE", table)
     monkeypatch.setattr(healthcheck, "HEALTHCHECK_HEARTBEAT_TABLE", hb_table)
-    monkeypatch.setattr(healthcheck, "HEALTHCHECK_GX_TABLE", gx_table)
+    monkeypatch.setattr(
+        healthcheck, "HEALTHCHECK_DATA_QUALITY_TABLE", data_quality_table
+    )
     patch_ch(monkeypatch, env, stale_seconds)
     return table, hb_table
 
@@ -146,7 +148,7 @@ def insert_heartbeat(env: dict, hb_table: str, expr: str) -> None:
 def drop_probes(env: dict, table: str, hb_table: str) -> None:
     query(f"DROP TABLE IF EXISTS {table}", env)
     query(f"DROP TABLE IF EXISTS {hb_table}", env)
-    query(f"DROP TABLE IF EXISTS {gx_probe_name()}", env)
+    query(f"DROP TABLE IF EXISTS {data_quality_probe_name()}", env)
 
 
 # ---- unit: is_fresh matrix (at-threshold = fresh, docstring'd) ----
@@ -310,7 +312,7 @@ def test_main_stale_and_heartbeat_stale_kills(monkeypatch):
     assert fake.closed
     assert len(fake.queries) == 3
     assert HEARTBEAT_SQL_FRAGMENT in fake.queries[1]
-    assert "source = 'gx'" in fake.queries[2]
+    assert "source = 'data_quality'" in fake.queries[2]
 
 
 def test_main_stale_outside_container_does_not_kill(monkeypatch):
@@ -333,9 +335,9 @@ def test_main_fresh_max_inserted_no_kill(monkeypatch):
     assert calls == []
     assert fake.closed
     # Lazy heartbeat probe: fresh raw_events skips it; only raw_events + the
-    # (unconditional) gx verdict probe run.
+    # (unconditional) data-quality verdict probe run.
     assert len(fake.queries) == 2
-    assert "source = 'gx'" in fake.queries[1]
+    assert "source = 'data_quality'" in fake.queries[1]
 
 
 def test_main_stale_but_heartbeat_fresh_no_kill(monkeypatch):
@@ -427,54 +429,62 @@ def test_module_main_guard(monkeypatch):
     assert exc.value.code == 1
 
 
-# ---- gx verdict -> pipeline health signal (observable, never restarts) ----
+# ---- data-quality verdict -> pipeline health signal (observable, never restarts) ----
 
 
-def test_gx_unhealthy_fresh_failing_verdict():
-    assert healthcheck.gx_unhealthy(0.0, NOW - timedelta(seconds=60), NOW, 5400)
+def test_data_quality_unhealthy_fresh_failing_verdict():
+    assert healthcheck.data_quality_unhealthy(
+        0.0, NOW - timedelta(seconds=60), NOW, 5400
+    )
 
 
-def test_gx_unhealthy_fresh_passing_verdict():
-    assert not healthcheck.gx_unhealthy(1.0, NOW - timedelta(seconds=60), NOW, 5400)
+def test_data_quality_unhealthy_fresh_passing_verdict():
+    assert not healthcheck.data_quality_unhealthy(
+        1.0, NOW - timedelta(seconds=60), NOW, 5400
+    )
 
 
-def test_gx_unhealthy_missing_ts_is_not_a_failure():
-    assert not healthcheck.gx_unhealthy(0.0, None, NOW, 5400)
+def test_data_quality_unhealthy_missing_ts_is_not_a_failure():
+    assert not healthcheck.data_quality_unhealthy(0.0, None, NOW, 5400)
 
 
-def test_gx_unhealthy_missing_value_is_not_a_failure():
-    assert not healthcheck.gx_unhealthy(None, NOW - timedelta(seconds=60), NOW, 5400)
+def test_data_quality_unhealthy_missing_value_is_not_a_failure():
+    assert not healthcheck.data_quality_unhealthy(
+        None, NOW - timedelta(seconds=60), NOW, 5400
+    )
 
 
-def test_gx_unhealthy_stale_verdict_is_not_a_failure():
-    assert not healthcheck.gx_unhealthy(0.0, NOW - timedelta(seconds=6000), NOW, 5400)
+def test_data_quality_unhealthy_stale_verdict_is_not_a_failure():
+    assert not healthcheck.data_quality_unhealthy(
+        0.0, NOW - timedelta(seconds=6000), NOW, 5400
+    )
 
 
-def test_main_gx_failing_reports_unhealthy_without_kill(monkeypatch):
+def test_main_data_quality_failing_reports_unhealthy_without_kill(monkeypatch):
     patch_ch(monkeypatch, ch_env(), stale_seconds=300)
     calls = recorder(monkeypatch)
     fresh = [_utcnow_naive() - timedelta(seconds=60)]
-    failing_gx = [0.0, _utcnow_naive() - timedelta(seconds=60)]
-    fake = _FakeHealthClient([fresh, failing_gx])
+    failing_data_quality = [0.0, _utcnow_naive() - timedelta(seconds=60)]
+    fake = _FakeHealthClient([fresh, failing_data_quality])
     monkeypatch.setattr(healthcheck, "get_client", lambda **kw: fake)
     assert healthcheck.main() == 1
     assert calls == []  # degraded health signal, never a restart
     assert fake.closed
 
 
-def test_main_gx_healthy_reports_healthy(monkeypatch):
+def test_main_data_quality_healthy_reports_healthy(monkeypatch):
     patch_ch(monkeypatch, ch_env(), stale_seconds=300)
     calls = recorder(monkeypatch)
     fresh = [_utcnow_naive() - timedelta(seconds=60)]
-    passing_gx = [1.0, _utcnow_naive() - timedelta(seconds=60)]
-    fake = _FakeHealthClient([fresh, passing_gx])
+    passing_data_quality = [1.0, _utcnow_naive() - timedelta(seconds=60)]
+    fake = _FakeHealthClient([fresh, passing_data_quality])
     monkeypatch.setattr(healthcheck, "get_client", lambda **kw: fake)
     assert healthcheck.main() == 0
     assert calls == []
     assert fake.closed
 
 
-def test_main_gx_missing_verdict_does_not_crash(monkeypatch):
+def test_main_data_quality_missing_verdict_does_not_crash(monkeypatch):
     patch_ch(monkeypatch, ch_env(), stale_seconds=300)
     calls = recorder(monkeypatch)
     fake = _FakeHealthClient([[_utcnow_naive() - timedelta(seconds=60)], [0.0, None]])
@@ -484,14 +494,17 @@ def test_main_gx_missing_verdict_does_not_crash(monkeypatch):
     assert fake.closed
 
 
-def test_main_gx_probe_failure_is_not_fatal(monkeypatch, caplog):
+def test_main_data_quality_probe_failure_is_not_fatal(monkeypatch, caplog):
     patch_ch(monkeypatch, ch_env(), stale_seconds=300)
     calls = recorder(monkeypatch)
     fake = _FakeHealthClient(
-        [[_utcnow_naive() - timedelta(seconds=60)], RuntimeError("gx table gone")]
+        [
+            [_utcnow_naive() - timedelta(seconds=60)],
+            RuntimeError("data-quality table gone"),
+        ]
     )
     monkeypatch.setattr(healthcheck, "get_client", lambda **kw: fake)
     with caplog.at_level("WARNING", logger="wikistream.healthcheck"):
         assert healthcheck.main() == 0
     assert calls == []
-    assert "gx probe unavailable" in caplog.text
+    assert "data-quality probe unavailable" in caplog.text

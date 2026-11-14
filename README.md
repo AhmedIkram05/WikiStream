@@ -13,7 +13,6 @@
 <a href="https://systemd.io/"><img src="https://img.shields.io/badge/systemd-FFB000?style=for-the-badge&labelColor=000000"></a>
 <a href="https://docs.docker.com/compose/"><img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&labelColor=000000&logo=docker"></a>
 <a href="https://docs.pytest.org/"><img src="https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&labelColor=000000&logo=pytest"></a>
-<a href="https://greatexpectations.io/"><img src="https://img.shields.io/badge/Great_Expectations-28C8FF?style=for-the-badge&labelColor=000000"></a>
 <a href="https://docs.pydantic.dev/"><img src="https://img.shields.io/badge/Pydantic-E92063?style=for-the-badge&labelColor=000000&logo=pydantic"></a>
 <a href="https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams"><img src="https://img.shields.io/badge/EventStreams-FF9800?style=for-the-badge&labelColor=000000"></a>
 <a href="https://clickhouse.com/docs/materialized-views"><img src="https://img.shields.io/badge/Materialized_Views-2E7D32?style=for-the-badge&labelColor=000000"></a>
@@ -61,7 +60,7 @@ flowchart LR
     end
 
     subgraph TIM["systemd timers (4)"]
-        GXT["wikistream-gx.timer · :30"]
+        DQT["wikistream-data-quality.timer · :30"]
         EXP["wikistream-export.timer · :00"]
         PAR["wikistream-parity.timer · :05"]
         BAK["wikistream-backup.timer · 06:20"]
@@ -75,7 +74,7 @@ flowchart LR
     end
 
     SSE --> CON
-    GXT -->|"GX suite · CH window"| CH
+    DQT -->|"data-quality gate · CH window"| CH
     EXP -->|"bq load → staging tables<br/>→ MERGE upsert"| BQ
     EXP -->|"JSONL backup"| GCS
     BQ -->|"hourly KPIs"| ROLL
@@ -95,10 +94,10 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | **Materialized views** | 3 SummingMergeTree MVs, no `POPULATE` | Dashboard queries skip JSON parsing: **15.0x faster p50, ~200x fewer rows scanned** |
 | **BigQuery warehouse** | Hourly `bq load` → staging tables → MERGE upserts with a **2-hour trailing overlap** (late arrivals self-heal) + SUMS parity over the same slice; daily `kpi_daily` rollup on the BQ scheduler | Queryable partitioned history past the 1-day raw TTL (retention sized by disk math; BQ owns history); re-runs are idempotent and late arrivals rehydrate automatically; merge-state-safe parity |
 | **Warehouse governance** | `require_partition_filter` + expirations (730d KPI / 90d raw / 7d staging / 365d ops) + clustering + `v_bq_cost_daily` view | Cost is enforced in the schema, not in discipline: every scan must narrow a partition, stale data self-expires, and GB-scanned/day lands in Grafana |
-| **systemd timers** | 4 timers + 8 unit files + an `OnFailure=` page-template via `boot.sh` | Backup, GX, export, parity run unattended — and any failed run Slacks instantly |
-| **Data quality** | Pydantic inline + Great Expectations batch suite | Sub-second edge validation + hourly distributional checks (nulls, freshness, bot-ratio) |
+| **systemd timers** | 4 timers + 8 unit files + an `OnFailure=` page-template via `boot.sh` | Backup, data-quality, export, parity run unattended — and any failed run Slacks instantly |
+| **Data quality** | Pydantic inline + SQL data-quality gate | Sub-second edge validation + hourly distributional checks (nulls, freshness, bot-ratio) |
 | **Durability** | JSON-array cursor + atomic `os.replace` + 50K dedup ring | SIGKILL mid-insert and resume **zero-loss, zero-dup** - proven empirically |
-| **Alerting** | 5 Grafana rules → Slack, 2 Cloud Monitoring policies → email, `OnFailure=` on every batch job → Slack | Three non-overlapping channels: verdicts (pipeline_health), infra, and now instant paging on any failed export/parity/backup/GX run |
+| **Alerting** | 5 Grafana rules → Slack, 2 Cloud Monitoring policies → email, `OnFailure=` on every batch job → Slack | Three non-overlapping channels: verdicts (pipeline_health), infra, and now instant paging on any failed export/parity/backup/data-quality run |
 | **Terraform estate** | 7 modules, 100% IaC, WIF CI/CD | Least-privilege IAM, gated apply, zero static credentials |
 
 ## Why It's Interesting
@@ -107,7 +106,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | --- | --- |
 | **Zero-loss resume, proven by murder** | The consumer was SIGKILL'd mid-insert (exit 137); on restart it replayed the kill window into a 50K dedup ring and logged `inserted=1000 total=4370 duplicates_skipped=85→150` - zero loss, zero duplicates. A chaos battery of **8/8 injections** each fired its alert, was remediated, and cleared. |
 | **Exactness is verified, not assumed** | The MV equivalence suite asserts `sum(edits) MV 5821 == raw 5821` on live data, and warehouse parity compares SUMS (not row counts - merge-state-safe). When parity did fire during chaos testing, re-running the export restored `verdict 1.0` and cleared the alert. |
-| **A batch plane with zero scheduler spend** | Backup, GX suite, warehouse export, and parity checks all run on **4 systemd timers on the same VM as the database** - no Cloud Scheduler, no Cloud Run jobs, `Persistent=true` catches missed runs. |
+| **A batch plane with zero scheduler spend** | Backup, data-quality, warehouse export, and parity checks all run on **4 systemd timers on the same VM as the database** - no Cloud Scheduler, no Cloud Run jobs, `Persistent=true` catches missed runs. |
 | **FinOps as a feature** | **Itemized projected run-rate of $41.04/month** (echo of a full month: compute, disks, IP, GCS, Secret Manager, BigQuery) with 96% of it (VM + disks + IP) on the teardown list → **$1.18/month** residual; the $300 GCP trial covers 7.2 months. Build → run → teardown → rebuild is the lifecycle, and the rebuild is the evidence. **BQ cost is a Grafana metric too** - `v_bq_cost_daily` (region-US `INFORMATION_SCHEMA.JOBS`, 30-day cap) is panel 7 in the live dashboard. |
 
 ## Key Metrics
@@ -122,10 +121,10 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (577,738 events total) |
 | Dashboard query speedup (MV vs raw scan) | **15.0x p50 / 13.2x p99** (Q1), **3.8x / 3.5x** (Q2) |
 | Rows scanned per query (MV vs raw) | **0.23M vs 46.8M - ~200x fewer** |
-| Test suite | **176 total (169 + 7 param)** full suite incl. live ClickHouse (offline CI gate subset runs separately) - **100% coverage of consumer src (497 stmts, 0 miss)**; black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
+| Test suite | **365 non-CH + 37 live-CH tests** (CI unit + analytics jobs) - **100% coverage on the 7 business-critical modules**, 99% across `src` (964 stmts); black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
 | Warehouse idempotency | **staging → MERGE** hourly loads - re-running any window converges (parity remediation is literally "re-run export.sh") |
-| Business-critical modules (6) | **262/262 statements - 100.00%** |
-| Great Expectations gate | **11/11 expectations, exit 0**, hourly on a 5% sample |
+| Business-critical modules (7) | **438/438 statements - 100.00%** |
+| Data quality gate | **11/11 checks, exit 0**, hourly on 100% of the window |
 | Data-loss events | **0** - across burst tests, SIGKILL resume, 8 chaos injections |
 | Dead-letter routing | Only validation failures (never transport failures) - TTL 90 days |
 | Restore verification | **4,514,837 / 4,514,837 rows exact** from a GCS backup |
@@ -160,28 +159,18 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 ### Data Quality Gate
 
-<p align="center">
-  <img src="assets/gx-pass.png" alt="Great Expectations pass" width="760"/>
-  <em>Great Expectations against a live ClickHouse window: 11/11 expectations pass, exit code 0.</em>
-</p>
-
-> The GX suite runs hourly at :30 on a rolling 1-hour window, sampling 5% of ~1.2M rows. A single failed expectation exits non-zero and fires the `gx-fail` alert. During chaos testing a forced failure produced `expectations_failed: 1` with the exact error payload and a **1.0 → 0.0 pipeline-health verdict**.
+> The data-quality gate runs hourly at :30 on the last completed UTC hour, over **100% of the window**, as one ClickHouse aggregate. It checks 11 conditions (nulls, event-type domain, median lag, max skew, wiki cardinality, bot ratio); a failed check exits non-zero and writes a **0.0** verdict to `pipeline_health`, which fires the `data-quality-fail` alert. It needs no pandas, no Great Expectations, and no separate image.
 
 <p align="center">
   <img src="assets/pytest-coverage.png" alt="pytest full suite" width="760"/>
-  <em>Full suite with live ClickHouse: 176 total in 65.63s; 100% coverage across consumer src (497 stmts, 0 miss).</em>
-</p>
-
-<p align="center">
-  <img src="assets/quality-tour.gif" alt="Data quality tour" width="760"/>
-  <em>GX + pytest + sample carousel.</em>
+  <em>Full suite with live ClickHouse; 100% coverage on the business-critical modules.</em>
 </p>
 
 ### Warehouse Export
 
 <p align="center">
   <img src="assets/clickhouse-sample.png" alt="ClickHouse sample rows" width="760"/>
-  <em>Deterministic hourly sample from ClickHouse (also featured in quality tour carousel).</em>
+  <em>Deterministic hourly sample from ClickHouse.</em>
 </p>
 
 <p align="center">
@@ -198,7 +187,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/systemd-timers.png" alt="systemd timers" width="760"/>
-  <em>Four systemd timers, all active: backup (06:20 daily), GX suite (:30), warehouse export (:00), parity check (:05).</em>
+  <em>Four systemd timers, all active: backup (06:20 daily), data-quality gate (:30), warehouse export (:00), parity check (:05).</em>
 </p>
 
 <p align="center">
@@ -230,7 +219,8 @@ Every architectural call is traceable to a numbered ADR ([docs/planning/vision-a
 | 002 | Single e2-medium VM + Docker Compose stack | GKE / multi-node | Right-sized for ~40K events/min; one surface to secure |
 | 003 | Self-hosted ClickHouse engine | Postgres, TimescaleDB, Druid, Pinot, Snowflake, ClickHouse Cloud | OLAP-native, no per-second billing on a continuous dashboard; BigQuery added as warehouse, not engine |
 | 004 | Async httpx2 + hand-rolled SSE | Kafka, plain httpx | One ordered source feed; zero broker ops; full control of `Last-Event-ID` resume |
-| 005 | Pydantic inline + GX batch split | GX-only | Sub-second edge validation + distributional batch checks; DLQ in ClickHouse not a file |
+| 005 | Pydantic inline + GX batch split (historical; superseded by 015) | GX-only | Sub-second edge validation + distributional batch checks; DLQ in ClickHouse not a file |
+| 015 | SQL data-quality gate (supersedes 005) | Keep GX / separate image | One aggregate over 100% of the window; no pandas/GX dependency or Python pin |
 | 006 | Partitioned MergeTree + MVs + raw TTL **1 day** (rev 2026-09-10, disk-sized) + daily native backups | Raw-only, no TTL in BQ; disk can't hold 30d at ~9 GB/day | Dashboard speed, bounded storage, restorable history |
 | 007 | Terraform with GCS state via bootstrap | Local/remote state elsewhere | State bucket never destroyed by teardown |
 | 008 | GitHub Actions + WIF, gated apply | Static keys, auto-apply | Zero long-lived credentials; `production` Environment requires a reviewer |
@@ -249,7 +239,7 @@ The delivery lifecycle (P0-P8 with Go/No-Go gates), all 12 component deep dives 
 ### Prerequisites
 
 - Docker + Docker Compose
-- Python 3.13+ (consumer) / 3.12 (GX - pinned by Great Expectations' wheel availability)
+- Python 3.13+
 - `uv` (used for all tooling)
 - For GCP: Terraform ~1.15, `gcloud` authenticated to a project with billing
 
@@ -278,7 +268,7 @@ Environment variables (secrets come from Secret Manager on the VM; `.env` locall
 | `BATCH_MAX_ROWS` / `BATCH_MAX_AGE_S` | Flush policy | `1000` / `5.0` |
 | `DEDUP_CAPACITY` | Dedup ring size | `50000` |
 | `HEALTH_STALE_SECONDS` | Consumer health staleness | `300` |
-| `GX_WINDOW_HOURS` / `GX_SAMPLE_RATE` / `GX_ROW_MIN` / `GX_ROW_MAX` | GX window & bounds | `1` / `0.05` / `50000` / `5000000` |
+| `DATA_QUALITY_WINDOW_HOURS` / `DATA_QUALITY_ROW_MIN` / `DATA_QUALITY_ROW_MAX` | Data-quality window & bounds | `1` / `50000` / `5000000` |
 
 ### Running Tests
 
@@ -286,8 +276,7 @@ Environment variables (secrets come from Secret Manager on the VM; `.env` locall
 # Full suite (unit + ClickHouse integration - requires local CH)
 uv run --project consumer pytest --cov=src
 
-# GX suite (requires CH with data in the configured table)
-uv run --project gx pytest tests/gx
+# Data-quality gate tests are part of the consumer suite (tests/src/data_quality).
 ```
 
 ### Deployment
@@ -327,6 +316,6 @@ A personal project by **Ahmed Ikram**, designed and built end-to-end - from the 
 
 <p align="center">
   <b>WikiStream</b> - every Wikipedia edit, in real time: SSE → ClickHouse → Grafana → BigQuery.<br/>
-  Built with Python · httpx2 · ClickHouse · Grafana · Great Expectations · Terraform · Google Cloud · GitHub Actions.<br/>
+  Built with Python · httpx2 · ClickHouse · Grafana · Terraform · Google Cloud · GitHub Actions.<br/>
   MIT © Ahmed Ikram
 </p>
