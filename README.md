@@ -163,7 +163,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 <p align="center">
   <img src="assets/pytest-coverage.png" alt="pytest full suite" width="760"/>
-  <em>Full suite with live ClickHouse; 100% coverage across consumer src.</em>
+  <em>Full suite with live ClickHouse; 100% coverage on the business-critical modules.</em>
 </p>
 
 ### Warehouse Export
