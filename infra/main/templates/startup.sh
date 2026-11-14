@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-umask 077                              # .env stays 600
-exec > >(tee -a /var/log/wikistream-startup.log) 2>&1  # log file AND serial console
+umask 077                                             # .env stays 600
+exec > >(tee -a /var/log/wikistream-startup.log) 2>&1 # log file AND serial console
 echo "[$(date -u)] startup begin"
 
 # 0. Cloud SDK + git — NOT on the ubuntu-2404-lts base image. google-cloud-cli
@@ -11,7 +11,7 @@ if ! command -v gcloud >/dev/null; then
   apt-get update
   apt-get install -y apt-transport-https ca-certificates gnupg curl
   curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" > /etc/apt/sources.list.d/google-cloud-sdk.list
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" >/etc/apt/sources.list.d/google-cloud-sdk.list
   apt-get update
   apt-get install -y google-cloud-cli
 fi
@@ -48,7 +48,7 @@ chmod -R a+rX /opt/wikistream
 [ -f /opt/wikistream/.env ] && chmod 600 /opt/wikistream/.env
 
 # 3. Project id from the metadata server — deterministic, no gcloud config.
-#    Pin it: warehouse/export.sh + parity.sh call bq/gcloud storage without
+#    Pin it: warehouse/export.sh + parity.py call bq/gcloud storage without
 #    --project_id, relying on SDK project resolution.
 GCP_PROJECT=$(curl -fsS -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/project/project-id)
 gcloud config set project "$GCP_PROJECT"
@@ -73,7 +73,7 @@ if [ -b "$DEV" ]; then
     mkfs.ext4 "$DEV"
   fi
   UUID=$(blkid -s UUID -o value "$DEV")
-  grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /mnt/ch-data ext4 defaults,nofail 0 2" >> /etc/fstab
+  grep -q "$UUID" /etc/fstab || echo "UUID=$UUID /mnt/ch-data ext4 defaults,nofail 0 2" >>/etc/fstab
   # mount point must exist before "mount" (fresh recreate has a bare /mnt).
   # mkdir BEFORE mount; mountpoint -q on a missing dir returns false, and a
   # failed mount would kill the script via set -e (hit on 2026-08-12 deploy).
@@ -88,7 +88,7 @@ fi
 #    heredoc; cat preserves that mode. Do not rely on umask alone: on reboot the
 #    file already exists and the recursive chmod above may have left it 644.
 install -m 600 /dev/null .env
-cat > .env <<EOF
+cat >.env <<EOF
 CLICKHOUSE_PASSWORD=${CH_PASSWORD}
 CLICKHOUSE_RO_PASSWORD=${CH_RO_PASSWORD}
 GF_SECURITY_ADMIN_PASSWORD=${GF_PASSWORD}
@@ -96,7 +96,7 @@ GCP_PROJECT=${GCP_PROJECT}
 CONSUMER_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/consumer:latest
 GX_IMAGE=us-central1-docker.pkg.dev/${GCP_PROJECT}/wikistream-consumer/gx:latest
 EOF
-[ -n "${CH_DATA_DIR:-}" ] && echo "CH_DATA_DIR=${CH_DATA_DIR}" >> .env
+[ -n "${CH_DATA_DIR:-}" ] && echo "CH_DATA_DIR=${CH_DATA_DIR}" >>.env
 
 # 7. Pull + start. --no-build: image comes from AR, never rebuilt on the VM.
 #    Single container start: boot.sh below is the only other launch point.

@@ -46,7 +46,7 @@ elif [ $# -eq 0 ]; then
   # for keys it already has, while a late-arriving event (e.g. timestamped
   # 09:59, ingested 10:15) still lands inside the next run's window — the
   # hour-9 slice is re-imported and converged. window_end is unchanged, so
-  # parity.sh's freshness gate (window_end match) keeps verifying this run.
+  # parity.py's freshness gate (window_end match) keeps verifying this run.
   END="$(date -u +'%Y-%m-%d %H:00:00')"
   START="$(date -u +'%Y-%m-%d %H:00:00' -d '2 hours ago')"
 else
@@ -97,9 +97,9 @@ for entry in "${TABLES[@]}"; do
   # out of the docker CLI argv, where any OS-login user could read it via ps.
   printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client \
     --user wikistream --password --format JSONEachRow \
-    --query "$(sed "s/{START}/$START/; s/{END}/$END/" "sql/$sqlfile")" > "$object"
+    --query "$(sed "s/{START}/$START/; s/{END}/$END/" "sql/$sqlfile")" >"$object"
 
-  rows="$(wc -l < "$object" | tr -d ' ')"
+  rows="$(wc -l <"$object" | tr -d ' ')"
   if [ -s "$object" ]; then
     # --replace, not append: the trailing 2-hour window overlaps the previous
     # run, so appending to persistent staging gives MERGE two source rows per
@@ -108,24 +108,24 @@ for entry in "${TABLES[@]}"; do
       --schema="schemas/$btable.json" "$BQ_DATASET.$stable" "$object"
     merge_window "$mergesql"
     # Backup copy is non-critical; never let a GCS hiccup block the load/merge.
-    gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null \
-      || echo "[export] backup copy failed key=$key" >&2
+    gcloud storage cp "$object" "$STAGING_BUCKET/$key/$(basename "$object")" >/dev/null ||
+      echo "[export] backup copy failed key=$key" >&2
   fi
   rm -f "$object"
 
   case "$key" in
-    kpi_edits)     rows_kpi_edits=$rows ;;
+    kpi_edits) rows_kpi_edits=$rows ;;
     kpi_top_pages) rows_kpi_top_pages=$rows ;;
-    kpi_sizes)     rows_kpi_sizes=$rows ;;
-    raw_sample)    rows_raw_sample=$rows ;;
+    kpi_sizes) rows_kpi_sizes=$rows ;;
+    raw_sample) rows_raw_sample=$rows ;;
   esac
 done
 
-# One run record per export; parity.sh's freshness gate reads this table.
+# One run record per export; parity.py's freshness gate reads this table.
 mkdir -p "$STAGING_TMP/export_runs"
 runs_file="$STAGING_TMP/export_runs/$STAMP.jsonl"
 python3 - "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$WINDOW_START" "$WINDOW_END" \
-  "$rows_kpi_edits" "$rows_kpi_top_pages" "$rows_kpi_sizes" "$rows_raw_sample" <<'PY' > "$runs_file"
+  "$rows_kpi_edits" "$rows_kpi_top_pages" "$rows_kpi_sizes" "$rows_raw_sample" <<'PY' >"$runs_file"
 import json, sys
 exported_at, ws, we, r_edits, r_top, r_sizes, r_raw = sys.argv[1:8]
 print(json.dumps({"exported_at": exported_at, "window_start": ws, "window_end": we,

@@ -6,8 +6,8 @@ chain depends on non-zero exits), and backup pruning that deletes data. The
 SQL and unit text have their own contract tests; these check the SHELL
 behavior by PATH-shimming the five externals (date/docker/bq/gcloud/gsutil)
 with deterministic fakes, so the scripts run end-to-end on any host without
-touching real systems. parity.sh is a documented skip: its log dir
-(/var/log/wikistream) is unwritable on non-root dev hosts.
+touching real systems. parity is a Python module now (covered by
+test_parity.py); these tests cover the remaining shell scripts.
 """
 
 import json
@@ -23,12 +23,14 @@ FIXED_NOW = "2026-09-10 10:00:00"  # fake `date` clock, pinned top-of-hour
 
 SHELL_SCRIPTS = [
     WAREHOUSE / "export.sh",
-    WAREHOUSE / "parity.sh",
     WAREHOUSE / "backup.sh",
     WAREHOUSE / "notify-failure.sh",
     REPO / "scripts" / "boot.sh",
     REPO / "scripts" / "secret_helpers.sh",
 ]
+
+# parity.sh was removed: warehouse/parity.py is the implementation, covered by
+# tests/warehouse/test_parity.py, and wikistream-parity.service execs it.
 
 _DATE_STUB = f"""#!/usr/bin/env python3
 import datetime, sys
@@ -284,25 +286,6 @@ def test_export_explicit_window_passthrough(shell):
 def test_export_fails_loud_on_bq_failure(shell):
     proc = shell.run(WAREHOUSE / "export.sh", fail_bq=True)
     assert proc.returncode != 0, "bq failure must exit non-zero (OnFailure wiring)"
-
-
-def test_parity_pipeline_health_insert_uses_http(shell):
-    """AUD-07: the verdict insert must not use docker exec without -i (the
-    password pipe never reaches clickhouse-client). HTTP with a 0600 config
-    keeps the key out of argv and proves the row landed."""
-    proc = shell.run(WAREHOUSE / "parity.sh")
-    assert proc.returncode == 0, proc.stderr
-    log = shell.log.read_text()
-    curl_lines = [line for line in log.splitlines() if line.startswith("curl ")]
-    assert len(curl_lines) == 2  # INSERT + verification SELECT
-    assert all("stub-pass" not in line for line in curl_lines)
-    assert "curl_config_mode 0o600" in log
-    assert "X-ClickHouse-Key: stub-pass" in log
-    docker_lines = [line for line in log.splitlines() if line.startswith("docker ")]
-    assert not any(
-        "INSERT INTO default.pipeline_health" in line for line in docker_lines
-    )
-    assert "pipeline_health row not found" not in proc.stderr
 
 
 def test_backup_guard_prune_before_snapshot_and_keep_last_two(shell):

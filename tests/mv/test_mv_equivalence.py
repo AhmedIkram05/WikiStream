@@ -457,7 +457,7 @@ def test_warehouse_export_sql_empty_safe():
         )
     for path in exports:
         sql = path.read_text()
-        # export.sh/parity.sh substitute these placeholders (plan 3.3.3);
+        # export.sh/parity.py substitute these placeholders (plan 3.3.3);
         # run with a deterministic empty range so 3C files land untouched.
         sql = re.sub(r"\{START\}", "1970-01-01 00:00:00", sql)
         sql = re.sub(r"\{END\}", "2299-12-31 00:00:00", sql)

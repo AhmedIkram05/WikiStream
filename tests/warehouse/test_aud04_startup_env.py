@@ -1,5 +1,6 @@
 """AUD-04: startup.sh must keep .env at 600 across reboots."""
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).parents[2]
@@ -10,5 +11,7 @@ def test_startup_restores_env_mode_after_recursive_chmod():
     chmod_all = text.index("chmod -R a+rX /opt/wikistream")
     chmod_env = text.index("chmod 600 /opt/wikistream/.env")
     install_env = text.index("install -m 600 /dev/null .env")
-    cat_env = text.index("cat > .env")
-    assert chmod_all < chmod_env < install_env < cat_env
+    # shfmt canonicalizes `cat > .env` to `cat >.env`; accept either.
+    cat_env = re.search(r"cat\s*>\s*\.env", text)
+    assert cat_env is not None
+    assert chmod_all < chmod_env < install_env < cat_env.start()

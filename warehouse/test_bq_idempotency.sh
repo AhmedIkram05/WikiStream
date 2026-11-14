@@ -22,7 +22,7 @@ bq --project_id="$BQ_TEST_PROJECT" mk --table "$DATASET.raw_events_sample" schem
 bq --project_id="$BQ_TEST_PROJECT" mk --table "$DATASET.raw_events_sample_staging" schemas/raw_events_sample.json >/dev/null
 
 load_kpi() {
-  cat > "$TMP_DIR/kpi.json" <<EOF
+  cat >"$TMP_DIR/kpi.json" <<EOF
 {"hour":"2026-01-01T00:00:00Z","wiki":"enwiki","is_bot":false,"edits":$1,"bytes_delta":10}
 EOF
   bq --project_id="$BQ_TEST_PROJECT" load --replace --source_format=NEWLINE_DELIMITED_JSON \
@@ -59,7 +59,7 @@ load_kpi 3
 run_merge
 assert_kpi 1 3
 
-cat > "$TMP_DIR/raw.json" <<'EOF'
+cat >"$TMP_DIR/raw.json" <<'EOF'
 {"inserted_at":"2026-01-01T00:00:00Z","event":"{}","wiki":"enwiki","title":"T","user":"U","is_bot":false,"event_type":"edit"}
 EOF
 load_raw() {
@@ -82,6 +82,9 @@ load_raw
 run_reload
 load_raw
 run_reload
-[ "$(count_raw)" = "1" ] || { echo "raw sample duplicated" >&2; exit 1; }
+[ "$(count_raw)" = "1" ] || {
+  echo "raw sample duplicated" >&2
+  exit 1
+}
 
 echo "BigQuery idempotency ok: kpi upsert + raw window reload each keep one row"

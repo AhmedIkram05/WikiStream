@@ -11,6 +11,6 @@ OnFailure=wikistream-fail-notify@%n.service
 [Service]
 Type=oneshot
 TimeoutStartSec=1800
-ExecStart=/usr/bin/flock -w 3600 /run/wikistream-warehouse.lock /opt/wikistream/warehouse/parity.sh
+ExecStart=/usr/bin/flock -w 3600 /run/wikistream-warehouse.lock /usr/bin/python3 /opt/wikistream/warehouse/parity.py
 StandardOutput=journal
 StandardError=journal
