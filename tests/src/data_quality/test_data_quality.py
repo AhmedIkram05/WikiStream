@@ -6,10 +6,12 @@ The CH-marked subprocess contract lives in test_data_quality_ch.py.
 
 import json
 import runpy
+from datetime import timezone
 
 import clickhouse_connect
 import pytest
 
+import src.data_quality as data_quality
 from src.data_quality import SQL_COLUMNS, main
 
 WINDOW_END = "2026-08-01T01:00:00+00:00"
@@ -82,6 +84,55 @@ def test_missing_password_returns_1(capsys, monkeypatch):
     monkeypatch.delenv("CLICKHOUSE_PASSWORD", raising=False)
     assert main() == 1
     assert "CLICKHOUSE_PASSWORD is required" in capsys.readouterr().err
+
+
+def test_empty_password_returns_1(capsys, monkeypatch):
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", "")
+    assert main() == 1
+    assert "CLICKHOUSE_PASSWORD is required" in capsys.readouterr().err
+
+
+def test_invalid_integer_config_prints_failure_json(capsys, monkeypatch):
+    _env(monkeypatch)
+    monkeypatch.setenv("DATA_QUALITY_WINDOW_HOURS", "not-a-number")
+    assert main() == 1
+    verdict = _verdict(capsys)
+    assert verdict["success"] is False
+    assert "DATA_QUALITY_WINDOW_HOURS" in verdict["error"]
+
+
+def test_invalid_window_end_prints_failure_json(capsys, monkeypatch):
+    _env(monkeypatch)
+    monkeypatch.setenv("DATA_QUALITY_WINDOW_END", "not-a-date")
+    assert main() == 1
+    verdict = _verdict(capsys)
+    assert verdict["success"] is False
+    assert "DATA_QUALITY_WINDOW_END" in verdict["error"]
+
+
+def test_window_end_offset_normalizes_to_utc(capsys, monkeypatch):
+    _env(monkeypatch)
+    monkeypatch.setenv("DATA_QUALITY_WINDOW_END", "2026-08-01T02:00:00+01:00")
+    _patch_client(monkeypatch, client=_FakeClient(row=_row()))
+    assert main() == 0
+    verdict = _verdict(capsys)
+    assert verdict["window_end"] == "2026-08-01T01:00:00+00:00"
+
+
+def test_window_end_naive_is_treated_as_utc(capsys, monkeypatch):
+    _env(monkeypatch)
+    monkeypatch.setenv("DATA_QUALITY_WINDOW_END", "2026-08-01T01:00:00")
+    _patch_client(monkeypatch, client=_FakeClient(row=_row()))
+    assert main() == 0
+    verdict = _verdict(capsys)
+    assert verdict["window_end"] == "2026-08-01T01:00:00+00:00"
+
+
+def test_window_end_defaults_to_top_of_hour(monkeypatch):
+    monkeypatch.delenv("DATA_QUALITY_WINDOW_END", raising=False)
+    end = data_quality._window_end()
+    assert end.tzinfo is timezone.utc
+    assert (end.minute, end.second, end.microsecond) == (0, 0, 0)
 
 
 def test_connect_failure_prints_failure_verdict(capsys, monkeypatch):

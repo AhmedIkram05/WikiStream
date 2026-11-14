@@ -119,28 +119,50 @@ def _check_results(values: dict) -> list[bool]:
     ]
 
 
+def _env_int(name: str, default: int) -> int:
+    """Parse an integer env var with a named error instead of a raw traceback."""
+    raw = os.getenv(name, str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name}={raw!r} is not an integer") from exc
+
+
+def _window_end() -> datetime:
+    """Return the window end in UTC; DATA_QUALITY_WINDOW_END is test-only."""
+    raw = os.getenv("DATA_QUALITY_WINDOW_END")
+    if not raw:
+        return datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    try:
+        end = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"DATA_QUALITY_WINDOW_END={raw!r} is not ISO-8601") from exc
+    if end.tzinfo is None:
+        return end.replace(tzinfo=timezone.utc)
+    return end.astimezone(timezone.utc)
+
+
 def main() -> int:
-    host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
-    port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
-    user = os.getenv("CLICKHOUSE_USER", "wikistream")
+    run_id = datetime.now(timezone.utc).isoformat()
     password = os.getenv("CLICKHOUSE_PASSWORD")
-    if password is None:
+    if not password:
         print("CLICKHOUSE_PASSWORD is required", file=sys.stderr)
         return 1
-    table = os.getenv("DATA_QUALITY_TABLE", "default.raw_events")
-    window_hours = int(os.getenv("DATA_QUALITY_WINDOW_HOURS", "1"))
-    row_min = int(os.getenv("DATA_QUALITY_ROW_MIN", "50000"))
-    row_max = int(os.getenv("DATA_QUALITY_ROW_MAX", "5000000"))
-    run_id = datetime.now(timezone.utc).isoformat()
+    try:
+        host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+        port = _env_int("CLICKHOUSE_PORT", 8123)
+        user = os.getenv("CLICKHOUSE_USER", "wikistream")
+        table = os.getenv("DATA_QUALITY_TABLE", "default.raw_events")
+        window_hours = _env_int("DATA_QUALITY_WINDOW_HOURS", 1)
+        row_min = _env_int("DATA_QUALITY_ROW_MIN", 50000)
+        row_max = _env_int("DATA_QUALITY_ROW_MAX", 5000000)
+        end = _window_end()
+    except ValueError as exc:
+        # Bad configuration must still honour the one-JSON-line contract; no
+        # client exists yet, so there is no pipeline_health row to write.
+        print(json.dumps({"success": False, "run_id": run_id, "error": str(exc)}))
+        return 1
 
-    # DATA_QUALITY_WINDOW_END pins the window end (ISO-8601) for tests; unset
-    # in production -> last completed UTC hour.
-    window_end_env = os.getenv("DATA_QUALITY_WINDOW_END")
-    end = (
-        datetime.fromisoformat(window_end_env)
-        if window_end_env
-        else datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    )
     start = end - timedelta(hours=window_hours)
     start_s = start.strftime("%Y-%m-%d %H:%M:%S")
     end_s = end.strftime("%Y-%m-%d %H:%M:%S")

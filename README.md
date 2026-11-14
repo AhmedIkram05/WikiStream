@@ -121,9 +121,9 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 | Burst-test ceiling | **5,655 events/sec × 60s = 2.08x real peak, 0 drops** (577,738 events total) |
 | Dashboard query speedup (MV vs raw scan) | **15.0x p50 / 13.2x p99** (Q1), **3.8x / 3.5x** (Q2) |
 | Rows scanned per query (MV vs raw) | **0.23M vs 46.8M - ~200x fewer** |
-| Test suite | **365 non-CH + 37 live-CH tests** (CI unit + analytics jobs) - **100% coverage on the 7 business-critical modules**, 99% across `src` (964 stmts); black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
+| Test suite | **373 non-CH + 37 live-CH tests** (CI unit + analytics jobs) - **100% coverage on the 7 business-critical modules**, 99% across `src` (984 stmts); black-box shell contracts (stub-harness), retention/timer, batch-unit + committed-SQL contracts keep the infra wiring honest |
 | Warehouse idempotency | **staging → MERGE** hourly loads - re-running any window converges (parity remediation is literally "re-run export.sh") |
-| Business-critical modules (7) | **438/438 statements - 100.00%** |
+| Business-critical modules (7) | **458/458 statements - 100.00%** |
 | Data quality gate | **11/11 checks, exit 0**, hourly on 100% of the window |
 | Data-loss events | **0** - across burst tests, SIGKILL resume, 8 chaos injections |
 | Dead-letter routing | Only validation failures (never transport failures) - TTL 90 days |
@@ -159,7 +159,7 @@ End-to-end: the consumer connects to the Wikimedia stream with SSE `Last-Event-I
 
 ### Data Quality Gate
 
-> The data-quality gate runs hourly at :30 on the last completed UTC hour, over **100% of the window**, as one ClickHouse aggregate. It checks 11 conditions (nulls, event-type domain, median lag, max skew, wiki cardinality, bot ratio); a failed check exits non-zero and writes a **0.0** verdict to `pipeline_health`, which fires the `data-quality-fail` alert. It needs no pandas, no Great Expectations, and no separate image.
+> The data-quality gate runs hourly at :30 on the last completed UTC hour, over **100% of the window**, as one ClickHouse aggregate. `boot.sh` seeds one verdict after migrations so a fresh deploy has a `data_quality` row before the first timer. It checks 11 conditions (nulls, event-type domain, median lag, max skew, wiki cardinality, bot ratio); a failed check exits non-zero and writes a **0.0** verdict to `pipeline_health`, which fires the `data-quality-fail` alert. It needs no pandas, no Great Expectations, and no separate image.
 
 <p align="center">
   <img src="assets/pytest-coverage.png" alt="pytest full suite" width="760"/>

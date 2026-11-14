@@ -77,6 +77,12 @@ echo "user bootstrap ok"
 #    lines; any non-zero exit aborts boot.sh via set -e).
 CH_HOST=localhost CH_PORT=8123 CH_USER=wikistream CH_PASSWORD=${CH_PASSWORD} MIGRATIONS_DIR=/opt/wikistream/migrations bash /opt/wikistream/migrations/apply.sh
 
+# Seed the first data-quality verdict after migrations. The boot-time `up -d`
+# run starts before the CH user exists; without this a fresh deploy has no
+# `data_quality` row until the :30 timer and noDataState: Alerting can page.
+# A failed seed is non-fatal; the timer and OnFailure cover it.
+docker compose run --rm -T data_quality || true
+
 # Install BigQuery export + parity + backup + data-quality systemd units/timers,
 # plus the OnFailure page-template (batch failures Slack instantly, incl.
 # data-quality crashes). The gx unit cleanup is idempotent and keeps an
