@@ -300,12 +300,12 @@ Itemized from the real `gcloud` inventory at us-east1 rates (a full month was ne
 | Layer | Result |
 | --- | --- |
 | CI suite (`pytest -m "not ch"`) | offline CI gate subset runs separately (data-quality tests run in the consumer job) |
-| Full suite (all tests, live ClickHouse) | **365 non-CH + 37 live-CH** at this change; the live-CH CI job is the authority |
+| Full suite (all tests, live ClickHouse) | **373 non-CH + 37 live-CH** at this change; the live-CH CI job is the authority |
 | Shell batch jobs | **5 black-box contracts** - PATH-shimmed `date/docker/bq/gcloud/gsutil` harness proves window math, bq orchestration, the `export_runs` JSON contract, fail-loud exit codes (OnFailure paging), and backup prune order/count without any cloud or container |
 | Batch-unit wiring | **4 contracts** - OnFailure Slack-page assertions over the four unit files, the fail-notify template, the guarded script, and boot.sh's install line |
 | `pytest-coverage.png` receipt | the full-suite card - regenerate it after the next live-CH CI run; the current card predates this change |
-| Coverage - consumer src | **99% (964 stmts, 12 miss) offline; 100% on the 7 business-critical modules** |
-| Coverage - 7 business-critical modules | **438/438 = 100.00%** (`sse`, `models`, `batcher`, `dead_letter`, `heartbeat`, `healthcheck`, `data_quality`) |
+| Coverage - consumer src | **99% (984 stmts, 12 miss) offline; 100% on the 7 business-critical modules** |
+| Coverage - 7 business-critical modules | **458/458 = 100.00%** (`sse`, `models`, `batcher`, `dead_letter`, `heartbeat`, `healthcheck`, `data_quality`) |
 | Coverage - `consumer/src/data_quality.py` | **100%** (pytest-cov) |
 | Integration (`-m ch`, real ClickHouse) | 37 tests: migrations, MV equivalence, kill/resume, DLQ, healthchecks, data-quality fixtures |
 | Data-quality tests | unit + CH fixtures - cover every exit path, the 11 checks, and the verdict row |

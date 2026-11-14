@@ -129,8 +129,10 @@ services:
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_USER: wikistream
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-wikistream_dev_password}
-      DATA_QUALITY_TABLE: default.raw_events
-      DATA_QUALITY_WINDOW_HOURS: "1"
+      DATA_QUALITY_TABLE: ${DATA_QUALITY_TABLE:-default.raw_events}
+      DATA_QUALITY_WINDOW_HOURS: ${DATA_QUALITY_WINDOW_HOURS:-1}
+      DATA_QUALITY_ROW_MIN: ${DATA_QUALITY_ROW_MIN:-50000}
+      DATA_QUALITY_ROW_MAX: ${DATA_QUALITY_ROW_MAX:-5000000}
     command: ["uv", "run", "python", "-m", "src.data_quality"]
 
 volumes:

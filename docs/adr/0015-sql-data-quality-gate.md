@@ -32,7 +32,7 @@ The checks are: six non-null guards, the `event_type` domain, median lag, max sk
 - The gate scans 100% of the window and is expected to run in well under a second on the VM; the real number is recorded during cutover.
 - Max skew is stricter than the sampled version: one future timestamp the sample missed can fail the first real run. That is a finding, not a regression.
 - The consumer image now ships the gate; if that image is broken, the gate cannot run. The image is already the pipeline, so the coupling is acceptable.
-- Removing `GX_IMAGE` edits the frozen `startup.sh` (`metadata_startup_script` is ForceNew), so the deploy includes a VM rebuild and a pre-rebuild backup. The GCP estate is currently torn down; the next deployment is a fresh rebuild, not a live cutover, so the old-stack pre-seed bridge is not needed. Seed a `data_quality` row once after boot and prove the forced failure before the first `:30` run.
+- Removing `GX_IMAGE` edits the frozen `startup.sh` (`metadata_startup_script` is ForceNew), so the deploy includes a VM rebuild and a pre-rebuild backup. The GCP estate is currently torn down; the next deployment is a fresh rebuild, not a live cutover, so the old-stack pre-seed bridge is not needed. `boot.sh` seeds one `data_quality` verdict after migrations; prove the forced failure before the first `:30` run.
 - Historical planning docs and ADR-005 stay as written; this ADR records the supersession.
 
 ## References
