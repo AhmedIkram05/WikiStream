@@ -195,8 +195,8 @@ groups:
                     type: lt
                   type: threshold
 
-      - uid: gx-fail
-        title: GX suite failed
+      - uid: data-quality-fail
+        title: Data quality gate failed
         condition: 'B'
         for: 1m
         noDataState: Alerting
@@ -213,7 +213,7 @@ groups:
               datasource:
                 type: grafana-clickhouse-datasource
                 uid: wikistream-clickhouse
-              rawSql: 'SELECT if(count()=0, 0, argMax(value, ts)) FROM default.pipeline_health WHERE source=''gx'' AND ts > now() - INTERVAL 90 MINUTE'
+              rawSql: 'SELECT if(count()=0, 0, argMax(value, ts)) FROM default.pipeline_health WHERE source=''data_quality'' AND metric=''result'' AND ts > now() - INTERVAL 90 MINUTE'
               format: 0
               interval: 60s
               maxDataPoints: 43200

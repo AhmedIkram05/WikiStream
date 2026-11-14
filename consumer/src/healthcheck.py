@@ -9,7 +9,7 @@ policy resumes from the last-event-id, ADR-004 wedge detector, zero loss)
 only fires when BOTH conditions in main() hold: raw_events staleness AND no
 fresh consumer heartbeat in default.pipeline_health.
 
-Also reads the newest GX verdict from pipeline_health: while a current
+Also reads the newest data-quality verdict from pipeline_health: while a current
 verdict is FAILING (value 0.0) the probe exits 1, so the pipeline health
 signal goes red and the condition is visible to the container supervisor.
 It deliberately does NOT SIGTERM or block ingestion — holding/restarting on
@@ -34,19 +34,22 @@ CLICKHOUSE_PASSWORD = os.environ.get("CLICKHOUSE_PASSWORD")
 # import (that would leave the container unhealthy with no diagnostic).
 CLICKHOUSE_PORT = os.environ.get("CLICKHOUSE_PORT", "8123")
 HEALTH_STALE_SECONDS = os.environ.get("HEALTH_STALE_SECONDS", "300")
-# Table override for hermetic ch tests (same pattern as gx's GX_TABLE):
-# ops-set, never user input.
+# Table override for hermetic ch tests (same pattern as data-quality's
+# DATA_QUALITY_TABLE): ops-set, never user input.
 HEALTHCHECK_TABLE = os.environ.get("HEALTHCHECK_TABLE") or "default.raw_events"
 HEALTHCHECK_HEARTBEAT_TABLE = (
     os.environ.get("HEALTHCHECK_HEARTBEAT_TABLE") or "default.pipeline_health"
 )
-# GX verdict probe: GX runs hourly, so a verdict stays "current" for ~90 min
-# (same window as the Grafana gx-fail alert). An older/missing verdict is NOT a
-# consumer failure — the GX job's own systemd unit alerts on itself.
-HEALTHCHECK_GX_TABLE = (
-    os.environ.get("HEALTHCHECK_GX_TABLE") or "default.pipeline_health"
+# Data-quality verdict probe: the gate runs hourly, so a verdict stays current
+# for ~90 min (same window as the Grafana data-quality-fail alert). An
+# older/missing verdict is NOT a consumer failure — the data-quality job's own
+# systemd unit alerts on itself.
+HEALTHCHECK_DATA_QUALITY_TABLE = (
+    os.environ.get("HEALTHCHECK_DATA_QUALITY_TABLE") or "default.pipeline_health"
 )
-HEALTHCHECK_GX_STALE_SECONDS = os.environ.get("HEALTHCHECK_GX_STALE_SECONDS", "5400")
+HEALTHCHECK_DATA_QUALITY_STALE_SECONDS = os.environ.get(
+    "HEALTHCHECK_DATA_QUALITY_STALE_SECONDS", "5400"
+)
 # PID 1 is uv inside the consumer container, but the host init outside it.
 # Default the SIGTERM path on only when Docker's marker file is present.
 IN_CONTAINER = (
@@ -97,18 +100,19 @@ def heartbeat_alive(
     return last_heartbeat is not None and is_fresh(last_heartbeat, now, stale_seconds)
 
 
-def gx_unhealthy(
+def data_quality_unhealthy(
     last_value: float | None,
     last_ts: datetime | None,
     now: datetime,
     stale_seconds: int,
 ) -> bool:
-    """True when the newest GX verdict is current AND failed (value < 1.0).
+    """True when the newest data-quality verdict is current AND failed (value < 1.0).
 
     Only positive, current evidence of a failed verdict flips the pipeline
-    health signal: a missing verdict (first deploy) or a stale one (GX itself
-    not running) is not the consumer's failure — the GX job's own unit alerts on
-    that. Same naive-UTC frame and threshold window as is_fresh.
+    health signal: a missing verdict (first deploy) or a stale one (the gate
+    itself not running) is not the consumer's failure — the data-quality job's
+    own unit alerts on that. Same naive-UTC frame and threshold window as
+    is_fresh.
     """
     if last_ts is None or last_value is None:
         return False
@@ -117,23 +121,24 @@ def gx_unhealthy(
     return last_value < 1.0
 
 
-def _gx_degraded(client, now: datetime, stale_seconds: int) -> bool:
-    """Read the newest GX verdict and report whether it signals a failure.
+def _data_quality_degraded(client, now: datetime, stale_seconds: int) -> bool:
+    """Read the newest data-quality verdict and report whether it signals a failure.
 
     Never raises: an unavailable probe is treated as no failure signal, so a
     probe error cannot mask the staleness/wedge contract.
     """
     try:
         last_value, last_ts = client.query(
-            f"SELECT argMax(value, ts), max(ts) FROM {HEALTHCHECK_GX_TABLE} "
-            "WHERE source = 'gx' AND metric = 'result'"
+            f"SELECT argMax(value, ts), max(ts) FROM {HEALTHCHECK_DATA_QUALITY_TABLE} "
+            "WHERE source = 'data_quality' AND metric = 'result'"
         ).first_row
     except Exception as exc:
-        logger.warning("healthcheck gx probe unavailable reason=%s", exc)
+        logger.warning("healthcheck data-quality probe unavailable reason=%s", exc)
         return False
-    if gx_unhealthy(last_value, last_ts, now, stale_seconds):
+    if data_quality_unhealthy(last_value, last_ts, now, stale_seconds):
         logger.error(
-            "healthcheck gx verdict failing value=%s ts=%s — pipeline degraded",
+            "healthcheck data-quality verdict failing value=%s ts=%s "
+            "— pipeline degraded",
             last_value,
             last_ts,
         )
@@ -146,7 +151,7 @@ def main() -> int:
     try:
         port = int(CLICKHOUSE_PORT)
         stale_seconds = int(HEALTH_STALE_SECONDS)
-        gx_stale_seconds = int(HEALTHCHECK_GX_STALE_SECONDS)
+        data_quality_stale_seconds = int(HEALTHCHECK_DATA_QUALITY_STALE_SECONDS)
         now = datetime.now(UTC).replace(tzinfo=None)
         client = get_client(
             host=CLICKHOUSE_HOST,
@@ -201,10 +206,10 @@ def main() -> int:
                         )
                         return 1
                     os.kill(1, signal.SIGTERM)
-            # A failing GX verdict makes the pipeline health signal red (exit 1
-            # = container unhealthy) WITHOUT restarting anything: data-quality
-            # degradation is observable, never a data-dropping/restart policy.
-            degraded = _gx_degraded(client, now, gx_stale_seconds)
+            # A failing data-quality verdict makes the pipeline health signal
+            # red (exit 1 = container unhealthy) WITHOUT restarting anything:
+            # data-quality degradation is observable, never a restart policy.
+            degraded = _data_quality_degraded(client, now, data_quality_stale_seconds)
         finally:
             client.close()
         # Killed PID 1 in the real container (uv tears everything down) so we
