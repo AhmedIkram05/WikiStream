@@ -67,7 +67,10 @@ BACKUP_OUT="$(printf '%s\n' "$CLICKHOUSE_PASSWORD" | docker exec -i "$CLICKHOUSE
   --user wikistream --password --receive_timeout 1800 --query "BACKUP DATABASE default TO Disk('backups','$NAME')")"
 case "$BACKUP_OUT" in
   *BACKUP_CREATED*) ;;
-  *) echo "[backup] FAILED name=$NAME output=$BACKUP_OUT" >&2; exit 1 ;;
+  *)
+    echo "[backup] FAILED name=$NAME output=$BACKUP_OUT" >&2
+    exit 1
+    ;;
 esac
 echo "[backup] created $BACKUP_OUT"
 

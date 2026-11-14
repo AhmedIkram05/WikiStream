@@ -41,7 +41,7 @@ trap 'rm -f "$CH_HTTP_CONFIG"' EXIT
 {
   printf 'header = "X-ClickHouse-User: %s"\n' "$(_curl_escape "$CH_USER")"
   printf 'header = "X-ClickHouse-Key: %s"\n' "$(_curl_escape "$CH_PASSWORD")"
-} > "$CH_HTTP_CONFIG"
+} >"$CH_HTTP_CONFIG"
 
 # Run a one-shot query through the CH HTTP API; the request body IS the query.
 ch_query() {
@@ -108,8 +108,8 @@ for file in "${MIGRATIONS_DIR}"/[0-9]*.sql; do
   if [ "${status}" = "applied" ]; then
     # Apply: the request body IS the query (no /?query=).
     if ! apply_output="$(curl -sS --fail-with-body --config "$CH_HTTP_CONFIG" \
-        -X POST --data-binary "@${file}" \
-        "${CH_URL}" 2>&1)"; then
+      -X POST --data-binary "@${file}" \
+      "${CH_URL}" 2>&1)"; then
       echo "error: failed to apply ${version}:" >&2
       printf '%s\n' "${apply_output:-}" >&2
       exit 1
