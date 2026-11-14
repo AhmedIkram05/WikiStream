@@ -11,7 +11,7 @@ flowchart LR
     P2 --> G1{"Gate 1<br/>deployment stable?"}
     G1 -->|GO| P3["P3 Data Model<br/>3A schema · 3B MVs · 3C BigQuery"]
     G1 -->|NO| P2
-    P3 --> P4["P4 Quality & Resilience<br/>GX · DLQ · backups"]
+    P3 --> P4["P4 Quality & Resilience<br/>SQL quality · DLQ · backups"]
     P3 --> P5["P5 Observability & Security<br/>alerts · chaos battery"]
     P4 --> G2{"Gate 2<br/>resilience holds?"}
     P5 --> G2
@@ -145,24 +145,24 @@ The batch plane is nine unit files - eight installed at boot plus the on-demand 
 | Timer | Schedule | `Persistent=true` | Job |
 | --- | --- | --- | --- |
 | `wikistream-backup.timer` | 06:20 daily | yes | Native `BACKUP DATABASE` → GCS, keep-last-2 (cadence sized in §9.12) |
-| `wikistream-gx.timer` | :30 hourly | yes | Great Expectations suite on the latest hour |
+| `wikistream-data-quality.timer` | :30 hourly | yes | SQL data-quality gate on the latest hour |
 | `wikistream-export.timer` | :00 hourly | yes | `bq load` → staging tables → MERGE upsert (+ JSONL → GCS backup) |
 | `wikistream-parity.timer` | :05 hourly | yes | SUMS parity + freshness verdict |
 
 Plus a **15-second consumer heartbeat** that writes deltas (`inserted_delta`, `dead_lettered_delta`, `insert_failed_delta`, `duplicates_skipped_delta`) into `pipeline_health` - the single source every alert queries.
 
-**Failure paging (OnFailure):** all four batch oneshots (`export`, `parity`, `backup`, `gx`) carry `OnFailure=wikistream-fail-notify@%n.service` - a templated oneshot that reads `SLACK_WEBHOOK_URL` from `.env` and pages Slack instantly with the failed unit's name. A 03:00 crash therefore pages within seconds instead of waiting for the freshness panel to go red at +120 min; the GX case matters most, where a *crashed* run writes no 0.0 verdict and would otherwise escape `gx-fail` entirely.
+**Failure paging (OnFailure):** all four batch oneshots (`export`, `parity`, `backup`, `data-quality`) carry `OnFailure=wikistream-fail-notify@%n.service` - a templated oneshot that reads `SLACK_WEBHOOK_URL` from `.env` and pages Slack instantly with the failed unit's name. A 03:00 crash therefore pages within seconds instead of waiting for the freshness panel to go red at +120 min; the data-quality case matters most, where a *crashed* run writes no 0.0 verdict and would otherwise escape `data-quality-fail` entirely.
 
-### 7. Data Quality - Pydantic + Great Expectations
+### 7. Data Quality - Pydantic + SQL gate
 
-Two layers, deliberately split (ADR-005):
+Two layers, deliberately split (ADR-005, superseded by ADR-0015):
 
 1. **Inline (sub-second):** Pydantic v2 validation at the edge - type, timestamp parseability, schema shape. Failures route to `dead_letter`, never to the store.
-2. **Batch (hourly):** Great Expectations `0.18.22` against a rolling window, sampling **5%** of ~1.2M rows/hour.
+2. **Batch (hourly):** one ClickHouse aggregate over the **last completed UTC hour, 100% of the window** - no sampling, no pandas, no GX runtime.
 
-The GX suite checks (all tuned to *measured* live bounds, not guessed ones):
+The gate checks (all tuned to *measured* live bounds, not guessed ones):
 
-| Expectation | Measured live bound | Why |
+| Check | Measured live bound | Why |
 | --- | --- | --- |
 | Row count in range | `(50,000, 5,000,000)` | Full-window pre-check; VM volume is 1.2M rows/hr, not the planned 160K |
 | Nulls = 0 | wiki, title, event_type, is_bot, length_new, event_timestamp | Schema-on-write should make nulls impossible |
@@ -172,7 +172,7 @@ The GX suite checks (all tuned to *measured* live bounds, not guessed ones):
 | Wiki cardinality | `> 100` distinct | Live feed sanity |
 | Bot ratio | `∈ (0.05, 0.95)` | Measured mean is 0.493 |
 
-Sampling uses `rand() < int(0x100000000 * rate)` - `%`-based sampling breaks through GX's SQLAlchemy wrapper. A failed suite **exits 1** (the alert hook) and writes a 0.0 verdict to `pipeline_health`.
+The gate is one aggregate query; no rows leave ClickHouse. A failed check **exits 1** and writes a 0.0 verdict to `pipeline_health`, which fires the `data-quality-fail` alert.
 
 ### 8. Resilience - Dead Letter, Resume, Dedup
 
@@ -212,16 +212,16 @@ Two **non-overlapping** layers (ADR-010) - app/pipeline vs infrastructure:
 flowchart TD
     CH[("ClickHouse<br/>pipeline_health")]
     H["Heartbeat · 15s"] --> CH
-    GX["GX suite"] -->|verdict 1.0/0.0| CH
+    DQ["data-quality gate"] -->|verdict 1.0/0.0| CH
     PAR["Parity check"] -->|verdict 1.0/0.0| CH
     CH --> G1["consumer-down · 45s"]
     CH --> G2["dlq-rate-high · 2m"]
     CH --> G3["ch-insert-failure · 1m"]
     CH --> G4["parity-drift · 1m"]
-    CH --> G5["gx-fail · 1m"]
+    CH --> G5["data-quality-fail · 1m"]
     G1 & G2 & G3 & G4 & G5 --> SL["Slack · contact point 'slack-alerts'"]
 
-    ON["systemd OnFailure<br/>export / parity / backup / GX"] --> SL
+    ON["systemd OnFailure<br/>export / parity / backup / data-quality"] --> SL
 
     OA["Cloud Monitoring + Ops Agent"] --> P1["disk-almost-full · >80% for 300s"]
     OA --> P2["vm-unreachable · absent 120s"]
@@ -234,11 +234,11 @@ flowchart TD
 | `dlq-rate-high` | Dead-letter delta ratio → 1.0 (2m) | Fired 01:14:30 on 8,211 injected malformed rows, Slack delivered, cleared ~01:24 |
 | `ch-insert-failure` | `insert_failed_delta > 0` (1m) | Fired 01:24:00 with ClickHouse down 90s (182K failed inserts absorbed, no crash) |
 | `parity-drift` | BQ vs CH SUM mismatch (1m) | Fired 01:40:34 after a windowed BQ DELETE; cleared 01:48:16 after re-export |
-| `gx-fail` | GX exit ≠ 0 (1m) | Forced failure produced the exact error payload and a 0.0 verdict |
+| `data-quality-fail` | data-quality exit ≠ 0 (1m) | Forced failure produced the exact error payload and a 0.0 verdict |
 
-Every rule fired, **Slack and email delivery confirmed by the recipient**, then each was verified cleared. The chaos battery ran **8/8 injections** (consumer kill, DLQ flood, ClickHouse outage, parity drift, GX forced-fail, 17GB disk fill to 86%, VM stop/unreachable, firewall lockdown) - each fired its alert, was remediated, and cleared.
+Every rule fired, **Slack and email delivery confirmed by the recipient**, then each was verified cleared. The chaos battery ran **8/8 injections** (consumer kill, DLQ flood, ClickHouse outage, parity drift, data-quality forced-fail, 17GB disk fill to 86%, VM stop/unreachable, firewall lockdown) - each fired its alert, was remediated, and cleared.
 
-Fourth channel added 2026-09-10: systemd **`OnFailure` → templated Slack page** (`wikistream-fail-notify@%n`) on all four batch oneshots — it covers the blind spot where a job *fails* without writing a pipeline_health verdict (GX crash = no 0.0 verdict; export/merge errors only surface via freshness after 2h). Not exercised by the chaos battery; verified by a guarded dry run (missing webhook → loud exit 1, so a broken alert config self-reports rather than silently paging nothing) plus shell/CI lint gates; first live page lands with the next gated GCP apply.
+Fourth channel added 2026-09-10: systemd **`OnFailure` → templated Slack page** (`wikistream-fail-notify@%n`) on all four batch oneshots — it covers the blind spot where a job *fails* without writing a pipeline_health verdict (data-quality crash = no 0.0 verdict; export/merge errors only surface via freshness after 2h). Not exercised by the chaos battery; verified by a guarded dry run (missing webhook → loud exit 1, so a broken alert config self-reports rather than silently paging nothing) plus shell/CI lint gates; first live page lands with the next gated GCP apply.
 
 <p align="center">
   <img src="../assets/slack.webp" alt="Slack alert delivery" width="620"/>
@@ -299,20 +299,20 @@ Itemized from the real `gcloud` inventory at us-east1 rates (a full month was ne
 
 | Layer | Result |
 | --- | --- |
-| CI suite (`pytest -m "not ch"`) | offline CI gate subset runs separately (GX gated separately) |
-| Full suite (all tests, live ClickHouse) | **176 total (169 + 7 param)** in ~66s - coverage TOTAL `497 / 0 / 100%` |
+| CI suite (`pytest -m "not ch"`) | offline CI gate subset runs separately (data-quality tests run in the consumer job) |
+| Full suite (all tests, live ClickHouse) | **365 non-CH + 37 live-CH** at this change; the live-CH CI job is the authority |
 | Shell batch jobs | **5 black-box contracts** - PATH-shimmed `date/docker/bq/gcloud/gsutil` harness proves window math, bq orchestration, the `export_runs` JSON contract, fail-loud exit codes (OnFailure paging), and backup prune order/count without any cloud or container |
 | Batch-unit wiring | **4 contracts** - OnFailure Slack-page assertions over the four unit files, the fail-notify template, the guarded script, and boot.sh's install line |
-| `pytest-coverage.png` receipt | the full-suite card - regenerated to current truth whenever the test surface changes (currently **176 total (169 + 7 param) in 65.63s**, coverage `497 / 0 / 100%`) |
-| Coverage - consumer src | **100% (497 stmts, 0 miss)** |
-| Coverage - 6 business-critical modules | **262/262 = 100.00%** (`sse`, `models`, `batcher`, `dead_letter`, `heartbeat`, `healthcheck`) |
-| Coverage - `gx/suite.py` | **89/89 = 100%** (parallel-mode `coverage combine`) |
-| Integration (`-m ch`, real ClickHouse) | 31 tests: migrations, MV equivalence, kill/resume, DLQ, healthchecks |
-| GX suite tests | 14 green - drive the real `suite.py` as a subprocess and assert the exit-code contract |
+| `pytest-coverage.png` receipt | the full-suite card - regenerate it after the next live-CH CI run; the current card predates this change |
+| Coverage - consumer src | **99% (964 stmts, 12 miss) offline; 100% on the 7 business-critical modules** |
+| Coverage - 7 business-critical modules | **438/438 = 100.00%** (`sse`, `models`, `batcher`, `dead_letter`, `heartbeat`, `healthcheck`, `data_quality`) |
+| Coverage - `consumer/src/data_quality.py` | **100%** (pytest-cov) |
+| Integration (`-m ch`, real ClickHouse) | 37 tests: migrations, MV equivalence, kill/resume, DLQ, healthchecks, data-quality fixtures |
+| Data-quality tests | unit + CH fixtures - cover every exit path, the 11 checks, and the verdict row |
 | Warehouse SQL shape tests | 3 green - placeholder-substitution checks on `merge_*.sql` / `rollup_daily.sql` / `v_bq_cost_daily.sql` (no live BQ needed) |
 | CI gate | Per-module `--cov-fail-under=100` + overall `--cov-fail-under=90` - **blocks merges** |
 
-The 2 skips are `pytest.importorskip("great_expectations")` - GX pins Python 3.12 (no cp313 wheels) while the consumer runs 3.13/3.14; those tests run green under the GX project's own env. The gate itself was proven: deleting one covered line from `sse.py` made CI exit 1 with 31 failures; restoring it → exit 0, 112 passed, 262/262.
+The data-quality tests run under the consumer project; there is no separate GX venv or Python pin. The gate is exercised by the valid/bad CH fixtures and a forced-failure run (0.0 verdict + alert).
 
 ## Infrastructure (Terraform)
 
@@ -402,9 +402,8 @@ wikistream/
 │       ├── batcher.py        # 1k-row / 5s batching + dedup ring
 │       ├── dead_letter.py    # At-least-once DLQ writer
 │       ├── heartbeat.py      # 15s pipeline_health writer
-│       └── healthcheck.py    # Docker healthcheck entrypoint
-├── gx/                       # Great Expectations 0.18.22 suite (Python 3.12)
-│   └── suite.py              # 11 expectations on a rolling window, exit-code contract
+│       ├── healthcheck.py    # Docker healthcheck entrypoint
+│       └── data_quality.py   # Hourly SQL data-quality gate + verdict writer
 ├── migrations/               # Versioned .sql migrations (000-008) + bash runner
 ├── warehouse/                # Export/parity scripts + SQL + systemd units
 ├── infra/
