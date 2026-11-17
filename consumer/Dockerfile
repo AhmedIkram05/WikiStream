@@ -1,4 +1,6 @@
-FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
+# cp315 wheels lag for several deps (aiohttp), so dependencies are compiled in
+# a builder stage; only the finished .venv reaches the runtime image.
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS builder
 
 # uv is the package manager for this project (pyproject.toml + uv.lock).
 # uv 0.9.30
@@ -6,9 +8,22 @@ COPY --from=ghcr.io/astral-sh/uv@sha256:538e0b39736e7feae937a65983e49d2ab75e1559
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev
 
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
+
+COPY --from=ghcr.io/astral-sh/uv@sha256:538e0b39736e7feae937a65983e49d2ab75e1559d35041f9878b7b7e51de91e4 /uv /bin/uv
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+COPY --from=builder /app/.venv ./.venv
 COPY src ./src
 # Create the runtime user and the volume mountpoint. The compose init service
 # chowns the bind mount before this container starts; the app itself runs as
